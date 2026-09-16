@@ -1,0 +1,71 @@
+Yes, it can — and it would be a good fit. Here's the short version:
+
+  Create .claude/skills/pcb-guide/SKILL.md with frontmatter pointing to your guide content. When you type
+  /pcb-guide, Claude loads it on demand (zero token cost until invoked).
+
+  The key advantage over just having the file sit in your folder: the guide's content only loads when you ask for
+  it, and you can attach tool permissions, bash commands to inject live context (e.g., current file list), or
+  instructions scoped to that workflow.
+
+  For your PCB guide specifically, you could structure it as something like:
+
+  ---
+  name: pcb-guide
+  description: PCB design workflow - KiCad 10, 16-phase process, script reuse policy
+  user-invocable: true
+  ---
+
+  [paste or !`cat PCB_Design_Guide_Generic.md`]
+
+● Since a skill is just a markdown file, modifying it is the same as editing any file — you can:
+
+  1. Ask me to edit it directly — describe what's not working or what you want added, and I'll make the change to
+  SKILL.md (or the underlying guide file).
+  2. Edit it yourself in any text editor and save.
+
+  The iteration loop is fast:
+  - Invoke /pcb-guide → notice what's missing or unclear → edit the file → invoke again
+
+  For improving effectiveness specifically, the most common levers are:
+
+  - Tighten instructions — vague steps produce vague output; replace "review the schematic" with "check for: missing
+   decoupling caps, floating pins, incorrect footprints"
+  - Add constraints — tell Claude what not to do (e.g., "don't suggest rerouting unless the user asks")
+  - Inject live context — use !`command` to pull in current file state at invocation time so Claude sees real
+  project data
+  - Split into sub-skills — if the guide covers too much, break it into /pcb-schematic, /pcb-layout,
+  /pcb-manufacturing so each invocation is focused
+
+● The context management mechanism your guide uses is primarily the per-project .claude/CLAUDE.md that Phase 0 Step
+  11 instructs Claude to create at project start. That file contains all invariant rules, active detour bookmarks,
+  and project parameters — and Claude Code auto-loads it every session automatically, regardless of the skill.
+
+  So the skill doesn't need to carry that burden. The persistence chain is:
+
+  1. You invoke /pcb-guide → skill loads, Claude reads Phase 0
+  2. Phase 0 Step 11 fires → Claude creates [PROJECT_DIR]/.claude/CLAUDE.md with all invariant rules
+  3. Every subsequent session → .claude/CLAUDE.md auto-loads, keeping Claude anchored — no skill invocation needed
+
+  The skill is just the entry point and workflow reference. The .claude/CLAUDE.md does the actual ongoing memory
+  work.
+
+  One gap to watch: if you invoke the skill mid-project (not from Phase 0), the skill should remind Claude to check
+  whether .claude/CLAUDE.md already exists and re-read it before proceeding. That way resuming a project via
+  /pcb-guide doesn't accidentally create a fresh context that stomps existing project state.
+
+  Short answer: yes, a skill version would be equally effective — the heavy lifting was never in the guide document
+  itself, it was in the .claude/CLAUDE.md mechanism the guide sets up.
+
+Done. The skill is created at ~/.claude/skills/pcb_design_guide/SKILL.md with personal scope (available in all
+  projects).
+
+  How it works:
+  - /pcb_design_guide — invokes it
+  - At invocation, it dynamically injects the full guide, Phase 8 supplement, and script README in one shot
+  - The guide file (PCB_Design_Guide_Generic.md) remains the single source of truth — edits there are immediately
+  reflected next time you invoke the skill
+  - The SESSION START block handles the mid-project resume case: if .claude/CLAUDE.md already exists, Claude reads
+  it first and skips Phase 0
+
+  To iterate on the guide going forward: edit PCB_Design_Guide_Generic.md as usual. No changes needed to the skill
+  itself unless you want to add new supplemental files or change tool permissions.

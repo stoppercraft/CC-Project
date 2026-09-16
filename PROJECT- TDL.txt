@@ -1,0 +1,42 @@
+claude --dangerously-skip-permissions
+
+/pcb_design_guide
+
+python "E:\Claude Projects\claude_autorestart.py"
+
+Neckdown   Teardrop     VIPPO
+
+
+Tasks
+
+--apply
+
+save session state and update all memory files with the current state of things so we can pickup where we left off in a new session.
+
+Revert to the clean backup
+
+E:\Claude Projects\CC Project Folder\Routing_Phase10_SessionGuide.md 
+
+
+route_prep_align.py    route_clearance_audit.py
+
+route_fanout_vias.py
+route_critical.py
+route_highspeed.py
+
+route_fanout_vias.py then route_critical.py then after that route_highspeed.py
+
+HDMI0_CLK
+HDMI0_TX0
+HDMI0_TX1
+HDMI0_TX2
+LT_TX1
+LT_TX2
+LT_AUX
+DP_TX1
+DP_TX2
+MIPI1_CLK
+MIPI1_D0
+MIPI1_D1
+USB2
+

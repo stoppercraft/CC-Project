@@ -1,0 +1,19 @@
+# Images and binary assets
+*.jpg
+*.jpeg
+*.png
+*.psd
+*.bmp
+*.gif
+
+# Generated / ephemeral files
+drc_results.json
+SESSION_CONTEXT.md
+Python Scripts/drc_output.json
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Claude Code internal
+.claude/
