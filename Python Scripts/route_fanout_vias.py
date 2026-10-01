@@ -4032,13 +4032,22 @@ def _face_fanout(
                     _group7c.append(_ov7c)
                     break
 
-        # Required depth: deepest needed to clear all vias in group
-        _req_d7c  = max(_ov[2] + _ov[3] + _shw7c + CLEARANCE for _ov in _group7c)
-        _ext_d7c  = min(max(_cur_d7c, _req_d7c), FANOUT_DEPTH_CAP)
+        # Effective obstacle radius for each group via in the escape direction:
+        # max(via_copper_r, pad_axial_half) — pads whose AABB extends farther
+        # than their via copper ring in the escape direction set the constraint.
+        # Use pad_bbox (board-coordinate AABB) so pad rotation is handled correctly.
+        def _pad_axial_half7c(_pv):
+            _bb = _pv.pad_bbox  # (left, top, right, bottom) board coords
+            return (abs(edx) * (_bb[2] - _bb[0]) + abs(edy) * (_bb[3] - _bb[1])) / 2.0
+        _gr7c = [max(_ov[3], _pad_axial_half7c(face_pads[_ov[6]]))
+                 for _ov in _group7c]
+        _req_d7c  = max(_ov[2] + _gr + _shw7c + CLEARANCE
+                        for _ov, _gr in zip(_group7c, _gr7c))
+        _ext_d7c  = min(max(_req_d7c, _pv7c.neckdown_len_mm), FANOUT_DEPTH_CAP)
 
         # Outermost via in group clearable at actual _ext_d7c → extension endpoint
-        _clearable7c = [_ov for _ov in _group7c
-                        if _ext_d7c - _ov[2] - _ov[3] - _shw7c >= CLEARANCE - 1e-9]
+        _clearable7c = [_ov for _ov, _gr in zip(_group7c, _gr7c)
+                        if _ext_d7c - _ov[2] - _gr - _shw7c >= CLEARANCE - 1e-9]
         if not _clearable7c:
             continue
         _outmost7c  = max(_clearable7c, key=lambda x: x[0])
@@ -4082,8 +4091,8 @@ def _face_fanout(
         if _ls7c * (_ext_lat7c - _stub_lat7c) <= 1e-6:
             continue
 
-        # Deepen final_placed if required
-        if _ext_d7c > _cur_d7c + 1e-9:
+        # Update final_placed if depth changed (deepen or shallow to _req_d7c)
+        if abs(_ext_d7c - _cur_d7c) > 1e-9:
             final_placed[_gi7c] = (
                 _pv7c.pad_x + _ls7c * _lo7c * ldx + edx * _ext_d7c,
                 _pv7c.pad_y + _ls7c * _lo7c * ldy + edy * _ext_d7c,
