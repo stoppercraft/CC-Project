@@ -89,6 +89,17 @@ This protocol is non-negotiable. A code edit to `route_fanout_vias.py` that is n
 
 ---
 
+## Git — Automatic Push After Significant Changes
+
+After every significant edit to any file in `Python Scripts/` or any plan/context file, automatically:
+1. `git add` the changed files
+2. `git commit` with a concise message describing the change
+3. `git push`
+
+Do this without being asked. A "significant change" is any edit that modifies behavior, fixes a bug, or adds a feature. Do NOT commit after trivial read operations or failed experiments that were reverted.
+
+---
+
 ## Placement Algorithm Rules
 
 ### No project-specific fixes for algorithmic placement problems
