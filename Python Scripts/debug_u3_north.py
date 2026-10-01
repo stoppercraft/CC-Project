@@ -178,6 +178,11 @@ for pv in face_pads:
             continue
         _add_track(x1, y1, x2, y2, pv.neckdown_w_mm, net)
         n_tracks += 1
+    if hasattr(pv, 'stub_ext_vx'):
+        ex2, ey2 = pv.stub_ext_vx, pv.stub_ext_vy
+        if math.hypot(ex2 - vx, ey2 - vy) >= 1e-6:
+            _add_track(vx, vy, ex2, ey2, pv.neckdown_w_mm, net)
+            n_tracks += 1
 
 # Bus stubs
 for x1, y1, x2, y2, nw, bnet in bus_stubs:

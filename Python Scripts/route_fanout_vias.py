@@ -3134,6 +3134,7 @@ def _face_fanout(
     Side-effects:
       - Sets v.implicit_keepout = True on blocked pads.
       - Sets v.stub_only_vx / v.stub_only_vy on stub-only pads.
+      - Sets v.stub_ext_vx / v.stub_ext_vy on skip-net pads that get a lateral extension.
       - _face_fanout._last_bus_stubs = [(x1,y1,x2,y2,nw,net), ...] for this face.
       - _face_fanout._last_keepout_set = set of global indices declared keepout.
     """
@@ -3972,6 +3973,85 @@ def _face_fanout(
 
         if not _improved:
             break
+
+    # ------------------------------------------------------------------
+    # 7c. Skip-net stub lateral extension: extend each skip-net stub past
+    #     the nearest outer signal via group (adjacent HS pair or single via)
+    #     at a depth that clears their copper, then add a lateral segment to
+    #     just past the outermost via in that group.
+    # ------------------------------------------------------------------
+    for _si7c, _gi7c in enumerate(signal_indices):
+        _pv7c = face_pads[_gi7c]
+        if _pv7c.net_name not in _skip_nets:
+            continue
+        if _gi7c not in final_placed or _gi7c in keepout_set:
+            continue
+
+        _ls7c    = _lat_sign(_pv7c)
+        _v_lat7c = _pv7c.pad_x * ldx + _pv7c.pad_y * ldy
+        _shw7c   = _pv7c.neckdown_w_mm / 2.0
+        _vx7c, _vy7c = final_placed[_gi7c]
+        _cur_d7c = (_vx7c - _pv7c.pad_x) * edx + (_vy7c - _pv7c.pad_y) * edy
+        _lo7c    = lat_offs_arr[_si7c]
+
+        # Collect outer signal vias (not skip-net, not keepout), sorted nearest first
+        _outers7c = []  # (gap, via_lat, depth, pcr, annular, net_name, gi)
+        for _gj7c in signal_indices:
+            if _gj7c == _gi7c or _gj7c not in final_placed or _gj7c in keepout_set:
+                continue
+            _pvj7c = face_pads[_gj7c]
+            if _pvj7c.net_name in _skip_nets or not _pvj7c.net_name:
+                continue
+            _vxj7c, _vyj7c = final_placed[_gj7c]
+            _vlat_j7c = _vxj7c * ldx + _vyj7c * ldy
+            _gap7c    = _ls7c * (_vlat_j7c - _v_lat7c)
+            if _gap7c <= 0:
+                continue
+            _dj7c  = (_vxj7c - _pvj7c.pad_x) * edx + (_vyj7c - _pvj7c.pad_y) * edy
+            _pcr_j7c = _pvj7c.via_drill_mm / 2.0 + ca
+            _outers7c.append((_gap7c, _vlat_j7c, _dj7c, _pcr_j7c,
+                               _pvj7c.via_annular_mm, _pvj7c.net_name, _gj7c))
+
+        if not _outers7c:
+            continue
+
+        _outers7c.sort(key=lambda x: x[0])  # nearest first
+
+        # Build adjacent group: nearest via + its HS partner if present
+        _nearest_net7c = _outers7c[0][5]
+        _group7c = [_outers7c[0]]
+        if _nearest_net7c.endswith('_P') or _nearest_net7c.endswith('_N'):
+            _pnet7c = (_nearest_net7c[:-2] + '_N' if _nearest_net7c.endswith('_P')
+                       else _nearest_net7c[:-2] + '_P')
+            for _ov7c in _outers7c[1:]:
+                if _ov7c[5] == _pnet7c:
+                    _group7c.append(_ov7c)
+                    break
+
+        # Required depth: deepest needed to clear all vias in group
+        _req_d7c  = max(_ov[2] + _ov[3] + _shw7c + CLEARANCE for _ov in _group7c)
+        _ext_d7c  = min(max(_cur_d7c, _req_d7c), FANOUT_DEPTH_CAP)
+
+        # Outermost via in group → extension lateral endpoint (via_lat + ls * annular)
+        _outmost7c  = max(_group7c, key=lambda x: x[0])
+        _ext_lat7c  = _outmost7c[1] + _ls7c * _outmost7c[4]
+
+        # Only extend if endpoint is actually further out than current stub tip
+        _stub_lat7c = _v_lat7c + _ls7c * _lo7c
+        if _ls7c * (_ext_lat7c - _stub_lat7c) <= 1e-6:
+            continue
+
+        # Deepen final_placed if required
+        if _ext_d7c > _cur_d7c + 1e-9:
+            final_placed[_gi7c] = (
+                _pv7c.pad_x + _ls7c * _lo7c * ldx + edx * _ext_d7c,
+                _pv7c.pad_y + _ls7c * _lo7c * ldy + edy * _ext_d7c,
+            )
+
+        # Store lateral extension endpoint
+        _dlat7c = _ext_lat7c - _v_lat7c
+        _pv7c.stub_ext_vx = _pv7c.pad_x + _dlat7c * ldx + edx * _ext_d7c
+        _pv7c.stub_ext_vy = _pv7c.pad_y + _dlat7c * ldy + edy * _ext_d7c
 
     # ------------------------------------------------------------------
     # Post-processing: HS partner suppression
