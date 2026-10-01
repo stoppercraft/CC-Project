@@ -3548,560 +3548,568 @@ def _face_fanout(
         final_placed = pass_result
 
     # ------------------------------------------------------------------
-    # 7. Iterative compaction: reduce each via to minimum (outside-in, converging)
+    # 7. Iterative compaction: compact → equalize → compact → skip-net 7c
+    #    Outer loop repeats until skip-net stub shallowing makes no further
+    #    changes to final_placed (signal vias converge with updated obstacles).
     # ------------------------------------------------------------------
-    MAX_COMPACT_ROUNDS = 20
-    for _round in range(MAX_COMPACT_ROUNDS):
-        _improved = False
-        for si, gi in enumerate(signal_indices):
-            if gi not in final_placed or gi in keepout_set:
-                continue
-            vx_cur, vy_cur = final_placed[gi]
-            v         = face_pads[gi]
-            ls        = _lat_sign(v)
-            lat_off   = lat_offs_arr[si]
-            cur_axial = abs((vx_cur - v.pad_x) * edx + (vy_cur - v.pad_y) * edy)
-
-            other_placed = []
-            for sj, gj in enumerate(signal_indices):
-                if gj == gi or gj not in final_placed or gj in keepout_set:
+    for _outer_pass in range(5):
+        MAX_COMPACT_ROUNDS = 20
+        for _round in range(MAX_COMPACT_ROUNDS):
+            _improved = False
+            for si, gi in enumerate(signal_indices):
+                if gi not in final_placed or gi in keepout_set:
                     continue
-                vxj, vyj = final_placed[gj]
-                pvj  = face_pads[gj]
-                if pvj.net_name in _skip_nets:
-                    # Skip-net pads have a position in final_placed but no via is emitted.
-                    # Use r=0 (no via circle) so via-vs-via check doesn't block real vias,
-                    # but keep the full stub geometry so stub-vs-stub checks still fire.
-                    _sk_segs = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
-                                                 edx, edy, axial_first=True)
-                    if not _sk_segs:
-                        _sk_segs = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
-                    _sk_segs = [(x1, y1, x2, y2) for x1, y1, x2, y2 in _sk_segs
-                                if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                vx_cur, vy_cur = final_placed[gi]
+                v         = face_pads[gi]
+                ls        = _lat_sign(v)
+                lat_off   = lat_offs_arr[si]
+                cur_axial = abs((vx_cur - v.pad_x) * edx + (vy_cur - v.pad_y) * edy)
+
+                other_placed = []
+                for sj, gj in enumerate(signal_indices):
+                    if gj == gi or gj not in final_placed or gj in keepout_set:
+                        continue
+                    vxj, vyj = final_placed[gj]
+                    pvj  = face_pads[gj]
+                    if pvj.net_name in _skip_nets:
+                        # Skip-net pads have a position in final_placed but no via is emitted.
+                        # Use r=0 (no via circle) so via-vs-via check doesn't block real vias,
+                        # but keep the full stub geometry so stub-vs-stub checks still fire.
+                        _sk_segs = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
+                                                     edx, edy, axial_first=True)
+                        if not _sk_segs:
+                            _sk_segs = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
+                        _sk_segs = [(x1, y1, x2, y2) for x1, y1, x2, y2 in _sk_segs
+                                    if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                        other_placed.append({
+                            'vx': vxj, 'vy': vyj, 'r': 0.0,
+                            'stub_hw': pvj.neckdown_w_mm / 2.0,
+                            'segs': _sk_segs,
+                            'pad_i': gj, 'net': pvj.net_name, 'pad_num': pvj.pad_num,
+                        })
+                        continue
+                    pcrj = pvj.via_drill_mm / 2.0 + ca
+                    segsj = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
+                                              edx, edy, axial_first=True)
+                    if not segsj:
+                        segsj = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
+                    segsj = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segsj
+                             if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
                     other_placed.append({
-                        'vx': vxj, 'vy': vyj, 'r': 0.0,
+                        'vx': vxj, 'vy': vyj, 'r': pcrj,
                         'stub_hw': pvj.neckdown_w_mm / 2.0,
-                        'segs': _sk_segs,
-                        'pad_i': gj, 'net': pvj.net_name, 'pad_num': pvj.pad_num,
+                        'segs': segsj,
+                        'pad_i': gj,
+                        'net': pvj.net_name,
+                        'pad_num': pvj.pad_num,
                     })
-                    continue
-                pcrj = pvj.via_drill_mm / 2.0 + ca
-                segsj = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
-                                          edx, edy, axial_first=True)
-                if not segsj:
-                    segsj = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
-                segsj = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segsj
-                         if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
-                other_placed.append({
-                    'vx': vxj, 'vy': vyj, 'r': pcrj,
-                    'stub_hw': pvj.neckdown_w_mm / 2.0,
-                    'segs': segsj,
-                    'pad_i': gj,
-                    'net': pvj.net_name,
-                    'pad_num': pvj.pad_num,
-                })
 
-            _vcr = v.via_drill_mm / 2.0 + ca
-            _thr = _vcr + CLEARANCE
+                _vcr = v.via_drill_mm / 2.0 + ca
+                _thr = _vcr + CLEARANCE
 
-            def _own_depth_floor(lo, _v=v, _ls=ls, _thr=_thr, _ldx=ldx, _ldy=ldy,
-                                 _edy=edy, _edx=edx):
-                """Min axial depth at lateral offset lo so via copper clears own pad."""
-                vx_t = _v.pad_x + _ls * lo * _ldx
-                if _v.pad_bbox is None:
-                    return (_v.pad_h_mm if abs(_edy) > 0.5 else _v.pad_w_mm) / 2.0 + _thr
-                L, T, R, B = _v.pad_bbox
-                xd = max(0.0, L - vx_t, vx_t - R)
-                if xd >= _thr:
-                    return 0.0
-                yn = math.sqrt(max(0.0, _thr * _thr - xd * xd))
-                if   _edy < 0: return max(0.0, _v.pad_y - T + yn)
-                elif _edy > 0: return max(0.0, B - _v.pad_y + yn)
-                elif _edx < 0: return max(0.0, _v.pad_x - L + yn)
-                else:          return max(0.0, R - _v.pad_x + yn)
+                def _own_depth_floor(lo, _v=v, _ls=ls, _thr=_thr, _ldx=ldx, _ldy=ldy,
+                                     _edy=edy, _edx=edx):
+                    """Min axial depth at lateral offset lo so via copper clears own pad."""
+                    vx_t = _v.pad_x + _ls * lo * _ldx
+                    if _v.pad_bbox is None:
+                        return (_v.pad_h_mm if abs(_edy) > 0.5 else _v.pad_w_mm) / 2.0 + _thr
+                    L, T, R, B = _v.pad_bbox
+                    xd = max(0.0, L - vx_t, vx_t - R)
+                    if xd >= _thr:
+                        return 0.0
+                    yn = math.sqrt(max(0.0, _thr * _thr - xd * xd))
+                    if   _edy < 0: return max(0.0, _v.pad_y - T + yn)
+                    elif _edy > 0: return max(0.0, B - _v.pad_y + yn)
+                    elif _edx < 0: return max(0.0, _v.pad_x - L + yn)
+                    else:          return max(0.0, R - _v.pad_x + yn)
 
-            cur_cost  = math.hypot(lat_off, cur_axial)
-            best_vx, best_vy = vx_cur, vy_cur
-            best_cost = cur_cost
+                cur_cost  = math.hypot(lat_off, cur_axial)
+                best_vx, best_vy = vx_cur, vy_cur
+                best_cost = cur_cost
 
-            # Strategy A: reduce axial depth at current lat_off
-            depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off))
-            while depth_A < cur_axial - 1e-9:
-                vx_A = v.pad_x + ls * lat_off * ldx
-                vy_A = v.pad_y + ls * lat_off * ldy + edy * depth_A
-                if _check(v, vx_A, vy_A, other_placed) is None:
-                    c = math.hypot(lat_off, depth_A)
-                    if c < best_cost:
-                        best_cost, best_vx, best_vy = c, vx_A, vy_A
-                    break
-                depth_A += DEPTH_STEP
-
-            # Strategy B: push lateral offset outward at minimum own-pad depth
-            for _lsn in range(1, 31):
-                lat_B = lat_off + _lsn * STEP_MM
-                df    = _own_depth_floor(lat_B)
-                vx_B  = v.pad_x + ls * lat_B * ldx
-                vy_B  = v.pad_y + ls * lat_B * ldy + edy * df
-                if _check(v, vx_B, vy_B, other_placed) is None:
-                    c = math.hypot(lat_B, df)
-                    if c < best_cost:
-                        best_cost, best_vx, best_vy = c, vx_B, vy_B
-                        lat_offs_arr[si] = lat_B
-                    if df <= 1e-9:
-                        break  # depth=0; cost=lat_B only grows from here
-
-            # Strategy C: pull lateral offset inward, find minimum passing depth at each
-            # lat. After outside-in placement, a via may have been pushed far outward to
-            # avoid a neighbor that has since compacted inward — this strategy retreats it.
-            _lat_C_steps = max(0, int(round(lat_off / STEP_MM)))
-            for _lsm in range(1, _lat_C_steps + 1):
-                lat_C = lat_off - _lsm * STEP_MM
-                if lat_C < -1e-9:
-                    lat_C = 0.0
-                df_C = max(v.neckdown_len_mm, _own_depth_floor(lat_C))
-                depth_C = df_C
-                while True:
-                    _cost_C = math.hypot(lat_C, depth_C)
-                    if _cost_C >= best_cost - 1e-9:
-                        break
-                    if depth_C > cur_axial + 1e-9:
-                        break
-                    vx_C = v.pad_x + ls * lat_C * ldx
-                    vy_C = v.pad_y + ls * lat_C * ldy + edy * depth_C
-                    if _check(v, vx_C, vy_C, other_placed) is None:
-                        c = math.hypot(lat_C, depth_C)
+                # Strategy A: reduce axial depth at current lat_off
+                depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off))
+                while depth_A < cur_axial - 1e-9:
+                    vx_A = v.pad_x + ls * lat_off * ldx
+                    vy_A = v.pad_y + ls * lat_off * ldy + edy * depth_A
+                    if _check(v, vx_A, vy_A, other_placed) is None:
+                        c = math.hypot(lat_off, depth_A)
                         if c < best_cost:
-                            best_cost, best_vx, best_vy = c, vx_C, vy_C
-                            lat_offs_arr[si] = lat_C
-                        break  # found minimum depth at this lat_C
-                    depth_C += DEPTH_STEP
-                if lat_C <= 1e-9:
-                    break
+                            best_cost, best_vx, best_vy = c, vx_A, vy_A
+                        break
+                    depth_A += DEPTH_STEP
 
-            if best_cost < cur_cost - 1e-9:
-                final_placed[gi] = (best_vx, best_vy)
-                _improved = True
+                # Strategy B: push lateral offset outward at minimum own-pad depth
+                for _lsn in range(1, 31):
+                    lat_B = lat_off + _lsn * STEP_MM
+                    df    = _own_depth_floor(lat_B)
+                    vx_B  = v.pad_x + ls * lat_B * ldx
+                    vy_B  = v.pad_y + ls * lat_B * ldy + edy * df
+                    if _check(v, vx_B, vy_B, other_placed) is None:
+                        c = math.hypot(lat_B, df)
+                        if c < best_cost:
+                            best_cost, best_vx, best_vy = c, vx_B, vy_B
+                            lat_offs_arr[si] = lat_B
+                        if df <= 1e-9:
+                            break  # depth=0; cost=lat_B only grows from here
 
-        if not _improved:
-            break
+                # Strategy C: pull lateral offset inward, find minimum passing depth at each
+                # lat. After outside-in placement, a via may have been pushed far outward to
+                # avoid a neighbor that has since compacted inward — this strategy retreats it.
+                _lat_C_steps = max(0, int(round(lat_off / STEP_MM)))
+                for _lsm in range(1, _lat_C_steps + 1):
+                    lat_C = lat_off - _lsm * STEP_MM
+                    if lat_C < -1e-9:
+                        lat_C = 0.0
+                    df_C = max(v.neckdown_len_mm, _own_depth_floor(lat_C))
+                    depth_C = df_C
+                    while True:
+                        _cost_C = math.hypot(lat_C, depth_C)
+                        if _cost_C >= best_cost - 1e-9:
+                            break
+                        if depth_C > cur_axial + 1e-9:
+                            break
+                        vx_C = v.pad_x + ls * lat_C * ldx
+                        vy_C = v.pad_y + ls * lat_C * ldy + edy * depth_C
+                        if _check(v, vx_C, vy_C, other_placed) is None:
+                            c = math.hypot(lat_C, depth_C)
+                            if c < best_cost:
+                                best_cost, best_vx, best_vy = c, vx_C, vy_C
+                                lat_offs_arr[si] = lat_C
+                            break  # found minimum depth at this lat_C
+                        depth_C += DEPTH_STEP
+                    if lat_C <= 1e-9:
+                        break
 
-    # ------------------------------------------------------------------
-    # 7b. Pair depth equalization: for each HS pair both vias get the
-    #     minimum shared depth where both clear all obstacles simultaneously.
-    #     If current lateral separation is less than the via-to-via minimum,
-    #     the outer via is first pushed outward to achieve minimum separation
-    #     before the shared depth scan.
-    # ------------------------------------------------------------------
-    def _pair_depth_floor(pv, ls_, lat_):
-        """Own-pad depth floor for an arbitrary pad at given lateral offset."""
-        pcr_ = pv.via_drill_mm / 2.0 + ca
-        thr_ = pcr_ + CLEARANCE
-        vx_t = pv.pad_x + ls_ * lat_ * ldx
-        if pv.pad_bbox is None:
-            return (pv.pad_h_mm if abs(edy) > 0.5 else pv.pad_w_mm) / 2.0 + thr_
-        L, T, R, B = pv.pad_bbox
-        xd = max(0.0, L - vx_t, vx_t - R)
-        if xd >= thr_:
-            return 0.0
-        yn = math.sqrt(max(0.0, thr_ * thr_ - xd * xd))
-        if   edy < 0: return max(0.0, pv.pad_y - T + yn)
-        elif edy > 0: return max(0.0, B - pv.pad_y + yn)
-        elif edx < 0: return max(0.0, pv.pad_x - L + yn)
-        else:         return max(0.0, R - pv.pad_x + yn)
+                if best_cost < cur_cost - 1e-9:
+                    final_placed[gi] = (best_vx, best_vy)
+                    _improved = True
 
-    _processed_pairs = set()
-    for _si, _gi in enumerate(signal_indices):
-        _gj = hs_partner.get(_gi)
-        if _gj is None:
-            continue
-        _sj = global_to_si.get(_gj)
-        if _sj is None:
-            continue
-        _pair_key = (min(_gi, _gj), max(_gi, _gj))
-        if _pair_key in _processed_pairs:
-            continue
-        _processed_pairs.add(_pair_key)
-
-        if _gi not in final_placed or _gj not in final_placed:
-            continue
-        if _gi in keepout_set or _gj in keepout_set:
-            continue
-
-        vi = face_pads[_gi]
-        vj = face_pads[_gj]
-        vxi_c, vyi_c = final_placed[_gi]
-        vxj_c, vyj_c = final_placed[_gj]
-        ls_i  = _lat_sign(vi)
-        ls_j  = _lat_sign(vj)
-        lat_i = lat_offs_arr[_si]
-        lat_j = lat_offs_arr[_sj]
-        pcr_i = vi.via_drill_mm / 2.0 + ca
-        pcr_j = vj.via_drill_mm / 2.0 + ca
-
-        di = abs((vxi_c - vi.pad_x) * edx + (vyi_c - vi.pad_y) * edy)
-        dj = abs((vxj_c - vj.pad_x) * edx + (vyj_c - vj.pad_y) * edy)
-        d_max = max(di, dj)
-
-        if abs(di - dj) < DEPTH_STEP:
-            continue  # already equal enough
-
-        # Lateral coordinates of the two vias (signed projection onto ldx/ldy axis)
-        via_lat_i = vi.pad_x * ldx + vi.pad_y * ldy + ls_i * lat_i
-        via_lat_j = vj.pad_x * ldx + vj.pad_y * ldy + ls_j * lat_j
-        cur_lat_sep = abs(via_lat_i - via_lat_j)
-        min_lat_sep = pcr_i + pcr_j + CLEARANCE
-
-        # Working lateral offsets — may be increased for the outer via if the
-        # pair's current lateral separation is less than the via-to-via minimum.
-        lat_i_w, lat_j_w = lat_i, lat_j
-        if cur_lat_sep < min_lat_sep - 1e-9:
-            extra = min_lat_sep - cur_lat_sep
-            # Push the outer via (further from face_center) outward
-            dist_i = abs(via_lat_i - face_center)
-            dist_j = abs(via_lat_j - face_center)
-            if dist_i >= dist_j:
-                lat_i_w = lat_i + extra
-            else:
-                lat_j_w = lat_j + extra
-
-        d_floor_i = max(vi.neckdown_len_mm, _pair_depth_floor(vi, ls_i, lat_i_w))
-        d_floor_j = max(vj.neckdown_len_mm, _pair_depth_floor(vj, ls_j, lat_j_w))
-        d_floor   = max(d_floor_i, d_floor_j)
-
-        # Base other_placed: all signal vias except both pair members
-        _base_op = []
-        for _sk2, _gk2 in enumerate(signal_indices):
-            if _gk2 == _gi or _gk2 == _gj:
-                continue
-            if _gk2 not in final_placed or _gk2 in keepout_set:
-                continue
-            vxk, vyk = final_placed[_gk2]
-            pvk      = face_pads[_gk2]
-            segs_k   = _route_45deg_stub(pvk.pad_x, pvk.pad_y, vxk, vyk,
-                                         edx, edy, axial_first=True)
-            if not segs_k:
-                segs_k = [(pvk.pad_x, pvk.pad_y, vxk, vyk)]
-            segs_k = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segs_k
-                      if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
-            if pvk.net_name in _skip_nets:
-                _base_op.append({'vx': vxk, 'vy': vyk, 'r': 0.0,
-                                  'stub_hw': pvk.neckdown_w_mm / 2.0,
-                                  'segs': segs_k, 'pad_i': _gk2,
-                                  'net': pvk.net_name, 'pad_num': pvk.pad_num})
-            else:
-                _base_op.append({'vx': vxk, 'vy': vyk,
-                                  'r': pvk.via_drill_mm / 2.0 + ca,
-                                  'stub_hw': pvk.neckdown_w_mm / 2.0,
-                                  'segs': segs_k, 'pad_i': _gk2,
-                                  'net': pvk.net_name, 'pad_num': pvk.pad_num})
-
-        # Scan upward from d_floor to find minimum shared depth
-        best_shared    = None
-        best_lat_i_out = lat_i_w
-        best_lat_j_out = lat_j_w
-        _d_try = d_floor
-        while _d_try <= d_max + 1e-9:
-            vx_i_t = vi.pad_x + ls_i * lat_i_w * ldx + edx * _d_try
-            vy_i_t = vi.pad_y + ls_i * lat_i_w * ldy + edy * _d_try
-            vx_j_t = vj.pad_x + ls_j * lat_j_w * ldx + edx * _d_try
-            vy_j_t = vj.pad_y + ls_j * lat_j_w * ldy + edy * _d_try
-
-            segs_j_t = _route_45deg_stub(vj.pad_x, vj.pad_y, vx_j_t, vy_j_t,
-                                         edx, edy, axial_first=True)
-            if not segs_j_t:
-                segs_j_t = [(vj.pad_x, vj.pad_y, vx_j_t, vy_j_t)]
-            segs_j_t = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segs_j_t
-                        if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
-            op_for_i = _base_op + [{'vx': vx_j_t, 'vy': vy_j_t, 'r': pcr_j,
-                                     'stub_hw': vj.neckdown_w_mm / 2.0,
-                                     'segs': segs_j_t, 'pad_i': _gj,
-                                     'net': vj.net_name, 'pad_num': vj.pad_num}]
-
-            segs_i_t = _route_45deg_stub(vi.pad_x, vi.pad_y, vx_i_t, vy_i_t,
-                                         edx, edy, axial_first=True)
-            if not segs_i_t:
-                segs_i_t = [(vi.pad_x, vi.pad_y, vx_i_t, vy_i_t)]
-            segs_i_t = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segs_i_t
-                        if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
-            op_for_j = _base_op + [{'vx': vx_i_t, 'vy': vy_i_t, 'r': pcr_i,
-                                     'stub_hw': vi.neckdown_w_mm / 2.0,
-                                     'segs': segs_i_t, 'pad_i': _gi,
-                                     'net': vi.net_name, 'pad_num': vi.pad_num}]
-
-            if (_check(vi, vx_i_t, vy_i_t, op_for_i) is None
-                    and _check(vj, vx_j_t, vy_j_t, op_for_j) is None):
-                best_shared = _d_try
+            if not _improved:
                 break
-            _d_try += DEPTH_STEP
 
-        if best_shared is not None and best_shared < d_max - 1e-9:
-            final_placed[_gi] = (vi.pad_x + ls_i * lat_i_w * ldx + edx * best_shared,
-                                  vi.pad_y + ls_i * lat_i_w * ldy + edy * best_shared)
-            final_placed[_gj] = (vj.pad_x + ls_j * lat_j_w * ldx + edx * best_shared,
-                                  vj.pad_y + ls_j * lat_j_w * ldy + edy * best_shared)
-            lat_offs_arr[_si] = lat_i_w
-            lat_offs_arr[_sj] = lat_j_w
+        # ------------------------------------------------------------------
+        # 7b. Pair depth equalization: for each HS pair both vias get the
+        #     minimum shared depth where both clear all obstacles simultaneously.
+        #     If current lateral separation is less than the via-to-via minimum,
+        #     the outer via is first pushed outward to achieve minimum separation
+        #     before the shared depth scan.
+        # ------------------------------------------------------------------
+        def _pair_depth_floor(pv, ls_, lat_):
+            """Own-pad depth floor for an arbitrary pad at given lateral offset."""
+            pcr_ = pv.via_drill_mm / 2.0 + ca
+            thr_ = pcr_ + CLEARANCE
+            vx_t = pv.pad_x + ls_ * lat_ * ldx
+            if pv.pad_bbox is None:
+                return (pv.pad_h_mm if abs(edy) > 0.5 else pv.pad_w_mm) / 2.0 + thr_
+            L, T, R, B = pv.pad_bbox
+            xd = max(0.0, L - vx_t, vx_t - R)
+            if xd >= thr_:
+                return 0.0
+            yn = math.sqrt(max(0.0, thr_ * thr_ - xd * xd))
+            if   edy < 0: return max(0.0, pv.pad_y - T + yn)
+            elif edy > 0: return max(0.0, B - pv.pad_y + yn)
+            elif edx < 0: return max(0.0, pv.pad_x - L + yn)
+            else:         return max(0.0, R - pv.pad_x + yn)
 
-    # ------------------------------------------------------------------
-    # 7 (second pass): Re-compact after pair depth equalization so all
-    #     via-bearing pads benefit from the updated pair positions.
-    # ------------------------------------------------------------------
-    for _round in range(MAX_COMPACT_ROUNDS):
-        _improved = False
-        for si, gi in enumerate(signal_indices):
-            if gi not in final_placed or gi in keepout_set:
+        _processed_pairs = set()
+        for _si, _gi in enumerate(signal_indices):
+            _gj = hs_partner.get(_gi)
+            if _gj is None:
                 continue
-            vx_cur, vy_cur = final_placed[gi]
-            v         = face_pads[gi]
-            ls        = _lat_sign(v)
-            lat_off   = lat_offs_arr[si]
-            cur_axial = abs((vx_cur - v.pad_x) * edx + (vy_cur - v.pad_y) * edy)
+            _sj = global_to_si.get(_gj)
+            if _sj is None:
+                continue
+            _pair_key = (min(_gi, _gj), max(_gi, _gj))
+            if _pair_key in _processed_pairs:
+                continue
+            _processed_pairs.add(_pair_key)
 
-            other_placed = []
-            for sj, gj in enumerate(signal_indices):
-                if gj == gi or gj not in final_placed or gj in keepout_set:
+            if _gi not in final_placed or _gj not in final_placed:
+                continue
+            if _gi in keepout_set or _gj in keepout_set:
+                continue
+
+            vi = face_pads[_gi]
+            vj = face_pads[_gj]
+            vxi_c, vyi_c = final_placed[_gi]
+            vxj_c, vyj_c = final_placed[_gj]
+            ls_i  = _lat_sign(vi)
+            ls_j  = _lat_sign(vj)
+            lat_i = lat_offs_arr[_si]
+            lat_j = lat_offs_arr[_sj]
+            pcr_i = vi.via_drill_mm / 2.0 + ca
+            pcr_j = vj.via_drill_mm / 2.0 + ca
+
+            di = abs((vxi_c - vi.pad_x) * edx + (vyi_c - vi.pad_y) * edy)
+            dj = abs((vxj_c - vj.pad_x) * edx + (vyj_c - vj.pad_y) * edy)
+            d_max = max(di, dj)
+
+            if abs(di - dj) < DEPTH_STEP:
+                continue  # already equal enough
+
+            # Lateral coordinates of the two vias (signed projection onto ldx/ldy axis)
+            via_lat_i = vi.pad_x * ldx + vi.pad_y * ldy + ls_i * lat_i
+            via_lat_j = vj.pad_x * ldx + vj.pad_y * ldy + ls_j * lat_j
+            cur_lat_sep = abs(via_lat_i - via_lat_j)
+            min_lat_sep = pcr_i + pcr_j + CLEARANCE
+
+            # Working lateral offsets — may be increased for the outer via if the
+            # pair's current lateral separation is less than the via-to-via minimum.
+            lat_i_w, lat_j_w = lat_i, lat_j
+            if cur_lat_sep < min_lat_sep - 1e-9:
+                extra = min_lat_sep - cur_lat_sep
+                # Push the outer via (further from face_center) outward
+                dist_i = abs(via_lat_i - face_center)
+                dist_j = abs(via_lat_j - face_center)
+                if dist_i >= dist_j:
+                    lat_i_w = lat_i + extra
+                else:
+                    lat_j_w = lat_j + extra
+
+            d_floor_i = max(vi.neckdown_len_mm, _pair_depth_floor(vi, ls_i, lat_i_w))
+            d_floor_j = max(vj.neckdown_len_mm, _pair_depth_floor(vj, ls_j, lat_j_w))
+            d_floor   = max(d_floor_i, d_floor_j)
+
+            # Base other_placed: all signal vias except both pair members
+            _base_op = []
+            for _sk2, _gk2 in enumerate(signal_indices):
+                if _gk2 == _gi or _gk2 == _gj:
                     continue
-                vxj, vyj = final_placed[gj]
-                pvj  = face_pads[gj]
-                if pvj.net_name in _skip_nets:
-                    _sk_segs = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
-                                                 edx, edy, axial_first=True)
-                    if not _sk_segs:
-                        _sk_segs = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
-                    _sk_segs = [(x1, y1, x2, y2) for x1, y1, x2, y2 in _sk_segs
-                                if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                if _gk2 not in final_placed or _gk2 in keepout_set:
+                    continue
+                vxk, vyk = final_placed[_gk2]
+                pvk      = face_pads[_gk2]
+                segs_k   = _route_45deg_stub(pvk.pad_x, pvk.pad_y, vxk, vyk,
+                                             edx, edy, axial_first=True)
+                if not segs_k:
+                    segs_k = [(pvk.pad_x, pvk.pad_y, vxk, vyk)]
+                segs_k = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segs_k
+                          if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                if pvk.net_name in _skip_nets:
+                    _base_op.append({'vx': vxk, 'vy': vyk, 'r': 0.0,
+                                      'stub_hw': pvk.neckdown_w_mm / 2.0,
+                                      'segs': segs_k, 'pad_i': _gk2,
+                                      'net': pvk.net_name, 'pad_num': pvk.pad_num})
+                else:
+                    _base_op.append({'vx': vxk, 'vy': vyk,
+                                      'r': pvk.via_drill_mm / 2.0 + ca,
+                                      'stub_hw': pvk.neckdown_w_mm / 2.0,
+                                      'segs': segs_k, 'pad_i': _gk2,
+                                      'net': pvk.net_name, 'pad_num': pvk.pad_num})
+
+            # Scan upward from d_floor to find minimum shared depth
+            best_shared    = None
+            best_lat_i_out = lat_i_w
+            best_lat_j_out = lat_j_w
+            _d_try = d_floor
+            while _d_try <= d_max + 1e-9:
+                vx_i_t = vi.pad_x + ls_i * lat_i_w * ldx + edx * _d_try
+                vy_i_t = vi.pad_y + ls_i * lat_i_w * ldy + edy * _d_try
+                vx_j_t = vj.pad_x + ls_j * lat_j_w * ldx + edx * _d_try
+                vy_j_t = vj.pad_y + ls_j * lat_j_w * ldy + edy * _d_try
+
+                segs_j_t = _route_45deg_stub(vj.pad_x, vj.pad_y, vx_j_t, vy_j_t,
+                                             edx, edy, axial_first=True)
+                if not segs_j_t:
+                    segs_j_t = [(vj.pad_x, vj.pad_y, vx_j_t, vy_j_t)]
+                segs_j_t = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segs_j_t
+                            if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                op_for_i = _base_op + [{'vx': vx_j_t, 'vy': vy_j_t, 'r': pcr_j,
+                                         'stub_hw': vj.neckdown_w_mm / 2.0,
+                                         'segs': segs_j_t, 'pad_i': _gj,
+                                         'net': vj.net_name, 'pad_num': vj.pad_num}]
+
+                segs_i_t = _route_45deg_stub(vi.pad_x, vi.pad_y, vx_i_t, vy_i_t,
+                                             edx, edy, axial_first=True)
+                if not segs_i_t:
+                    segs_i_t = [(vi.pad_x, vi.pad_y, vx_i_t, vy_i_t)]
+                segs_i_t = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segs_i_t
+                            if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                op_for_j = _base_op + [{'vx': vx_i_t, 'vy': vy_i_t, 'r': pcr_i,
+                                         'stub_hw': vi.neckdown_w_mm / 2.0,
+                                         'segs': segs_i_t, 'pad_i': _gi,
+                                         'net': vi.net_name, 'pad_num': vi.pad_num}]
+
+                if (_check(vi, vx_i_t, vy_i_t, op_for_i) is None
+                        and _check(vj, vx_j_t, vy_j_t, op_for_j) is None):
+                    best_shared = _d_try
+                    break
+                _d_try += DEPTH_STEP
+
+            if best_shared is not None and best_shared < d_max - 1e-9:
+                final_placed[_gi] = (vi.pad_x + ls_i * lat_i_w * ldx + edx * best_shared,
+                                      vi.pad_y + ls_i * lat_i_w * ldy + edy * best_shared)
+                final_placed[_gj] = (vj.pad_x + ls_j * lat_j_w * ldx + edx * best_shared,
+                                      vj.pad_y + ls_j * lat_j_w * ldy + edy * best_shared)
+                lat_offs_arr[_si] = lat_i_w
+                lat_offs_arr[_sj] = lat_j_w
+
+        # ------------------------------------------------------------------
+        # 7 (second pass): Re-compact after pair depth equalization so all
+        #     via-bearing pads benefit from the updated pair positions.
+        # ------------------------------------------------------------------
+        for _round in range(MAX_COMPACT_ROUNDS):
+            _improved = False
+            for si, gi in enumerate(signal_indices):
+                if gi not in final_placed or gi in keepout_set:
+                    continue
+                vx_cur, vy_cur = final_placed[gi]
+                v         = face_pads[gi]
+                ls        = _lat_sign(v)
+                lat_off   = lat_offs_arr[si]
+                cur_axial = abs((vx_cur - v.pad_x) * edx + (vy_cur - v.pad_y) * edy)
+
+                other_placed = []
+                for sj, gj in enumerate(signal_indices):
+                    if gj == gi or gj not in final_placed or gj in keepout_set:
+                        continue
+                    vxj, vyj = final_placed[gj]
+                    pvj  = face_pads[gj]
+                    if pvj.net_name in _skip_nets:
+                        _sk_segs = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
+                                                     edx, edy, axial_first=True)
+                        if not _sk_segs:
+                            _sk_segs = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
+                        _sk_segs = [(x1, y1, x2, y2) for x1, y1, x2, y2 in _sk_segs
+                                    if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                        other_placed.append({
+                            'vx': vxj, 'vy': vyj, 'r': 0.0,
+                            'stub_hw': pvj.neckdown_w_mm / 2.0,
+                            'segs': _sk_segs,
+                            'pad_i': gj, 'net': pvj.net_name, 'pad_num': pvj.pad_num,
+                        })
+                        continue
+                    pcrj = pvj.via_drill_mm / 2.0 + ca
+                    segsj = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
+                                              edx, edy, axial_first=True)
+                    if not segsj:
+                        segsj = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
+                    segsj = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segsj
+                             if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
                     other_placed.append({
-                        'vx': vxj, 'vy': vyj, 'r': 0.0,
+                        'vx': vxj, 'vy': vyj, 'r': pcrj,
                         'stub_hw': pvj.neckdown_w_mm / 2.0,
-                        'segs': _sk_segs,
-                        'pad_i': gj, 'net': pvj.net_name, 'pad_num': pvj.pad_num,
+                        'segs': segsj,
+                        'pad_i': gj,
+                        'net': pvj.net_name,
+                        'pad_num': pvj.pad_num,
                     })
-                    continue
-                pcrj = pvj.via_drill_mm / 2.0 + ca
-                segsj = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
-                                          edx, edy, axial_first=True)
-                if not segsj:
-                    segsj = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
-                segsj = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segsj
-                         if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
-                other_placed.append({
-                    'vx': vxj, 'vy': vyj, 'r': pcrj,
-                    'stub_hw': pvj.neckdown_w_mm / 2.0,
-                    'segs': segsj,
-                    'pad_i': gj,
-                    'net': pvj.net_name,
-                    'pad_num': pvj.pad_num,
-                })
 
-            _vcr = v.via_drill_mm / 2.0 + ca
-            _thr = _vcr + CLEARANCE
+                _vcr = v.via_drill_mm / 2.0 + ca
+                _thr = _vcr + CLEARANCE
 
-            def _own_depth_floor(lo, _v=v, _ls=ls, _thr=_thr, _ldx=ldx, _ldy=ldy,
-                                 _edy=edy, _edx=edx):
-                vx_t = _v.pad_x + _ls * lo * _ldx
-                if _v.pad_bbox is None:
-                    return (_v.pad_h_mm if abs(_edy) > 0.5 else _v.pad_w_mm) / 2.0 + _thr
-                L, T, R, B = _v.pad_bbox
-                xd = max(0.0, L - vx_t, vx_t - R)
-                if xd >= _thr:
-                    return 0.0
-                yn = math.sqrt(max(0.0, _thr * _thr - xd * xd))
-                if   _edy < 0: return max(0.0, _v.pad_y - T + yn)
-                elif _edy > 0: return max(0.0, B - _v.pad_y + yn)
-                elif _edx < 0: return max(0.0, _v.pad_x - L + yn)
-                else:          return max(0.0, R - _v.pad_x + yn)
+                def _own_depth_floor(lo, _v=v, _ls=ls, _thr=_thr, _ldx=ldx, _ldy=ldy,
+                                     _edy=edy, _edx=edx):
+                    vx_t = _v.pad_x + _ls * lo * _ldx
+                    if _v.pad_bbox is None:
+                        return (_v.pad_h_mm if abs(_edy) > 0.5 else _v.pad_w_mm) / 2.0 + _thr
+                    L, T, R, B = _v.pad_bbox
+                    xd = max(0.0, L - vx_t, vx_t - R)
+                    if xd >= _thr:
+                        return 0.0
+                    yn = math.sqrt(max(0.0, _thr * _thr - xd * xd))
+                    if   _edy < 0: return max(0.0, _v.pad_y - T + yn)
+                    elif _edy > 0: return max(0.0, B - _v.pad_y + yn)
+                    elif _edx < 0: return max(0.0, _v.pad_x - L + yn)
+                    else:          return max(0.0, R - _v.pad_x + yn)
 
-            cur_cost  = math.hypot(lat_off, cur_axial)
-            best_vx, best_vy = vx_cur, vy_cur
-            best_cost = cur_cost
+                cur_cost  = math.hypot(lat_off, cur_axial)
+                best_vx, best_vy = vx_cur, vy_cur
+                best_cost = cur_cost
 
-            # Strategy A: reduce axial depth at current lat_off
-            depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off))
-            while depth_A < cur_axial - 1e-9:
-                vx_A = v.pad_x + ls * lat_off * ldx
-                vy_A = v.pad_y + ls * lat_off * ldy + edy * depth_A
-                if _check(v, vx_A, vy_A, other_placed) is None:
-                    c = math.hypot(lat_off, depth_A)
-                    if c < best_cost:
-                        best_cost, best_vx, best_vy = c, vx_A, vy_A
-                    break
-                depth_A += DEPTH_STEP
-
-            # Strategy B: push lateral offset outward at minimum own-pad depth
-            for _lsn in range(1, 31):
-                lat_B = lat_off + _lsn * STEP_MM
-                df    = _own_depth_floor(lat_B)
-                vx_B  = v.pad_x + ls * lat_B * ldx
-                vy_B  = v.pad_y + ls * lat_B * ldy + edy * df
-                if _check(v, vx_B, vy_B, other_placed) is None:
-                    c = math.hypot(lat_B, df)
-                    if c < best_cost:
-                        best_cost, best_vx, best_vy = c, vx_B, vy_B
-                        lat_offs_arr[si] = lat_B
-                    if df <= 1e-9:
-                        break
-
-            # Strategy C: pull lateral offset inward, find minimum passing depth
-            _lat_C_steps = max(0, int(round(lat_off / STEP_MM)))
-            for _lsm in range(1, _lat_C_steps + 1):
-                lat_C = lat_off - _lsm * STEP_MM
-                if lat_C < -1e-9:
-                    lat_C = 0.0
-                df_C = max(v.neckdown_len_mm, _own_depth_floor(lat_C))
-                depth_C = df_C
-                while True:
-                    _cost_C = math.hypot(lat_C, depth_C)
-                    if _cost_C >= best_cost - 1e-9:
-                        break
-                    if depth_C > cur_axial + 1e-9:
-                        break
-                    vx_C = v.pad_x + ls * lat_C * ldx
-                    vy_C = v.pad_y + ls * lat_C * ldy + edy * depth_C
-                    if _check(v, vx_C, vy_C, other_placed) is None:
-                        c = math.hypot(lat_C, depth_C)
+                # Strategy A: reduce axial depth at current lat_off
+                depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off))
+                while depth_A < cur_axial - 1e-9:
+                    vx_A = v.pad_x + ls * lat_off * ldx
+                    vy_A = v.pad_y + ls * lat_off * ldy + edy * depth_A
+                    if _check(v, vx_A, vy_A, other_placed) is None:
+                        c = math.hypot(lat_off, depth_A)
                         if c < best_cost:
-                            best_cost, best_vx, best_vy = c, vx_C, vy_C
-                            lat_offs_arr[si] = lat_C
+                            best_cost, best_vx, best_vy = c, vx_A, vy_A
                         break
-                    depth_C += DEPTH_STEP
-                if lat_C <= 1e-9:
-                    break
+                    depth_A += DEPTH_STEP
 
-            if best_cost < cur_cost - 1e-9:
-                final_placed[gi] = (best_vx, best_vy)
-                _improved = True
+                # Strategy B: push lateral offset outward at minimum own-pad depth
+                for _lsn in range(1, 31):
+                    lat_B = lat_off + _lsn * STEP_MM
+                    df    = _own_depth_floor(lat_B)
+                    vx_B  = v.pad_x + ls * lat_B * ldx
+                    vy_B  = v.pad_y + ls * lat_B * ldy + edy * df
+                    if _check(v, vx_B, vy_B, other_placed) is None:
+                        c = math.hypot(lat_B, df)
+                        if c < best_cost:
+                            best_cost, best_vx, best_vy = c, vx_B, vy_B
+                            lat_offs_arr[si] = lat_B
+                        if df <= 1e-9:
+                            break
 
-        if not _improved:
+                # Strategy C: pull lateral offset inward, find minimum passing depth
+                _lat_C_steps = max(0, int(round(lat_off / STEP_MM)))
+                for _lsm in range(1, _lat_C_steps + 1):
+                    lat_C = lat_off - _lsm * STEP_MM
+                    if lat_C < -1e-9:
+                        lat_C = 0.0
+                    df_C = max(v.neckdown_len_mm, _own_depth_floor(lat_C))
+                    depth_C = df_C
+                    while True:
+                        _cost_C = math.hypot(lat_C, depth_C)
+                        if _cost_C >= best_cost - 1e-9:
+                            break
+                        if depth_C > cur_axial + 1e-9:
+                            break
+                        vx_C = v.pad_x + ls * lat_C * ldx
+                        vy_C = v.pad_y + ls * lat_C * ldy + edy * depth_C
+                        if _check(v, vx_C, vy_C, other_placed) is None:
+                            c = math.hypot(lat_C, depth_C)
+                            if c < best_cost:
+                                best_cost, best_vx, best_vy = c, vx_C, vy_C
+                                lat_offs_arr[si] = lat_C
+                            break
+                        depth_C += DEPTH_STEP
+                    if lat_C <= 1e-9:
+                        break
+
+                if best_cost < cur_cost - 1e-9:
+                    final_placed[gi] = (best_vx, best_vy)
+                    _improved = True
+
+            if not _improved:
+                break
+
+        # ------------------------------------------------------------------
+        # 7c. Skip-net stub lateral extension: extend each skip-net stub past
+        #     the nearest outer signal via group (adjacent HS pair or single via)
+        #     at a depth that clears their copper, then add a lateral segment to
+        #     just past the outermost via in that group.
+        # ------------------------------------------------------------------
+        _7c_any_changed = False
+        for _si7c, _gi7c in enumerate(signal_indices):
+            _pv7c = face_pads[_gi7c]
+            if _pv7c.net_name not in _skip_nets:
+                continue
+            if _gi7c not in final_placed or _gi7c in keepout_set:
+                continue
+
+            _ls7c    = _lat_sign(_pv7c)
+            _v_lat7c = _pv7c.pad_x * ldx + _pv7c.pad_y * ldy
+            _shw7c   = _pv7c.neckdown_w_mm / 2.0
+            _vx7c, _vy7c = final_placed[_gi7c]
+            _cur_d7c = (_vx7c - _pv7c.pad_x) * edx + (_vy7c - _pv7c.pad_y) * edy
+            _lo7c    = lat_offs_arr[_si7c]
+
+            # Collect outer signal vias (not skip-net, not keepout), sorted nearest first
+            _outers7c = []  # (gap, via_lat, depth, pcr, annular, net_name, gi)
+            for _gj7c in signal_indices:
+                if _gj7c == _gi7c or _gj7c not in final_placed or _gj7c in keepout_set:
+                    continue
+                _pvj7c = face_pads[_gj7c]
+                if _pvj7c.net_name in _skip_nets or not _pvj7c.net_name:
+                    continue
+                _vxj7c, _vyj7c = final_placed[_gj7c]
+                _vlat_j7c = _vxj7c * ldx + _vyj7c * ldy
+                _gap7c    = _ls7c * (_vlat_j7c - _v_lat7c)
+                if _gap7c <= 0:
+                    continue
+                _dj7c    = (_vxj7c - _pvj7c.pad_x) * edx + (_vyj7c - _pvj7c.pad_y) * edy
+                _pcr_j7c = _pvj7c.via_drill_mm / 2.0 + ca
+                # Skip vias the axial stub cannot laterally clear — the stub at pad_lat
+                # going straight axially would violate clearance with this via.
+                if abs(_vlat_j7c - _v_lat7c) < _pcr_j7c + _shw7c + CLEARANCE - 1e-9:
+                    continue
+                _outers7c.append((_gap7c, _vlat_j7c, _dj7c, _pcr_j7c,
+                                   _pvj7c.via_annular_mm, _pvj7c.net_name, _gj7c))
+
+            if not _outers7c:
+                continue
+
+            _outers7c.sort(key=lambda x: x[0])  # nearest first
+
+            # Build adjacent group: nearest via + its HS partner if present
+            _nearest_net7c = _outers7c[0][5]
+            _group7c = [_outers7c[0]]
+            if _nearest_net7c.endswith('_P') or _nearest_net7c.endswith('_N'):
+                _pnet7c = (_nearest_net7c[:-2] + '_N' if _nearest_net7c.endswith('_P')
+                           else _nearest_net7c[:-2] + '_P')
+                for _ov7c in _outers7c[1:]:
+                    if _ov7c[5] == _pnet7c:
+                        _group7c.append(_ov7c)
+                        break
+
+            # Effective obstacle radius for each group via in the escape direction:
+            # max(via_copper_r, pad_axial_half) — pads whose AABB extends farther
+            # than their via copper ring in the escape direction set the constraint.
+            # Use pad_bbox (board-coordinate AABB) so pad rotation is handled correctly.
+            def _pad_axial_half7c(_pv):
+                _bb = _pv.pad_bbox  # (left, top, right, bottom) board coords
+                return (abs(edx) * (_bb[2] - _bb[0]) + abs(edy) * (_bb[3] - _bb[1])) / 2.0
+            _gr7c = [max(_ov[3], _pad_axial_half7c(face_pads[_ov[6]]))
+                     for _ov in _group7c]
+            _req_d7c  = max(_ov[2] + _gr + _shw7c + CLEARANCE
+                            for _ov, _gr in zip(_group7c, _gr7c))
+            _ext_d7c  = min(max(_req_d7c, _pv7c.neckdown_len_mm), FANOUT_DEPTH_CAP)
+
+            # Outermost via in group clearable at actual _ext_d7c → extension endpoint
+            _clearable7c = [_ov for _ov, _gr in zip(_group7c, _gr7c)
+                            if _ext_d7c - _ov[2] - _gr - _shw7c >= CLEARANCE - 1e-9]
+            if not _clearable7c:
+                continue
+            _outmost7c  = max(_clearable7c, key=lambda x: x[0])
+            _ext_lat7c  = _outmost7c[1] + _ls7c * _outmost7c[4]
+
+            # Clip extension: if any signal via in the lateral sweep path cannot be
+            # cleared vertically at _ext_d7c, stop before the nearest such via.
+            _blocked_lat7c = None
+            for _gj7c_sw in signal_indices:
+                if (_gj7c_sw == _gi7c or _gj7c_sw not in final_placed
+                        or _gj7c_sw in keepout_set):
+                    continue
+                _pvj_sw = face_pads[_gj7c_sw]
+                if _pvj_sw.net_name in _skip_nets or not _pvj_sw.net_name:
+                    continue
+                _vxj_sw, _vyj_sw = final_placed[_gj7c_sw]
+                _vlat_sw = _vxj_sw * ldx + _vyj_sw * ldy
+                _dj_sw   = ((_vxj_sw - _pvj_sw.pad_x) * edx
+                            + (_vyj_sw - _pvj_sw.pad_y) * edy)
+                _pcr_sw  = _pvj_sw.via_drill_mm / 2.0 + ca
+                if _ls7c * (_vlat_sw - _v_lat7c) < 1e-9:
+                    continue
+                if _ls7c * (_ext_lat7c - _vlat_sw) < -1e-9:
+                    continue
+                if abs(_ext_d7c - _dj_sw) - _pcr_sw - _shw7c >= CLEARANCE - 1e-9:
+                    continue
+                _clip = _vlat_sw - _ls7c * (_pcr_sw + _shw7c + CLEARANCE)
+                if _blocked_lat7c is None or _ls7c * (_blocked_lat7c - _clip) > 1e-9:
+                    _blocked_lat7c = _clip
+            if _blocked_lat7c is not None:
+                if _ls7c * (_blocked_lat7c - _v_lat7c) < 1e-9:
+                    continue
+                _ext_lat7c = _blocked_lat7c
+
+            # Skip if clipping prevented reaching the outermost clearable via
+            if _ls7c * (_ext_lat7c - _outmost7c[1]) < -1e-9:
+                continue
+
+            # Only extend if endpoint is actually further out than current stub tip
+            _stub_lat7c = _v_lat7c + _ls7c * _lo7c
+            if _ls7c * (_ext_lat7c - _stub_lat7c) <= 1e-6:
+                continue
+
+            # Update final_placed if depth changed (deepen or shallow to _req_d7c)
+            if abs(_ext_d7c - _cur_d7c) > 1e-9:
+                final_placed[_gi7c] = (
+                    _pv7c.pad_x + _ls7c * _lo7c * ldx + edx * _ext_d7c,
+                    _pv7c.pad_y + _ls7c * _lo7c * ldy + edy * _ext_d7c,
+                )
+                _7c_any_changed = True
+
+            # Store lateral extension endpoint
+            _dlat7c = _ext_lat7c - _v_lat7c
+            _pv7c.stub_ext_vx = _pv7c.pad_x + _dlat7c * ldx + edx * _ext_d7c
+            _pv7c.stub_ext_vy = _pv7c.pad_y + _dlat7c * ldy + edy * _ext_d7c
+
+        if not _7c_any_changed:
             break
-
-    # ------------------------------------------------------------------
-    # 7c. Skip-net stub lateral extension: extend each skip-net stub past
-    #     the nearest outer signal via group (adjacent HS pair or single via)
-    #     at a depth that clears their copper, then add a lateral segment to
-    #     just past the outermost via in that group.
-    # ------------------------------------------------------------------
-    for _si7c, _gi7c in enumerate(signal_indices):
-        _pv7c = face_pads[_gi7c]
-        if _pv7c.net_name not in _skip_nets:
-            continue
-        if _gi7c not in final_placed or _gi7c in keepout_set:
-            continue
-
-        _ls7c    = _lat_sign(_pv7c)
-        _v_lat7c = _pv7c.pad_x * ldx + _pv7c.pad_y * ldy
-        _shw7c   = _pv7c.neckdown_w_mm / 2.0
-        _vx7c, _vy7c = final_placed[_gi7c]
-        _cur_d7c = (_vx7c - _pv7c.pad_x) * edx + (_vy7c - _pv7c.pad_y) * edy
-        _lo7c    = lat_offs_arr[_si7c]
-
-        # Collect outer signal vias (not skip-net, not keepout), sorted nearest first
-        _outers7c = []  # (gap, via_lat, depth, pcr, annular, net_name, gi)
-        for _gj7c in signal_indices:
-            if _gj7c == _gi7c or _gj7c not in final_placed or _gj7c in keepout_set:
-                continue
-            _pvj7c = face_pads[_gj7c]
-            if _pvj7c.net_name in _skip_nets or not _pvj7c.net_name:
-                continue
-            _vxj7c, _vyj7c = final_placed[_gj7c]
-            _vlat_j7c = _vxj7c * ldx + _vyj7c * ldy
-            _gap7c    = _ls7c * (_vlat_j7c - _v_lat7c)
-            if _gap7c <= 0:
-                continue
-            _dj7c    = (_vxj7c - _pvj7c.pad_x) * edx + (_vyj7c - _pvj7c.pad_y) * edy
-            _pcr_j7c = _pvj7c.via_drill_mm / 2.0 + ca
-            # Skip vias the axial stub cannot laterally clear — the stub at pad_lat
-            # going straight axially would violate clearance with this via.
-            if abs(_vlat_j7c - _v_lat7c) < _pcr_j7c + _shw7c + CLEARANCE - 1e-9:
-                continue
-            _outers7c.append((_gap7c, _vlat_j7c, _dj7c, _pcr_j7c,
-                               _pvj7c.via_annular_mm, _pvj7c.net_name, _gj7c))
-
-        if not _outers7c:
-            continue
-
-        _outers7c.sort(key=lambda x: x[0])  # nearest first
-
-        # Build adjacent group: nearest via + its HS partner if present
-        _nearest_net7c = _outers7c[0][5]
-        _group7c = [_outers7c[0]]
-        if _nearest_net7c.endswith('_P') or _nearest_net7c.endswith('_N'):
-            _pnet7c = (_nearest_net7c[:-2] + '_N' if _nearest_net7c.endswith('_P')
-                       else _nearest_net7c[:-2] + '_P')
-            for _ov7c in _outers7c[1:]:
-                if _ov7c[5] == _pnet7c:
-                    _group7c.append(_ov7c)
-                    break
-
-        # Effective obstacle radius for each group via in the escape direction:
-        # max(via_copper_r, pad_axial_half) — pads whose AABB extends farther
-        # than their via copper ring in the escape direction set the constraint.
-        # Use pad_bbox (board-coordinate AABB) so pad rotation is handled correctly.
-        def _pad_axial_half7c(_pv):
-            _bb = _pv.pad_bbox  # (left, top, right, bottom) board coords
-            return (abs(edx) * (_bb[2] - _bb[0]) + abs(edy) * (_bb[3] - _bb[1])) / 2.0
-        _gr7c = [max(_ov[3], _pad_axial_half7c(face_pads[_ov[6]]))
-                 for _ov in _group7c]
-        _req_d7c  = max(_ov[2] + _gr + _shw7c + CLEARANCE
-                        for _ov, _gr in zip(_group7c, _gr7c))
-        _ext_d7c  = min(max(_req_d7c, _pv7c.neckdown_len_mm), FANOUT_DEPTH_CAP)
-
-        # Outermost via in group clearable at actual _ext_d7c → extension endpoint
-        _clearable7c = [_ov for _ov, _gr in zip(_group7c, _gr7c)
-                        if _ext_d7c - _ov[2] - _gr - _shw7c >= CLEARANCE - 1e-9]
-        if not _clearable7c:
-            continue
-        _outmost7c  = max(_clearable7c, key=lambda x: x[0])
-        _ext_lat7c  = _outmost7c[1] + _ls7c * _outmost7c[4]
-
-        # Clip extension: if any signal via in the lateral sweep path cannot be
-        # cleared vertically at _ext_d7c, stop before the nearest such via.
-        _blocked_lat7c = None
-        for _gj7c_sw in signal_indices:
-            if (_gj7c_sw == _gi7c or _gj7c_sw not in final_placed
-                    or _gj7c_sw in keepout_set):
-                continue
-            _pvj_sw = face_pads[_gj7c_sw]
-            if _pvj_sw.net_name in _skip_nets or not _pvj_sw.net_name:
-                continue
-            _vxj_sw, _vyj_sw = final_placed[_gj7c_sw]
-            _vlat_sw = _vxj_sw * ldx + _vyj_sw * ldy
-            _dj_sw   = ((_vxj_sw - _pvj_sw.pad_x) * edx
-                        + (_vyj_sw - _pvj_sw.pad_y) * edy)
-            _pcr_sw  = _pvj_sw.via_drill_mm / 2.0 + ca
-            if _ls7c * (_vlat_sw - _v_lat7c) < 1e-9:
-                continue
-            if _ls7c * (_ext_lat7c - _vlat_sw) < -1e-9:
-                continue
-            if abs(_ext_d7c - _dj_sw) - _pcr_sw - _shw7c >= CLEARANCE - 1e-9:
-                continue
-            _clip = _vlat_sw - _ls7c * (_pcr_sw + _shw7c + CLEARANCE)
-            if _blocked_lat7c is None or _ls7c * (_blocked_lat7c - _clip) > 1e-9:
-                _blocked_lat7c = _clip
-        if _blocked_lat7c is not None:
-            if _ls7c * (_blocked_lat7c - _v_lat7c) < 1e-9:
-                continue
-            _ext_lat7c = _blocked_lat7c
-
-        # Skip if clipping prevented reaching the outermost clearable via
-        if _ls7c * (_ext_lat7c - _outmost7c[1]) < -1e-9:
-            continue
-
-        # Only extend if endpoint is actually further out than current stub tip
-        _stub_lat7c = _v_lat7c + _ls7c * _lo7c
-        if _ls7c * (_ext_lat7c - _stub_lat7c) <= 1e-6:
-            continue
-
-        # Update final_placed if depth changed (deepen or shallow to _req_d7c)
-        if abs(_ext_d7c - _cur_d7c) > 1e-9:
-            final_placed[_gi7c] = (
-                _pv7c.pad_x + _ls7c * _lo7c * ldx + edx * _ext_d7c,
-                _pv7c.pad_y + _ls7c * _lo7c * ldy + edy * _ext_d7c,
-            )
-
-        # Store lateral extension endpoint
-        _dlat7c = _ext_lat7c - _v_lat7c
-        _pv7c.stub_ext_vx = _pv7c.pad_x + _dlat7c * ldx + edx * _ext_d7c
-        _pv7c.stub_ext_vy = _pv7c.pad_y + _dlat7c * ldy + edy * _ext_d7c
 
     # ------------------------------------------------------------------
     # Post-processing: HS partner suppression
