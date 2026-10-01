@@ -4049,6 +4049,11 @@ def _face_fanout(
                             for _ov, _gr in zip(_group7c, _gr7c))
             _ext_d7c  = min(max(_req_d7c, _pv7c.neckdown_len_mm), FANOUT_DEPTH_CAP)
 
+            # Only extend when shallowing: if the outer via is deeper than the
+            # stub, the stub already clears it axially and no extension is needed.
+            if _ext_d7c >= _cur_d7c - 1e-9:
+                continue
+
             # Outermost via in group clearable at actual _ext_d7c → extension endpoint
             _clearable7c = [_ov for _ov, _gr in zip(_group7c, _gr7c)
                             if _ext_d7c - _ov[2] - _gr - _shw7c >= CLEARANCE - 1e-9]
