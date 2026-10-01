@@ -4190,8 +4190,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
     no_via         = set(cfg.CLEARANCE_AUDIT.get("via_keepout_exclude_refs", []))
     skip_nets      = set(getattr(cfg, "FANOUT_VIA_SKIP_NETS", []))
 
-    # Reset per-run bus-stub accumulator (populated by _face_fanout call site)
-    _run._all_bus_stubs = []
+    # Reset per-run accumulators (populated by _face_fanout call site)
+    _run._all_bus_stubs    = []
+    _run._all_skip_net_pvs = []   # PendingVia stubs for skip-net pads on co-opt faces
 
     hs_map = _hs_net_layer_map()
     sw_map = _sw_net_layer_map()
@@ -4969,22 +4970,102 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
         if not _face_needs_coopt(_face_grp_co, _coopt_sg_clr):
             continue
 
-        # Build pending_set for this call: pads in pending that are in this face group
-        # Use global pending set (all pads present in pending list = get a via)
+        # Build pending_set for this call: pads in pending that get a via, PLUS
+        # skip-net pads augmented below so they enter signal_indices and get
+        # stub_only_vx/vy set by _face_fanout.  Being in pending_set does not
+        # cause a via to be placed — the net_name-in-skip_nets check inside
+        # _face_fanout redirects them to stub_only output regardless.
         _co_pending_set = {(_pv.ref, _pv.pad_num) for _pv in pending}
         # ca = annular ring for the first pad's via size
         _co_ca = _face_grp_co[0].via_annular_mm
 
-        print(f"  [face-fanout] {_co_ref} face ({_co_edx:.0f},{_co_edy:.0f}): "
-              f"{len(_face_grp_co)} pads → co-optimized multi-pass")
+        # Augment face group with skip-net pads on this face.  These pads were
+        # excluded from pending (no via needed) but _face_fanout must see them
+        # so it can avoid placing signal vias on top of them and can generate
+        # lateral stubs for them.  They are NOT added to pending or pending_set,
+        # so _face_fanout treats them as skip-net (stub-only) pads automatically.
+        _co_skip_pvs: list = []
+        _co_fp = _fp_by_ref.get(_co_ref)
+        if _co_fp is not None:
+            _tgt_layer_co = _face_grp_co[0].target_layer_id
+            for _sk_pad in _co_fp.Pads():
+                if _is_pth(_sk_pad):
+                    continue
+                _sk_net = _sk_pad.GetNetname()
+                if not _sk_net or _sk_net.startswith("unconnected"):
+                    continue
+                if _sk_net not in skip_nets:
+                    continue
+                # Only include pads on the same face direction
+                _sk_dx, _sk_dy = escape_direction(_co_fp, _sk_pad,
+                                                   _face_grp_co[0].neckdown_len_mm)
+                if abs(_sk_dx - _co_edx) > 0.01 or abs(_sk_dy - _co_edy) > 0.01:
+                    continue
+                # Reject interior pads (e.g. thermal / exposed pads) whose axial
+                # position is not flush with the face.  Compute axial position as
+                # projection onto escape direction; the face's axial position is
+                # taken from the mean of the signal pads.  Any pad more than 1mm
+                # away along the escape axis is interior, not a perimeter pad.
+                _sk_px = pcbnew.ToMM(_sk_pad.GetPosition().x)
+                _sk_py = pcbnew.ToMM(_sk_pad.GetPosition().y)
+                _sk_axial = _sk_px * _co_edx + _sk_py * _co_edy
+                _face_axial = sum(v.pad_x * _co_edx + v.pad_y * _co_edy
+                                  for v in _face_grp_co) / len(_face_grp_co)
+                if abs(_sk_axial - _face_axial) > 1.0:
+                    continue
+                # Skip if already in the face group (shouldn't happen, but guard)
+                _sk_num = _sk_pad.GetNumber()
+                if any(pv.pad_num == _sk_num for pv in _face_grp_co):
+                    continue
+                _sk_drill, _sk_ann  = via_params(PRIORITY_OTHER)
+                _sk_floor, _sk_nl, _sk_mx = neckdown_params(PRIORITY_OTHER, _sk_net)
+                _sk_pw   = pcbnew.ToMM(_sk_pad.GetSizeX())
+                _sk_ph   = pcbnew.ToMM(_sk_pad.GetSizeY())
+                _sk_nw   = neckdown_stub_width(_sk_floor, _sk_pw, _sk_ph,
+                                               _sk_net, PRIORITY_OTHER)
+                _sk_bb   = _sk_pad.GetBoundingBox()
+                _sk_bbox = (pcbnew.ToMM(_sk_bb.GetLeft()),
+                            pcbnew.ToMM(_sk_bb.GetTop()),
+                            pcbnew.ToMM(_sk_bb.GetRight()),
+                            pcbnew.ToMM(_sk_bb.GetBottom()))
+                _sk_pv = PendingVia(
+                    net_name        = _sk_net,
+                    ref             = _co_ref,
+                    pad_num         = _sk_num,
+                    pad_x           = _sk_px,
+                    pad_y           = _sk_py,
+                    pad_layer_id    = _sk_pad.GetLayer(),
+                    target_layer_id = _tgt_layer_co,
+                    escape_dx       = _co_edx,
+                    escape_dy       = _co_edy,
+                    priority        = PRIORITY_OTHER,
+                    via_drill_mm    = _sk_drill,
+                    via_annular_mm  = _sk_ann,
+                    neckdown_w_mm   = _sk_nw,
+                    neckdown_len_mm = _sk_nl,
+                    max_search_mm   = _sk_mx,
+                    pad_w_mm        = _sk_pw,
+                    pad_h_mm        = _sk_ph,
+                    pad_bbox        = _sk_bbox,
+                )
+                _co_skip_pvs.append(_sk_pv)
 
-        # Sort face group outside-in before passing to _face_fanout
+        _face_grp_aug = _face_grp_co + _co_skip_pvs
+        # Add skip-net pvs to pending_set so _face_fanout includes them in
+        # signal_indices and sets stub_only_vx/vy on them.
+        _co_pending_set.update((_pv.ref, _pv.pad_num) for _pv in _co_skip_pvs)
+
+        print(f"  [face-fanout] {_co_ref} face ({_co_edx:.0f},{_co_edy:.0f}): "
+              f"{len(_face_grp_co)} signal + {len(_co_skip_pvs)} skip-net pads"
+              f" → co-optimized multi-pass")
+
+        # Sort augmented face group outside-in before passing to _face_fanout
         _co_ldx, _co_ldy = -_co_edy, _co_edx
-        _co_fc = sum(v.pad_x * _co_ldx + v.pad_y * _co_ldy for v in _face_grp_co) / len(_face_grp_co)
-        _face_grp_co.sort(key=lambda v: -abs(v.pad_x * _co_ldx + v.pad_y * _co_ldy - _co_fc))
+        _co_fc = sum(v.pad_x * _co_ldx + v.pad_y * _co_ldy for v in _face_grp_aug) / len(_face_grp_aug)
+        _face_grp_aug.sort(key=lambda v: -abs(v.pad_x * _co_ldx + v.pad_y * _co_ldy - _co_fc))
 
         _co_assignments = _face_fanout(
-            _face_grp_co, _pad_obs_early, _co_pending_set,
+            _face_grp_aug, _pad_obs_early, _co_pending_set,
             _coopt_sg_clr, _co_ca, _co_edx, _co_edy,
         )
 
@@ -5005,6 +5086,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
         for _pv_co in _face_grp_co:
             if _pv_co.implicit_keepout:
                 _pv_co.face_fanout_assigned = True  # keepout — skip all further stagger
+
+        # Store skip-net stub pvs for section 6c emission
+        _run._all_skip_net_pvs.extend(_co_skip_pvs)
 
         # Store bus stubs for section 6 emission
         _run._all_bus_stubs.extend(_co_bus_stubs)
@@ -5826,13 +5910,18 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
             print(f"Emitted {_bus_emit_count} co-opt bus stub segment(s).")
 
     # ------------------------------------------------------------------
-    # 6c. Emit stub-only traces from co-optimized face fanout
-    #     (face pads that have stub_only_vx/vy set by _face_fanout)
+    # 6c. Emit stub-only traces from co-optimized face fanout.
+    #     Covers two sources:
+    #     (a) pending pads with face_fanout_assigned + stub_only_vx/vy
+    #     (b) skip-net pads augmented into the face group (not in pending)
     # ------------------------------------------------------------------
+    _so_all_pvs = ([pv for pv in pending
+                    if pv.face_fanout_assigned
+                    and hasattr(pv, 'stub_only_vx') and hasattr(pv, 'stub_only_vy')]
+                   + [pv for pv in getattr(_run, '_all_skip_net_pvs', [])
+                      if hasattr(pv, 'stub_only_vx') and hasattr(pv, 'stub_only_vy')])
     _so_emit_count = 0
-    for _so_pv in pending:
-        if not _so_pv.face_fanout_assigned:
-            continue
+    for _so_pv in _so_all_pvs:
         if not (hasattr(_so_pv, 'stub_only_vx') and hasattr(_so_pv, 'stub_only_vy')):
             continue
         _so_net_obj = board.FindNet(_so_pv.net_name)
