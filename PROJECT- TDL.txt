@@ -4,18 +4,30 @@ claude --dangerously-skip-permissions
 
 python "E:\Claude Projects\claude_autorestart.py"
 
-Neckdown   Teardrop     VIPPO
+[REDACTED]
+
+Neckdown   Teardrop     VIPPO       Radial fanout
+
+
+! git push
 
 
 Tasks
 
 --apply
 
+
 save session state and update all memory files with the current state of things so we can pickup where we left off in a new session.
+
+create the detailed plan and save it to all context and memory files to be referenced in a new session
+
+
 
 Revert to the clean backup
 
 E:\Claude Projects\CC Project Folder\Routing_Phase10_SessionGuide.md 
+
+
 
 
 route_prep_align.py    route_clearance_audit.py
@@ -39,4 +51,20 @@ MIPI1_CLK
 MIPI1_D0
 MIPI1_D1
 USB2
+
+
+implement _face_fanout per the plan in fanout_improvement_plan.md
+
+
+I want to continue where we left off using Python Scripts\debug_u3_north.py to continue testing and working on route_fanout_vias.py I want to run the script only on pads 1-16 of U3 so we can refine the behavior of route_fanout_vias.py Do you understand what I mean? are you going to write code to the debug script or the route_fanout_vias.py script?
+
+run the script on pads 14/15/1/13/2 of U3.
+run the script on pads 14/15/1/13/2/12/3/11/4 of U3.
+run the script on pads 14/15/1/13/2/12/3/11/4/10/5/9/6/8/7 of U3.
+
+
+I manually moved 4 vias and I want the refinement/compaction pass of the route_fanout_vias.py script to be able
+  to do the same thing. check the pcb file. do you understand why I moved the vias to those locations?
+
+compaction pass
 

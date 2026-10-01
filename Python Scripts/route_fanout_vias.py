@@ -83,6 +83,7 @@ class PendingVia:
     netclass:              str   = ""    # KiCad net class name (e.g. "HighSpeed", "Power")
     cluster_real_pads:     list  = None  # [(pad_x, pad_y, neckdown_w_mm), ...] for herringbone cluster primaries
     sandwiched:            bool  = False  # True → non-HS pad between HS pairs on same face; escaped inward
+    face_fanout_assigned:  bool  = False  # True → via position assigned by _face_fanout; skip 1g/1g-2d/run_passes search
 
 
 @dataclass
@@ -192,6 +193,57 @@ def classify(net_name: str,
 # Escape direction
 # ---------------------------------------------------------------------------
 
+def _is_radial_fanout_fp(fp) -> bool:
+    """True if the footprint is a compact multi-sided IC needing radial escape.
+
+    Requires pads on all 4 cardinal faces AND a roughly square bounding box
+    (aspect ratio < 1.5).  This correctly identifies QFN/QFP packages while
+    excluding elongated connectors (SOM, FPC, USB-C) that happen to have pads
+    on multiple faces but should keep cardinal escape directions.
+    """
+    bbox = fp.GetBoundingBox()
+    cx = pcbnew.ToMM(bbox.GetCenter().x)
+    cy = pcbnew.ToMM(bbox.GetCenter().y)
+    w = pcbnew.ToMM(bbox.GetWidth())
+    h = pcbnew.ToMM(bbox.GetHeight())
+    if min(w, h) < 1e-3:
+        return False
+    if max(w, h) / min(w, h) > 1.5:
+        return False  # elongated connector — keep cardinal escape
+    faces: set = set()
+    for pad in fp.Pads():
+        px = pcbnew.ToMM(pad.GetPosition().x)
+        py = pcbnew.ToMM(pad.GetPosition().y)
+        dx, dy = px - cx, py - cy
+        if abs(dx) >= abs(dy):
+            faces.add('E' if dx >= 0.0 else 'W')
+        else:
+            faces.add('S' if dy >= 0.0 else 'N')
+    return len(faces) == 4  # all 4 faces required for true radial fanout
+
+
+def _radial_escape_direction(fp, pad) -> Tuple[float, float]:
+    """Face-perpendicular cardinal escape for each pad on a radial-fanout component.
+
+    Uses the same face-classification as _is_radial_fanout_fp: whichever axis
+    displacement (|dx| vs |dy|) is larger determines the face, and the escape
+    is the cardinal direction perpendicular to that face.  This guarantees
+    0°/90° escape angles for all face pads regardless of their offset within
+    the face, which ensures Phase 3.5 stub-to-pad distances stay at the full
+    face pitch rather than collapsing to a diagonal projection.
+    """
+    bbox = fp.GetBoundingBox()
+    cx = pcbnew.ToMM(bbox.GetCenter().x)
+    cy = pcbnew.ToMM(bbox.GetCenter().y)
+    px = pcbnew.ToMM(pad.GetPosition().x)
+    py = pcbnew.ToMM(pad.GetPosition().y)
+    dx, dy = px - cx, py - cy
+    if abs(dx) >= abs(dy):
+        return (-1.0, 0.0) if dx < 0 else (1.0, 0.0)
+    else:
+        return (0.0, -1.0) if dy < 0 else (0.0, 1.0)
+
+
 def escape_direction(fp, pad, neckdown_len_mm: float = 1.0,
                      preferred_dir: Optional[Tuple[float, float]] = None,
                      ) -> Tuple[float, float]:
@@ -211,6 +263,11 @@ def escape_direction(fp, pad, neckdown_len_mm: float = 1.0,
     sibling check runs.  This keeps HS pair stubs parallel to the route axis
     so P and N exit on the same side and no topological crossing occurs.
     """
+    # Multi-sided components (QFN/QFP with pads on 3+ faces) use radial escape
+    # so each pad gets its own angular corridor instead of sharing a face column.
+    if _is_radial_fanout_fp(fp):
+        return _radial_escape_direction(fp, pad)
+
     bbox = fp.GetBoundingBox()
     cx   = pcbnew.ToMM(bbox.GetCenter().x)
     cy   = pcbnew.ToMM(bbox.GetCenter().y)
@@ -416,9 +473,13 @@ def _pad_obstacle(pad, clearance: float, ref: str = "") -> Obstacle:
     py = pcbnew.ToMM(pad.GetPosition().y)
     sx = pcbnew.ToMM(pad.GetSizeX()) / 2.0
     sy = pcbnew.ToMM(pad.GetSizeY()) / 2.0
-    bb = pad.GetBoundingBox()
-    bbox = (pcbnew.ToMM(bb.GetLeft()),  pcbnew.ToMM(bb.GetTop()),
-            pcbnew.ToMM(bb.GetRight()), pcbnew.ToMM(bb.GetBottom()))
+    angle_rad = math.radians(pad.GetOrientation().AsDegrees())
+    c_a, s_a = math.cos(angle_rad), math.sin(angle_rad)
+    corners_x = [px + sx*c_a - sy*s_a, px - sx*c_a - sy*s_a,
+                 px - sx*c_a + sy*s_a, px + sx*c_a + sy*s_a]
+    corners_y = [py + sx*s_a + sy*c_a, py - sx*s_a + sy*c_a,
+                 py - sx*s_a - sy*c_a, py + sx*s_a - sy*c_a]
+    bbox = (min(corners_x), min(corners_y), max(corners_x), max(corners_y))
     net = pad.GetNetname() or ""
     # Retrieve the net class name via the pad's net info object.
     try:
@@ -542,13 +603,20 @@ def _via_corner(via: "PendingVia") -> Tuple[float, float]:
 def _route_45deg_stub(pad_x: float, pad_y: float,
                       via_x: float, via_y: float,
                       edx: float, edy: float,
+                      axial_first: bool = True,
                       ) -> List[Tuple[float, float, float, float]]:
     """Decompose pad→via into 1 or 2 segments that each lie on a valid 45° angle.
 
-    Always uses diagonal-first routing: exits the pad at 45° immediately,
-    then finishes with a straight segment.  This keeps the stub away from
-    neighboring pad rows (the straight segment lands at the via's coordinate,
-    not the pad's, so it is further from adjacent vias).
+    When axial_first=True (default, used for single-pad stubs): exits the pad
+    straight along the escape direction first, then finishes with a 45° diagonal.
+    The straight segment stays at pad_x, preserving inter-pad corridors for
+    sandwiched non-HS traces.
+
+    When axial_first=False (used for herringbone cluster member stubs): exits the
+    pad at 45° toward the cluster via first, then straight.  Cluster member stubs
+    converge to a centroid via, so the lateral convergence is the primary geometry;
+    keeping the stub at the original pad_x for a long axial segment would run it
+    into adjacent vias.
 
     Returns a list of (x1, y1, x2, y2) tuples; empty list if pad == via.
     """
@@ -573,15 +641,20 @@ def _route_45deg_stub(pad_x: float, pad_y: float,
     lat_dx  = -edy   # unit lateral vector x  (escape rotated +90°)
     lat_dy  =  edx   # unit lateral vector y
 
-    if abs_ec >= abs_lc:
-        # 45° diagonal first (diverges from escape axis immediately), then
-        # straight along the escape axis to via.  This keeps the stub away
-        # from adjacent pad rows compared to "straight first" which would put
-        # a horizontal segment at the pad's exact y-coordinate.
+    if axial_first and abs_ec >= abs_lc:
+        # Axial-first: straight along escape direction, then 45° diagonal to via.
+        # Waypoint is at the end of the straight segment (pad_x stays constant).
+        wx = pad_x + ec_sign * edx * (abs_ec - abs_lc)
+        wy = pad_y + ec_sign * edy * (abs_ec - abs_lc)
+    elif abs_ec >= abs_lc:
+        # Herringbone diagonal-first (used for cluster member stubs).
+        # 45° diagonally toward via_x first (abs_lc steps), then straight along
+        # escape.  Both cluster pads converge to the same waypoint at the via's
+        # lateral position, creating a herringbone that avoids crossing stubs.
         wx = pad_x + ec_sign * edx * abs_lc + lc_sign * lat_dx * abs_lc
         wy = pad_y + ec_sign * edy * abs_lc + lc_sign * lat_dy * abs_lc
     else:
-        # 45° diagonal first, then straight along lateral axis to via.
+        # Lateral-dominant: 45° diagonal first, then straight along lateral axis.
         wx = pad_x + ec_sign * edx * abs_ec + lc_sign * lat_dx * abs_ec
         wy = pad_y + ec_sign * edy * abs_ec + lc_sign * lat_dy * abs_ec
 
@@ -600,8 +673,11 @@ def _stub_segs_for(via: "PendingVia", clearance: float) -> List[StubSeg]:
     hw  = via.neckdown_w_mm / 2.0 + clearance
     net = via.net_name
     nc  = via.netclass
+    _sss_a = round(math.atan2(via.escape_dy, via.escape_dx) / (math.pi / 4.0)) * (math.pi / 4.0)
+    _sss_edx = math.cos(_sss_a)
+    _sss_edy = math.sin(_sss_a)
     raw = _route_45deg_stub(via.pad_x, via.pad_y, via.via_x, via.via_y,
-                             via.escape_dx, via.escape_dy)
+                             _sss_edx, _sss_edy)
     return [StubSeg(x1, y1, x2, y2, hw, via.ref, via.pad_num, net, nc)
             for x1, y1, x2, y2 in raw]
 
@@ -639,6 +715,421 @@ def _load_board_tracks(board, clearance: float,
         except Exception:
             pass
     return segs
+
+
+def _sandwiched_trace_stubs(
+    board,
+    sw_real_pads: list,
+    centroid_by_face: dict,
+    clearance: float,
+    reach_mm: float = 5.0,
+):
+    """Create in-memory StubSeg obstacles AND real PCB_TRACKs for sandwiched pad corridors.
+
+    sw_real_pads: list of (ref, pad_num, net_name, netclass, pad_x, pad_y,
+                           escape_dx, escape_dy, neckdown_w_mm, pad_layer_id)
+    centroid_by_face: (ref, edx_r, edy_r) -> centroid lateral value, for innermost-first ordering.
+
+    Returns (stub_segs, pcb_tracks).  Caller must:
+      - add stub_segs to board_stubs before run_passes
+      - add pcb_tracks to board if apply=True (before run_passes, and again in section 6)
+    """
+    if not sw_real_pads:
+        return [], []
+
+    by_face: Dict[tuple, list] = {}
+    for rec in sw_real_pads:
+        _ref, _pad, _net, _nc, _px, _py, _edx, _edy, _nw, _lid = rec
+        key = (_ref, round(_edx, 4), round(_edy, 4))
+        by_face.setdefault(key, []).append(rec)
+
+    stubs: List[StubSeg] = []
+    tracks = []
+
+    for (ref, edx_r, edy_r), face_recs in by_face.items():
+        lat_dx = -edy_r
+        lat_dy =  edx_r
+        centroid_lat = centroid_by_face.get((ref, edx_r, edy_r), 0.0)
+        face_recs.sort(key=lambda r: abs(
+            (r[4] * lat_dx + r[5] * lat_dy) - centroid_lat
+        ))
+        for rec in face_recs:
+            _ref, _pad, _net, _nc, _px, _py, _edx, _edy, _nw, _lid = rec
+            hw = _nw / 2.0 + clearance
+            stubs.append(StubSeg(
+                x1=_px, y1=_py,
+                x2=_px + _edx * reach_mm,
+                y2=_py + _edy * reach_mm,
+                half_w=hw,
+                ref=_ref, pad_num=_pad,
+                net_name=_net, netclass=_nc,
+            ))
+            net_obj = board.FindNet(_net)
+            if net_obj is None:
+                continue
+            t = pcbnew.PCB_TRACK(board)
+            t.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(_px), pcbnew.FromMM(_py)))
+            t.SetEnd(pcbnew.VECTOR2I(
+                pcbnew.FromMM(_px + _edx * reach_mm),
+                pcbnew.FromMM(_py + _edy * reach_mm),
+            ))
+            t.SetWidth(pcbnew.FromMM(_nw))
+            t.SetLayer(_lid)
+            t.SetNet(net_obj)
+            tracks.append(t)
+
+    return stubs, tracks
+
+
+def _tighten_vias(pending: List["PendingVia"], pad_obs: List[Obstacle],
+                  board_stubs: List[StubSeg], clearance: float,
+                  edge_segs: list = None) -> int:
+    """Compaction pass: pull each placed via as close to its pad as clearance allows.
+
+    Scans from the minimum allowed axial distance outward, stopping at the first
+    position that passes all DRC checks (via circles, stub-to-via, stub-to-stub,
+    edge clearance). Returns the number of vias repositioned.
+    """
+    edge_segs = edge_segs or []
+    tightened = 0
+
+    placed = [v for v in pending if not v.implicit_keepout and not v.via_in_pad]
+
+    for via in placed:
+        edx, edy   = via.escape_dx, via.escape_dy
+        lat_dx     = -edy
+        lat_dy     =  edx
+        lat_off    = via.corner_lat_offset_mm
+
+        cur_ax = (via.via_x - via.pad_x) * edx + (via.via_y - via.pad_y) * edy
+        min_ax = via.neckdown_len_mm
+        if cur_ax <= min_ax + 1e-6:
+            continue
+
+        other_vias = [v for v in placed if v is not via]
+
+        # Stubs from all other placed vias + board stubs (exclude this via's own).
+        ext_stubs: List[StubSeg] = list(board_stubs)
+        for other in other_vias:
+            ext_stubs.extend(_stub_segs_for(other, clearance))
+
+        via_r      = _via_r(via, clearance)
+        via_copper = via.via_drill_mm / 2.0 + via.via_annular_mm
+        stub_hw    = via.neckdown_w_mm / 2.0
+
+        # Scan from minimum axial outward; stop at first valid position.
+        best_ax = cur_ax
+        ax = min_ax
+        while ax <= cur_ax - 1e-6:
+            vx = via.pad_x + edx * ax + lat_dx * lat_off
+            vy = via.pad_y + edy * ax + lat_dy * lat_off
+            ok = True
+
+            # Via circle vs pad obstacles
+            if not _clear_of_obs(vx, vy, via_r, pad_obs,
+                                  via.ref, via.pad_x, via.pad_y,
+                                  excl_net=via.net_name,
+                                  via_copper=via_copper,
+                                  via_net=via.net_name, via_netclass=via.netclass,
+                                  via_ref=via.ref):
+                ok = False
+
+            # Via circle vs other placed via copper
+            if ok:
+                for other in other_vias:
+                    oc = other.via_drill_mm / 2.0 + other.via_annular_mm
+                    if math.hypot(vx - other.via_x, vy - other.via_y) < via_copper + oc + clearance:
+                        ok = False
+                        break
+
+            # Via circle vs board edges
+            if ok and edge_segs:
+                if not _clears_edges(vx, vy, via_r + _BOARD_EDGE_CLEARANCE, edge_segs):
+                    ok = False
+
+            # Via circle vs all stubs (other vias + board)
+            if ok:
+                if not _clear_of_stub_segs(vx, vy, via_r, ext_stubs,
+                                            via.ref, via.pad_num,
+                                            excl_net=via.net_name, clearance=clearance):
+                    ok = False
+
+            # Stub segments vs pad obstacles, stubs, and edges
+            if ok:
+                _old_vx, _old_vy = via.via_x, via.via_y
+                via.via_x, via.via_y = vx, vy
+                segs45 = _route_45deg_stub(via.pad_x, via.pad_y, vx, vy,
+                                            via.escape_dx, via.escape_dy)
+                cx, cy = (segs45[0][2], segs45[0][3]) if segs45 else (vx, vy)
+                stub_ok = _stub_clear(via, cx, cy, pad_obs, clearance,
+                                      ext_stubs, edge_segs)
+                via.via_x, via.via_y = _old_vx, _old_vy
+                if not stub_ok:
+                    ok = False
+
+            # Stub segments vs other via copper circles
+            if ok:
+                segs45 = _route_45deg_stub(via.pad_x, via.pad_y, vx, vy,
+                                            via.escape_dx, via.escape_dy)
+                cx, cy = (segs45[0][2], segs45[0][3]) if segs45 else (vx, vy)
+                bent = len(segs45) > 1
+                for other in other_vias:
+                    oc  = other.via_drill_mm / 2.0 + other.via_annular_mm
+                    thr = stub_hw + clearance + oc
+                    if _dist_to_segment(other.via_x, other.via_y,
+                                        via.pad_x, via.pad_y, cx, cy) < thr:
+                        ok = False
+                        break
+                    if ok and bent and _dist_to_segment(other.via_x, other.via_y,
+                                                         cx, cy, vx, vy) < thr:
+                        ok = False
+                        break
+
+            if ok:
+                best_ax = ax
+                break  # found the minimum valid axial distance
+
+            ax += STEP_MM
+
+        if best_ax < cur_ax - 1e-6:
+            via.via_x = via.pad_x + edx * best_ax + lat_dx * lat_off
+            via.via_y = via.pad_y + edy * best_ax + lat_dy * lat_off
+            tightened += 1
+
+    return tightened
+
+
+def _keepout_escape_length(
+    pad_x: float, pad_y: float, edx: float, edy: float,
+    trace_half_w: float, clearance: float,
+    placed_vias: List["PendingVia"],
+    via_copper_keepout: float = 0.0,
+    pad_obs: list = None,
+    board_stubs: list = None,
+    max_reach_mm: float = 5.0,
+    net_name: str = "",
+) -> float:
+    """Compute the maximum safe escape trace length for a keepout pad.
+
+    Checks placed via copper circles, neckdown stubs, pad obstacles, and
+    board stubs.  Returns the axial distance at which the trace must stop
+    to maintain clearance against all obstacles.
+
+    via_copper_keepout: copper radius of the via that will be placed at the
+    trace endpoint.  When > 0, an additional via-endpoint clearance check
+    ensures the endpoint via does not land inside any placed via's copper.
+    """
+    lat_dx = -edy
+    lat_dy =  edx
+    max_L = max_reach_mm
+    min_L = 0.0  # minimum escape required so via endpoint clears all obstacles
+
+    def _point_limit(cx: float, cy: float, total_r: float) -> float:
+        """Axial limit: escape endpoint must be < this to clear circular obstacle."""
+        ax = (cx - pad_x) * edx + (cy - pad_y) * edy
+        if ax <= 1e-6:
+            return max_reach_mm
+        lx = abs((cx - pad_x) * lat_dx + (cy - pad_y) * lat_dy)
+        if lx >= total_r - 1e-6:
+            return max_reach_mm
+        gap = math.sqrt(max(0.0, total_r * total_r - lx * lx))
+        return ax - gap
+
+    def _rect_axial_limit(bbox: tuple, total_w: float) -> float:
+        """Max axial escape distance before trace corridor (half-width total_w)
+        intersects the pad rectangle bbox=(left,top,right,bottom).
+
+        Transforms all 4 rectangle corners to (axial, lateral) coordinates
+        relative to the escape axis. Uses exact pad rectangle geometry —
+        not obs.r (bounding circle). total_w = trace_half_w + clearance,
+        applied exactly once by the caller. Never double-counts clearance.
+        """
+        lat_dx = -edy
+        lat_dy = edx
+        left, top, right, bottom = bbox
+        corners = ((left, top), (right, top), (right, bottom), (left, bottom))
+        ax_vals  = tuple((cx - pad_x) * edx   + (cy - pad_y) * edy   for cx, cy in corners)
+        lat_vals = tuple((cx - pad_x) * lat_dx + (cy - pad_y) * lat_dy for cx, cy in corners)
+        ax_max  = max(ax_vals)
+        lat_min = min(lat_vals)
+        lat_max = max(lat_vals)
+        # Rectangle entirely outside the lateral corridor — no constraint
+        if lat_min >= total_w - 1e-6 or lat_max <= -(total_w - 1e-6):
+            return max_reach_mm
+        # Rectangle entirely behind the start position — no constraint
+        if ax_max <= 1e-6:
+            return max_reach_mm
+        ax_min = min(ax_vals)
+        # Rectangle straddles start position and overlaps laterally
+        if ax_min <= 1e-6:
+            return 0.0
+        return ax_min
+
+    def _seg_limit(seg: "StubSeg") -> float:
+        """Axial max-L limit imposed by a stub segment (trace corridor check)."""
+        total_r = seg.half_w + trace_half_w
+        best = max_reach_mm
+        for t in (0.0, 1.0):
+            px = seg.x1 + t * (seg.x2 - seg.x1)
+            py = seg.y1 + t * (seg.y2 - seg.y1)
+            best = min(best, _point_limit(px, py, total_r))
+        dx, dy = seg.x2 - seg.x1, seg.y2 - seg.y1
+        dlx = dx * lat_dx + dy * lat_dy
+        if abs(dlx) > 1e-9:
+            t_z = max(0.0, min(1.0, -((seg.x1 - pad_x) * lat_dx + (seg.y1 - pad_y) * lat_dy) / dlx))
+            px = seg.x1 + t_z * dx
+            py = seg.y1 + t_z * dy
+            best = min(best, _point_limit(px, py, total_r))
+        return best
+
+    def _apply_via_point(cx: float, cy: float, total_r: float) -> None:
+        """Update min_L/max_L for a single point obstacle (via endpoint clearance).
+
+        For a circle obstacle at (cx,cy) with radius total_r, the escape via
+        must be placed at axial distance L < (ax-gap) OR L > (ax+gap).
+        If the 'before' option is already excluded by min_L, use 'after'.
+        This avoids falsely rejecting positions that lie past the obstacle.
+        """
+        nonlocal min_L, max_L
+        ax = (cx - pad_x) * edx + (cy - pad_y) * edy
+        if ax <= 1e-6:
+            return
+        lx = abs((cx - pad_x) * lat_dx + (cy - pad_y) * lat_dy)
+        if lx >= total_r - 1e-6:
+            return
+        gap = math.sqrt(max(0.0, total_r * total_r - lx * lx))
+        before = ax - gap
+        after  = ax + gap
+        if before <= min_L:
+            # 'before' region already excluded — must place via past the obstacle
+            min_L = max(min_L, after)
+        else:
+            max_L = min(max_L, before)
+
+    def _seg_via_constraints_parallel(seg: "StubSeg", total_r: float):
+        """Return (seg_min_L, seg_max_L) for a segment parallel to escape direction."""
+        lx = abs((seg.x1 - pad_x) * lat_dx + (seg.y1 - pad_y) * lat_dy)
+        if lx >= total_r - 1e-6:
+            return (0.0, max_reach_mm)
+        ax_t0 = (seg.x1 - pad_x) * edx + (seg.y1 - pad_y) * edy
+        ax_t1 = (seg.x2 - pad_x) * edx + (seg.y2 - pad_y) * edy
+        if ax_t0 > ax_t1:
+            ax_t0, ax_t1 = ax_t1, ax_t0
+        gap = math.sqrt(max(0.0, total_r * total_r - lx * lx))
+        entry = ax_t0 - gap
+        exit_ = ax_t1 + gap
+        if entry <= 0.0:
+            return (exit_, max_reach_mm)
+        else:
+            return (0.0, entry)
+
+    def _apply_seg(seg: "StubSeg") -> None:
+        nonlocal max_L, min_L
+        max_L = min(max_L, _seg_limit(seg))
+        if via_copper_keepout <= 0.0:
+            return
+        total_r = seg.half_w + via_copper_keepout
+        dx, dy = seg.x2 - seg.x1, seg.y2 - seg.y1
+        dlx = dx * lat_dx + dy * lat_dy
+        if abs(dlx) < 1e-9:
+            # Parallel segment: full body-intersection logic
+            seg_min, seg_max = _seg_via_constraints_parallel(seg, total_r)
+            min_L = max(min_L, seg_min)
+            max_L = min(max_L, seg_max)
+        else:
+            # Angled segment: check endpoints and lateral-closest point using
+            # context-aware before/after logic so vias past the obstacle are valid
+            for t in (0.0, 1.0):
+                px = seg.x1 + t * dx
+                py = seg.y1 + t * dy
+                _apply_via_point(px, py, total_r)
+            t_z = max(0.0, min(1.0, -((seg.x1 - pad_x) * lat_dx +
+                                       (seg.y1 - pad_y) * lat_dy) / dlx))
+            _apply_via_point(seg.x1 + t_z * dx, seg.y1 + t_z * dy, total_r)
+            # Interior quadratic: find exact [L1, L2] where via endpoint is within
+            # total_r of the segment interior.  The t_z check above covers the
+            # lateral-axis crossing but misses the case where the perpendicular
+            # foot at the critical L is at a different t than t_z.  Solve
+            # dist²(P(L), segment)² = total_r² as A·L²+B·L+C=0 and restrict to
+            # the sub-range where the foot t_perp(L) is inside [0,1].
+            _seg_s2 = dx * dx + dy * dy
+            if _seg_s2 > 1e-12:
+                _qa = seg.x1 - pad_x; _qb = seg.y1 - pad_y
+                _g_s = _qa * dx + _qb * dy    # (seg.start - pad) · seg_dir
+                _h_s = edx * dx + edy * dy    # esc · seg_dir
+                _a_q = 1.0 - _h_s * _h_s / _seg_s2
+                if _a_q > 1e-9:
+                    _gh_s = _g_s * _h_s / _seg_s2
+                    _b_q = 2.0 * (-edx * _qa - edy * _qb + _gh_s)
+                    _c_q = (_qa * _qa + _qb * _qb
+                            - _g_s * _g_s / _seg_s2 - total_r * total_r)
+                    _disc_q = _b_q * _b_q - 4.0 * _a_q * _c_q
+                    if _disc_q >= 0.0:
+                        _sq_q = math.sqrt(_disc_q)
+                        _l1_q = (-_b_q - _sq_q) / (2.0 * _a_q)
+                        _l2_q = (-_b_q + _sq_q) / (2.0 * _a_q)
+                        # Restrict to L-range where foot t_perp in [0,1]:
+                        # t_perp(L) = (-g_s + L*h_s) / seg_s2
+                        if abs(_h_s) > 1e-9:
+                            _lt0 = _g_s / _h_s           # t_perp=0
+                            _lt1 = (_seg_s2 + _g_s) / _h_s  # t_perp=1
+                            if _lt0 > _lt1:
+                                _lt0, _lt1 = _lt1, _lt0
+                            _l1_eff = max(_l1_q, _lt0)
+                            _l2_eff = min(_l2_q, _lt1)
+                        else:
+                            _l1_eff, _l2_eff = _l1_q, _l2_q
+                        if _l1_eff < _l2_eff - 1e-9:
+                            if _l1_eff <= min_L:
+                                min_L = max(min_L, _l2_eff)
+                            else:
+                                max_L = min(max_L, _l1_eff)
+
+    # 1. Placed via copper circles and their neckdown stubs
+    for ov in placed_vias:
+        via_copper = ov.via_drill_mm / 2.0 + ov.via_annular_mm
+        # Trace corridor constraint
+        max_L = min(max_L, _point_limit(ov.via_x, ov.via_y,
+                                         via_copper + trace_half_w + clearance))
+        # Endpoint via constraint: the via placed at the trace end must also clear
+        # placed via copper (via-to-via clearance, not trace-to-via).
+        # Use _apply_via_point (context-aware before/after) so vias placed PAST
+        # the obstacle are not falsely rejected when before < min_L.
+        if via_copper_keepout > 0.0:
+            _apply_via_point(ov.via_x, ov.via_y,
+                             via_copper + via_copper_keepout + clearance)
+        for seg in _stub_segs_for(ov, clearance):
+            _apply_seg(seg)
+
+    # 2. Pad obstacles (exclude same-net pads).
+    # Uses exact rectangular pad geometry via _rect_axial_limit (obs.bbox) — not
+    # the bounding-circle obs.r.  Clearance applied once: total_w = trace_half_w
+    # + clearance.  No same-footprint filtering — the correct geometry makes it
+    # unnecessary: adjacent same-face pads at 0.5mm pitch have sufficient lateral
+    # clearance from the escape axis and do not constrain max_L.
+    if pad_obs:
+        total_w = trace_half_w + clearance
+        for obs in pad_obs:
+            if obs.net_name == net_name:
+                continue
+            if obs.bbox is not None:
+                max_L = min(max_L, _rect_axial_limit(obs.bbox, total_w))
+            else:
+                # Synthetic obstacle without pad geometry: fall back to circle.
+                max_L = min(max_L, _point_limit(obs.cx, obs.cy,
+                                                 obs.r + total_w))
+
+    # 3. Board stubs / pre-stubs already on the board (exclude same-net)
+    if board_stubs:
+        for seg in board_stubs:
+            if seg.net_name == net_name:
+                continue
+            _apply_seg(seg)
+
+    if min_L > max_L:
+        return 0.0  # no valid via position along this escape direction
+
+    return max_L
 
 
 def _clear_of_stub_segs(px: float, py: float, r: float,
@@ -1368,7 +1859,8 @@ def _can_side_exit(pv: "PendingVia", pad_obs: List[Obstacle],
 
 def _suppress_proximity_via_sharing(pending: List["PendingVia"],
                                      clearance: float,
-                                     pad_obs: List[Obstacle]) -> List["PendingVia"]:
+                                     pad_obs: List[Obstacle],
+                                     fp_by_ref: dict = None) -> List["PendingVia"]:
     """
     For non-HS pads: if two pending vias share the same net and copper layer
     and their pad edges are within via_share_proximity_mm of each other,
@@ -1439,9 +1931,8 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
 
             cluster = [pvs[i] for i in component]
 
-            # Sort by ascending min-clear distance (least constrained by
-            # own pad first), then pick the first that can actually
-            # side-exit given real pad obstacles.
+            # Sort by ascending min-clear (original behaviour: least-constrained
+            # pad first), then pick the first that can actually side-exit.
             def _min_clear(pv: "PendingVia") -> float:
                 if pv.pad_bbox is not None:
                     al, at, ar, ab_ = pv.pad_bbox
@@ -1459,7 +1950,56 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
                 ranked[0]  # fallback: least-constrained geometry
             )
 
-            secondaries = [pv for pv in cluster if pv is not primary]
+            # Post-selection fix: if the chosen primary cannot physically host any
+            # via (pad_min < via_drill — the drill itself won't fit), and a
+            # VIPPO-capable pad exists on the same net IMMEDIATELY ADJACENT to the
+            # primary, prefer it.  This handles the case where a narrow IC pad
+            # (e.g. 0.250mm QFN signal pad) cannot receive a via, while an
+            # immediately-adjacent bypass cap can via-in-pad with reduced annular.
+            #
+            # The adjacency guard (_vippo_adj_mm) prevents this from firing on
+            # distant same-net pads (e.g. another IC 4-5mm away on the same signal
+            # net) — those should each resolve independently, not inherit the via.
+            _min_ann_s = cfg.CLEARANCE_AUDIT.get("via_annular_ring_min_mm", 0.10)
+            _vippo_adj_mm = 2.0
+            if min(primary.pad_w_mm, primary.pad_h_mm) < primary.via_drill_mm:
+                _vippo_alt = next(
+                    (pv for pv in ranked
+                     if pv is not primary
+                     and min(pv.pad_w_mm, pv.pad_h_mm) >= pv.via_drill_mm + 2.0 * _min_ann_s
+                     and _pad_edge_dist(pv, primary) <= _vippo_adj_mm),
+                    None
+                )
+                if _vippo_alt is not None:
+                    primary = _vippo_alt
+
+            # A secondary is suppressed if it is within threshold of the primary directly
+            # AND the same-layer trace between them is physically viable.
+            #
+            # Exception: if the secondary is on a radial fanout footprint (QFN/QFP) AND
+            # is on a DIFFERENT component than the primary, require it to be DIRECTLY
+            # within threshold.  Cross-component traces between QFN faces would have to
+            # cross under IC bodies — not routable.  Without this guard, the
+            # connected-component algorithm creates cross-face chains (e.g. U3/20 LT_3V3
+            # suppressed by R_RST1/1 via an intermediate hop) that suppress vias the
+            # reference board places independently.
+            #
+            # Same-component pads (sec.ref == pri.ref) always use chain-suppress:
+            # on-layer traces within a single footprint's pad ring are always routable
+            # (going around the IC body), so sharing is valid regardless of distance.
+            #
+            # Non-radial-fanout secondaries (bypass caps, connectors, resistors) retain
+            # full chain-suppress behavior — a central bypass cap can suppress a chain of
+            # nearby power-supply pads even if the outermost is >2×threshold from the primary.
+            def _should_suppress(sec: "PendingVia", pri: "PendingVia") -> bool:
+                if fp_by_ref is not None and sec.ref != pri.ref:
+                    fp_sec = fp_by_ref.get(sec.ref)
+                    if fp_sec is not None and _is_radial_fanout_fp(fp_sec):
+                        return _pad_edge_dist(sec, pri) < _threshold
+                return True  # same-component or non-radial: chain-suppress
+
+            secondaries = [pv for pv in cluster if pv is not primary
+                           and _should_suppress(pv, primary)]
             for sec in secondaries:
                 to_suppress.add(id(sec))
 
@@ -1728,6 +2268,11 @@ def _place_group(group: List[PendingVia],
 
         for k, via in enumerate(face_vias):
             if via.via_in_pad or via.implicit_keepout:
+                placed.append(via)
+                continue
+
+            if via.face_fanout_assigned:
+                # Via position assigned by _face_fanout — accept as-is, no search.
                 placed.append(via)
                 continue
 
@@ -2237,6 +2782,28 @@ def _place_group(group: List[PendingVia],
             restore()
             via.implicit_keepout = True
             placed.append(via)
+            # Phase 5: suppress HS partner when one pad in the pair can't escape.
+            # Fires here (not post-run_passes) so partner is caught before its via
+            # is committed.  Retroactively marks an already-placed partner as keepout.
+            if via.priority == PRIORITY_HS:
+                _partner5 = None
+                for _sfx5, _opp5 in (("_P", "_N"), ("_N", "_P"), ("+", "-"), ("-", "+")):
+                    if via.net_name.endswith(_sfx5):
+                        _pnet5 = via.net_name[:-len(_sfx5)] + _opp5
+                        for _pg5 in group:
+                            if (_pg5.ref == via.ref and _pg5.net_name == _pnet5
+                                    and not _pg5.implicit_keepout):
+                                _partner5 = _pg5
+                                break
+                    if _partner5:
+                        break
+                if _partner5 is not None:
+                    _partner5.implicit_keepout = True
+                    _partner5.via_x = _partner5.pad_x
+                    _partner5.via_y = _partner5.pad_y
+                    print(f"  [pair-error] {via.ref}/{via.pad_num} ({via.net_name}): "
+                          f"escape=0 → partner {_partner5.ref}/{_partner5.pad_num} "
+                          f"({_partner5.net_name}) also suppressed")
 
     moved = 0
     for via, (ox, oy, oip, oik) in zip(group, orig):
@@ -2413,6 +2980,9 @@ def _make_neckdown(board, via: PendingVia, net) -> list:
         t.SetNet(net)
         return t
 
+    _mn_snap_a = round(math.atan2(via.escape_dy, via.escape_dx) / (math.pi / 4.0)) * (math.pi / 4.0)
+    _mn_edx_s  = math.cos(_mn_snap_a)
+    _mn_edy_s  = math.sin(_mn_snap_a)
     if via.cluster_real_pads:
         # Herringbone cluster: emit one stub per real pad converging at the via.
         # The primary's pad_x/pad_y was moved to the centroid; emit from each
@@ -2420,7 +2990,8 @@ def _make_neckdown(board, via: PendingVia, net) -> list:
         segs = []
         for px, py, nw in via.cluster_real_pads:
             for seg in _route_45deg_stub(px, py, via.via_x, via.via_y,
-                                         via.escape_dx, via.escape_dy):
+                                         _mn_edx_s, _mn_edy_s,
+                                         axial_first=False):
                 t = pcbnew.PCB_TRACK(board)
                 t.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(seg[0]), pcbnew.FromMM(seg[1])))
                 t.SetEnd  (pcbnew.VECTOR2I(pcbnew.FromMM(seg[2]), pcbnew.FromMM(seg[3])))
@@ -2429,9 +3000,1041 @@ def _make_neckdown(board, via: PendingVia, net) -> list:
                 t.SetNet(net)
                 segs.append(t)
         return segs
+    if hasattr(via, '_col_exit'):
+        # Phase 3.5 col-exit: segment 1 is straight cardinal to col endpoint,
+        # segments 2+ are _route_45deg_stub from col endpoint to via.
+        _mn_cdx, _mn_cdy, _mn_cl, _mn_cex, _mn_cey = via._col_exit
+        segs = [make_seg(via.pad_x, via.pad_y, _mn_cex, _mn_cey)]
+        for seg in _route_45deg_stub(_mn_cex, _mn_cey, via.via_x, via.via_y,
+                                      _mn_edx_s, _mn_edy_s):
+            segs.append(make_seg(*seg))
+        return segs
     raw = _route_45deg_stub(via.pad_x, via.pad_y, via.via_x, via.via_y,
-                             via.escape_dx, via.escape_dy)
+                             _mn_edx_s, _mn_edy_s)
     return [make_seg(*seg) for seg in raw]
+
+
+# ---------------------------------------------------------------------------
+# Co-optimized face-fanout helpers (module-level)
+# ---------------------------------------------------------------------------
+
+def _seg_to_seg_dist(x1: float, y1: float, x2: float, y2: float,
+                     x3: float, y3: float, x4: float, y4: float) -> float:
+    """Minimum distance between two finite line segments."""
+    def _cross2d(ax, ay, bx, by):
+        return ax * by - ay * bx
+    dx1, dy1 = x2 - x1, y2 - y1
+    dx2, dy2 = x4 - x3, y4 - y3
+    denom = _cross2d(dx1, dy1, dx2, dy2)
+    if abs(denom) > 1e-10:
+        t = _cross2d(x3 - x1, y3 - y1, dx2, dy2) / denom
+        u = _cross2d(x3 - x1, y3 - y1, dx1, dy1) / denom
+        if 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0:
+            return 0.0
+    return min(
+        _pt_to_seg_dist(x1, y1, x3, y3, x4, y4),
+        _pt_to_seg_dist(x2, y2, x3, y3, x4, y4),
+        _pt_to_seg_dist(x3, y3, x1, y1, x2, y2),
+        _pt_to_seg_dist(x4, y4, x1, y1, x2, y2),
+    )
+
+
+def _face_needs_coopt(face_pads: list, sg_clr: float) -> bool:
+    """True if stub-to-adjacent-pad-copper gap is too narrow for any trace.
+
+    Uses the physical along-face extent from pad_bbox (which accounts for pad
+    rotation) rather than unrotated pad_w/pad_h dimensions.
+    Gap = pitch_ij - max(half_extent_i, half_extent_j) for each adjacent pair.
+    Needs co-opt when min_gap < min(neckdown_w/2) + sg_clr.
+    """
+    if len(face_pads) < 2:
+        return False
+    edx = face_pads[0].escape_dx
+    edy = face_pads[0].escape_dy
+    if abs(edy) > abs(edx):  # N/S face — along face = X
+        # Use bbox center X (accounts for rotation and clustering repositioning)
+        coords = [(v.pad_bbox[0] + v.pad_bbox[2]) / 2.0 if v.pad_bbox else v.pad_x
+                  for v in face_pads]
+        # Axial (Y/escape-direction) half-extent: determines how far the pad copper
+        # extends into the escape corridor beside each adjacent pad.  A stub escaping
+        # north must travel past this extent before it clears the adjacent pad copper,
+        # so this is the correct dimension for the coopt gap check on N/S faces.
+        halves = [(v.pad_bbox[3] - v.pad_bbox[1]) / 2.0 if v.pad_bbox else v.pad_h_mm / 2.0
+                  for v in face_pads]
+    else:  # E/W face — along face = Y
+        # Use bbox center Y (accounts for rotation and clustering repositioning)
+        coords = [(v.pad_bbox[1] + v.pad_bbox[3]) / 2.0 if v.pad_bbox else v.pad_y
+                  for v in face_pads]
+        # Physical along-face (Y) half-extent from rotated bbox
+        halves = [(v.pad_bbox[3] - v.pad_bbox[1]) / 2.0 if v.pad_bbox else v.pad_h_mm / 2.0
+                  for v in face_pads]
+    order = sorted(range(len(face_pads)), key=lambda i: coords[i])
+    min_gap = float('inf')
+    for k in range(len(order) - 1):
+        i, j = order[k], order[k + 1]
+        pitch = abs(coords[j] - coords[i])
+        gap = pitch - max(halves[i], halves[j])
+        if gap < min_gap:
+            min_gap = gap
+    min_trace_total = min(v.neckdown_w_mm / 2.0 for v in face_pads) + sg_clr
+    return min_gap < min_trace_total
+
+
+def _stub_only_depth(px: float, py: float, edx: float, edy: float,
+                     lat_off: float,
+                     placed_vias: list, trace_hw: float, clearance: float,
+                     min_depth: float = 0.3) -> float:
+    """Return minimum radial depth for a stub-only pad that clears all placed via copper.
+
+    placed_vias: list of (vx, vy, via_copper_r) for already-committed vias.
+    """
+    perp_x, perp_y = -edy, edx
+    depth = min_depth
+    for vx_n, vy_n, via_r_n in placed_vias:
+        need = via_r_n + trace_hw + clearance
+        # Check current depth
+        ex = px + lat_off * perp_x + depth * edx
+        ey = py + lat_off * perp_y + depth * edy
+        if math.hypot(ex - vx_n, ey - vy_n) < need:
+            # Solve ||(px+lat_off*perp + t*e) - (vx,vy)||^2 = need^2
+            A = px + lat_off * perp_x - vx_n
+            B = py + lat_off * perp_y - vy_n
+            p = A * edx + B * edy
+            q = A * A + B * B
+            disc = p * p - (q - need * need)
+            if disc >= 0.0:
+                t = -p + math.sqrt(disc)
+                depth = max(depth, t + 0.050)
+    return depth
+
+
+def _face_fanout(
+    face_pads: list,
+    pad_obs_list: list,
+    pending_set: set,
+    sg_clr: float,
+    ca: float,
+    edx: float,
+    edy: float,
+    step_mm: float = 0.050,
+    max_iter: int = 200,
+) -> list:
+    """Co-optimized multi-pass outside-in fanout for a single dense IC face.
+
+    Implements the signal_indices-only algorithm validated in session 27.
+
+    face_pads   : PendingVia objects for this face (sorted outside-in by caller)
+    pad_obs_list: Obstacle objects for all pads on this component
+    pending_set : set of (ref, pad_num) for pads that get a via
+    sg_clr      : signal clearance (mm)
+    ca          : annular ring (mm) — used to compute via_copper_r per pad
+    edx, edy    : face escape unit cardinal vector (e.g. 0,-1 for north face)
+
+    Returns list of (v, vx, vy) for placed via-bearing pads.
+    Side-effects:
+      - Sets v.implicit_keepout = True on blocked pads.
+      - Sets v.stub_only_vx / v.stub_only_vy on stub-only pads.
+      - _face_fanout._last_bus_stubs = [(x1,y1,x2,y2,nw,net), ...] for this face.
+      - _face_fanout._last_keepout_set = set of global indices declared keepout.
+    """
+    STEP_MM    = step_mm
+    MAX_ITER   = max_iter
+    DEPTH_STEP = 0.025
+    CLEARANCE  = sg_clr
+
+    if not face_pads:
+        _face_fanout._last_bus_stubs   = []
+        _face_fanout._last_keepout_set = set()
+        return []
+
+    n   = len(face_pads)
+    ldx, ldy = -edy, edx
+    _connected = [v for v in face_pads
+                  if v.net_name and not v.net_name.startswith('unconnected')]
+    face_center = (sum(v.pad_x * ldx + v.pad_y * ldy for v in _connected) / len(_connected)
+                   if _connected else
+                   sum(v.pad_x * ldx + v.pad_y * ldy for v in face_pads) / n)
+
+    def _lat_sign(v):
+        return 1.0 if (v.pad_x * ldx + v.pad_y * ldy) >= face_center else -1.0
+
+    # ------------------------------------------------------------------
+    # 0. Spatial pre-filter: keep only obstacles within the fanout envelope.
+    #    pad_obs_list may be the entire board; clip it so _check() stays O(local).
+    #    Fanout vias are placed within a few mm of the face — use face lateral
+    #    half-extent plus FANOUT_DEPTH_CAP (not max_search_mm which is 15 mm).
+    # ------------------------------------------------------------------
+    FANOUT_DEPTH_CAP = 3.5   # mm — reference board's deepest via is 3.045mm
+    _lat_coords = [v.pad_x * ldx + v.pad_y * ldy for v in face_pads]
+    _lat_half   = (max(_lat_coords) - min(_lat_coords)) / 2.0
+    _search_r   = _lat_half + FANOUT_DEPTH_CAP + max(v.via_drill_mm / 2.0 + ca
+                                                      for v in face_pads) + sg_clr + 1.0
+    _cx = sum(v.pad_x for v in face_pads) / n
+    _cy = sum(v.pad_y for v in face_pads) / n
+    pad_obs_list = [
+        _o for _o in pad_obs_list
+        if abs(_o.cx - _cx) < _search_r and abs(_o.cy - _cy) < _search_r
+    ]
+
+    # ------------------------------------------------------------------
+    # 1. Bus groups: adjacency walk in lateral order.
+    #    Consecutive pads sharing the same net form a bus group.
+    #    Non-adjacent same-net pads do NOT form a bus.
+    # ------------------------------------------------------------------
+    _lat_sorted = sorted(range(n),
+                         key=lambda i: face_pads[i].pad_x * ldx + face_pads[i].pad_y * ldy)
+    bus_pad_set = set()
+    bus_groups  = {}   # net_name -> [global_i, ...]
+    _bi = 0
+    while _bi < len(_lat_sorted):
+        _cur_net  = face_pads[_lat_sorted[_bi]].net_name
+        _run_idx  = [_lat_sorted[_bi]]
+        _bi += 1
+        while (_bi < len(_lat_sorted)
+               and face_pads[_lat_sorted[_bi]].net_name == _cur_net):
+            _run_idx.append(_lat_sorted[_bi])
+            _bi += 1
+        if len(_run_idx) >= 2 and _cur_net:
+            bus_pad_set.update(_run_idx)
+            bus_groups[_cur_net] = _run_idx
+
+    # Outermost pad of each bus group escapes via signal_indices (stub only, no via).
+    # Remove it from bus_pad_set so signal_indices picks it up.
+    bus_escape_indices = set()
+    for _bgrp in bus_groups.values():
+        _outer = max(_bgrp, key=lambda i: abs(
+            face_pads[i].pad_x * ldx + face_pads[i].pad_y * ldy - face_center))
+        bus_escape_indices.add(_outer)
+    bus_pad_set -= bus_escape_indices
+
+    # ------------------------------------------------------------------
+    # 2. HS partner map
+    # ------------------------------------------------------------------
+    hs_net_set = set()
+    for v in face_pads:
+        if v.net_name and ('_P' in v.net_name or '_N' in v.net_name):
+            hs_net_set.add(v.net_name)
+
+    hs_partner = {}
+    for i, vi in enumerate(face_pads):
+        if vi.net_name not in hs_net_set:
+            continue
+        partner_net = (vi.net_name[:-2] + '_N' if vi.net_name.endswith('_P')
+                       else vi.net_name[:-2] + '_P')
+        for j, vj in enumerate(face_pads):
+            if j != i and vj.net_name == partner_net:
+                hs_partner[i] = j
+                break
+
+    # ------------------------------------------------------------------
+    # 3. Signal indices: all pads in pending_set that are not bus pads.
+    #    Includes HS pairs and fill-connected pads (FANOUT_VIA_SKIP_NETS).
+    #    Skip-net pads run through the full placement algorithm so their
+    #    lat_off is pushed past neighbor vias; a stub is emitted but no via.
+    #    Sorted outside-in (descending lateral distance from face center).
+    # ------------------------------------------------------------------
+    _skip_nets = set(getattr(cfg, "FANOUT_VIA_SKIP_NETS", []))
+    signal_indices = [
+        i for i in range(n)
+        if (face_pads[i].ref, face_pads[i].pad_num) in pending_set
+        and i not in bus_pad_set
+        and face_pads[i].net_name  # skip no-net pads
+    ]
+    signal_indices.sort(
+        key=lambda i: abs(face_pads[i].pad_x * ldx + face_pads[i].pad_y * ldy - face_center),
+        reverse=True,
+    )
+    global_to_si = {gi: si for si, gi in enumerate(signal_indices)}
+
+    # ------------------------------------------------------------------
+    # 4. Bus obstacle pre-computation
+    # ------------------------------------------------------------------
+    bus_obstacles      = []
+    bus_stubs_to_write = []
+
+    for bnet, indices in bus_groups.items():
+        v0     = face_pads[indices[0]]
+        nw     = v0.neckdown_w_mm
+        bus_hw = nw / 2.0
+        bus_depth = v0.neckdown_len_mm
+
+        if abs(edy) > abs(edx):  # N/S face — escape is Y
+            bus_esc = v0.pad_y + edy * bus_depth
+            xs      = [face_pads[i].pad_x for i in indices]
+            bx_min, bx_max = min(xs), max(xs)
+            bus_obstacles.append({'x1': bx_min, 'y1': bus_esc,
+                                   'x2': bx_max, 'y2': bus_esc,
+                                   'hw': bus_hw, 'net': bnet})
+            bus_stubs_to_write.append((bx_min, bus_esc, bx_max, bus_esc, nw, bnet))
+            for i in indices:
+                px_i = face_pads[i].pad_x
+                py_i = face_pads[i].pad_y
+                bus_obstacles.append({'x1': px_i, 'y1': py_i,
+                                       'x2': px_i, 'y2': bus_esc,
+                                       'hw': bus_hw, 'net': bnet})
+                if i not in bus_escape_indices:
+                    bus_stubs_to_write.append((px_i, py_i, px_i, bus_esc, nw, bnet))
+        else:  # E/W face — escape is X
+            bus_esc = v0.pad_x + edx * bus_depth
+            ys      = [face_pads[i].pad_y for i in indices]
+            by_min, by_max = min(ys), max(ys)
+            bus_obstacles.append({'x1': bus_esc, 'y1': by_min,
+                                   'x2': bus_esc, 'y2': by_max,
+                                   'hw': bus_hw, 'net': bnet})
+            bus_stubs_to_write.append((bus_esc, by_min, bus_esc, by_max, nw, bnet))
+            for i in indices:
+                px_i = face_pads[i].pad_x
+                py_i = face_pads[i].pad_y
+                bus_obstacles.append({'x1': px_i, 'y1': py_i,
+                                       'x2': bus_esc, 'y2': py_i,
+                                       'hw': bus_hw, 'net': bnet})
+                if i not in bus_escape_indices:
+                    bus_stubs_to_write.append((px_i, py_i, bus_esc, py_i, nw, bnet))
+
+    # ------------------------------------------------------------------
+    # 5. Clearance checker
+    # ------------------------------------------------------------------
+    def _check(v, vx, vy, placed):
+        via_copper_r = v.via_drill_mm / 2.0 + ca
+        stub_hw      = v.neckdown_w_mm / 2.0
+        chk_r        = via_copper_r + CLEARANCE
+
+        # 1. via vs pad obstacles
+        for obs in pad_obs_list:
+            if obs.ref == v.ref and obs.net_name == v.net_name:
+                continue
+            if v.net_name and obs.net_name == v.net_name:
+                continue
+            if obs.bbox is not None:
+                d   = _dist_point_to_bbox(vx, vy, obs.bbox)
+                thr = chk_r
+            else:
+                d   = math.hypot(vx - obs.cx, vy - obs.cy)
+                thr = via_copper_r + obs.r
+            if d < thr:
+                return (f"{obs.ref}/{obs.net_name}", d, thr, "via-vs-pad", None)
+
+        # 2. via vs placed vias
+        for j, pc in enumerate(placed):
+            d   = math.hypot(vx - pc['vx'], vy - pc['vy'])
+            thr = via_copper_r + pc['r'] + CLEARANCE
+            if d < thr:
+                return (f"via[{pc['pad_num']}]", d, thr, "via-vs-via", j)
+
+        # 3. via vs placed stub segments (different net only)
+        for j, pc in enumerate(placed):
+            if pc['net'] == v.net_name:
+                continue
+            for x1s, y1s, x2s, y2s in pc['segs']:
+                d   = _dist_to_segment(vx, vy, x1s, y1s, x2s, y2s)
+                thr = via_copper_r + pc['stub_hw'] + CLEARANCE
+                if d < thr:
+                    return (f"stub[{pc['pad_num']}]", d, thr, "via-vs-stub", j)
+
+        # 4. via vs bus obstacles (different net only)
+        for bobs in bus_obstacles:
+            if bobs['net'] == v.net_name:
+                continue
+            d   = _dist_to_segment(vx, vy,
+                                   bobs['x1'], bobs['y1'], bobs['x2'], bobs['y2'])
+            thr = via_copper_r + bobs['hw'] + CLEARANCE
+            if d < thr:
+                return (f"bus/{bobs['net']}", d, thr, "via-vs-bus", None)
+
+        # 4b. via circle vs stub-only minimum stubs (different net only)
+        for _x1s, _y1s, _x2s, _y2s, _shw, _snet in _stub_only_segs:
+            if _snet == v.net_name:
+                continue
+            _d   = _dist_to_segment(vx, vy, _x1s, _y1s, _x2s, _y2s)
+            _thr = via_copper_r + _shw + CLEARANCE
+            if _d < _thr:
+                return ("stub_only", _d, _thr, "via-vs-stub-only", None)
+
+        # 5. stub checks — actual routed 45° segments
+        segs = _route_45deg_stub(v.pad_x, v.pad_y, vx, vy, edx, edy, axial_first=True)
+        if not segs:
+            segs = [(v.pad_x, v.pad_y, vx, vy)]
+
+        for x1, y1, x2, y2 in segs:
+            if math.hypot(x2 - x1, y2 - y1) < 1e-6:
+                continue
+
+            # 5a. stub vs pad obstacles
+            for obs in pad_obs_list:
+                if (obs.ref == v.ref
+                        and abs(obs.cx - v.pad_x) < 0.05
+                        and abs(obs.cy - v.pad_y) < 0.05):
+                    continue
+                if v.net_name and obs.net_name == v.net_name:
+                    continue
+                if obs.bbox is not None:
+                    d   = _seg_bbox_dist(x1, y1, x2, y2, obs.bbox)
+                    thr = stub_hw + CLEARANCE
+                else:
+                    d   = _dist_to_segment(obs.cx, obs.cy, x1, y1, x2, y2)
+                    thr = stub_hw + obs.r
+                if d < thr:
+                    return (f"{obs.ref}/{obs.net_name}", d, thr, "stub-vs-pad", None)
+
+            # 5b. stub vs placed vias
+            for j, pc in enumerate(placed):
+                d   = _dist_to_segment(pc['vx'], pc['vy'], x1, y1, x2, y2)
+                thr = stub_hw + pc['r'] + CLEARANCE
+                if d < thr:
+                    return (f"via[{pc['pad_num']}]", d, thr, "stub-vs-via", j)
+
+            # 5c. stub vs placed stubs (different net only)
+            for j, pc in enumerate(placed):
+                if pc['net'] == v.net_name:
+                    continue
+                for x1s, y1s, x2s, y2s in pc['segs']:
+                    d   = _seg_to_seg_dist(x1, y1, x2, y2, x1s, y1s, x2s, y2s)
+                    thr = stub_hw + pc['stub_hw'] + CLEARANCE
+                    if d < thr:
+                        return (f"stub[{pc['pad_num']}]", d, thr, "stub-vs-stub", j)
+
+            # 5d. stub vs bus obstacles (different net only)
+            for bobs in bus_obstacles:
+                if bobs['net'] == v.net_name:
+                    continue
+                d   = _seg_to_seg_dist(x1, y1, x2, y2,
+                                       bobs['x1'], bobs['y1'],
+                                       bobs['x2'], bobs['y2'])
+                thr = stub_hw + bobs['hw'] + CLEARANCE
+                if d < thr:
+                    return (f"bus/{bobs['net']}", d, thr, "stub-vs-bus", None)
+
+        return None  # clear
+
+    # ------------------------------------------------------------------
+    # 6. Main multi-pass loop — signal pads only, outside-in
+    # ------------------------------------------------------------------
+
+    # Stub-only pads are excluded from signal_indices, so their minimum
+    # stubs are not in `placed` by default.  Pre-compute them as fixed
+    # obstacles so via placement respects the space they occupy.
+    _stub_only_segs = []
+    for _i, _v in enumerate(face_pads):
+        if not _v.net_name or _v.net_name.startswith('unconnected'):
+            continue
+        if _i in bus_pad_set:
+            continue
+        if (_v.ref, _v.pad_num) in pending_set:
+            continue  # via-bearing pad — not stub-only
+        _sx2 = _v.pad_x + edx * _v.neckdown_len_mm
+        _sy2 = _v.pad_y + edy * _v.neckdown_len_mm
+        _stub_only_segs.append((_v.pad_x, _v.pad_y, _sx2, _sy2,
+                                 _v.neckdown_w_mm / 2.0, _v.net_name))
+
+    sig_n        = len(signal_indices)
+    lat_offs_arr = [0.0] * sig_n
+    # Bus escape pads start with a minimum lateral offset so _route_45deg_stub
+    # produces a 45° corner rather than a straight axial line.
+    for _si, _gi in enumerate(signal_indices):
+        if _gi in bus_escape_indices:
+            lat_offs_arr[_si] = 3 * STEP_MM
+    keepout_set  = set()
+    final_placed = {}
+
+    for iteration in range(MAX_ITER):
+        placed        = []
+        pass_result   = {}
+        first_fail_si = None
+        last_blk      = None
+
+        for si, global_i in enumerate(signal_indices):
+            if global_i in keepout_set:
+                continue
+            v            = face_pads[global_i]
+            via_copper_r = v.via_drill_mm / 2.0 + ca
+            lat_off      = lat_offs_arr[si]
+            ls           = _lat_sign(v)
+
+            placed_i   = False
+            if v.pad_bbox is not None:
+                _pah = (v.pad_y - v.pad_bbox[1] if edy < 0 else
+                        v.pad_bbox[3] - v.pad_y  if edy > 0 else
+                        v.pad_x - v.pad_bbox[0]  if edx < 0 else
+                        v.pad_bbox[2] - v.pad_x)
+            else:
+                _pah = (v.pad_h_mm if abs(edy) > 0.5 else v.pad_w_mm) / 2.0
+            depth      = max(v.neckdown_len_mm, _pah + via_copper_r + CLEARANCE)
+            depth_ceil = min(v.max_search_mm, FANOUT_DEPTH_CAP)
+            while depth <= depth_ceil + 1e-9:
+                vx  = v.pad_x + ls * lat_off * ldx
+                vy  = v.pad_y + ls * lat_off * ldy + edy * depth
+                blk = _check(v, vx, vy, placed)
+                if blk is None:
+                    stub_segs = _route_45deg_stub(
+                        v.pad_x, v.pad_y, vx, vy, edx, edy, axial_first=True)
+                    if not stub_segs:
+                        stub_segs = [(v.pad_x, v.pad_y, vx, vy)]
+                    stub_segs = [(x1, y1, x2, y2)
+                                 for x1, y1, x2, y2 in stub_segs
+                                 if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                    placed.append({
+                        'vx':      vx,
+                        'vy':      vy,
+                        'r':       via_copper_r,
+                        'stub_hw': v.neckdown_w_mm / 2.0,
+                        'segs':    stub_segs,
+                        'pad_i':   global_i,
+                        'net':     v.net_name,
+                        'pad_num': v.pad_num,
+                    })
+                    pass_result[global_i] = (vx, vy)
+                    placed_i = True
+                    break
+                last_blk = blk
+                depth += DEPTH_STEP
+
+            if not placed_i:
+                first_fail_si = si
+                break
+
+        if first_fail_si is None:
+            final_placed = pass_result
+            break
+
+        # Blocker analysis
+        name, d, thr, kind, blk_j = last_blk or ('?', 0, 0, '?', None)
+        fail_global_i = signal_indices[first_fail_si]
+        if kind in ('via-vs-bus', 'stub-vs-bus'):
+            keepout_set.add(fail_global_i)
+            if fail_global_i in hs_partner:
+                keepout_set.add(hs_partner[fail_global_i])
+
+        elif blk_j is not None:
+            blocking_gi = placed[blk_j]['pad_i']
+            if blocking_gi in global_to_si:
+                lat_offs_arr[global_to_si[blocking_gi]] += STEP_MM
+            else:
+                keepout_set.add(fail_global_i)
+                if fail_global_i in hs_partner:
+                    keepout_set.add(hs_partner[fail_global_i])
+
+        elif kind in ('via-vs-pad', 'stub-vs-pad', 'via-vs-stub-only'):
+            # Fixed obstacle (board pad or stub-only minimum stub) — push the
+            # failing pad's own lat_off so the axial stub segment shortens and
+            # clears the obstacle laterally.  Cap at _PAD_OBS_LAT_CAP steps
+            # (~2.5 mm, matching the reference board's max lat_off of 1.3 mm).
+            _PAD_OBS_LAT_CAP = 50
+            if lat_offs_arr[first_fail_si] < _PAD_OBS_LAT_CAP * STEP_MM - 1e-9:
+                lat_offs_arr[first_fail_si] += STEP_MM
+            else:
+                lat_offs_arr[first_fail_si] = 0.0
+                keepout_set.add(fail_global_i)
+                if fail_global_i in hs_partner:
+                    keepout_set.add(hs_partner[fail_global_i])
+
+        else:
+            outer_si = next(
+                (s for s in range(first_fail_si - 1, -1, -1)
+                 if signal_indices[s] not in keepout_set),
+                None,
+            )
+            if outer_si is not None:
+                lat_offs_arr[outer_si] += STEP_MM
+            else:
+                keepout_set.add(fail_global_i)
+                if fail_global_i in hs_partner:
+                    keepout_set.add(hs_partner[fail_global_i])
+
+        if all(gi in keepout_set for gi in signal_indices):
+            break
+
+    else:
+        final_placed = pass_result
+
+    # ------------------------------------------------------------------
+    # 7. Iterative compaction: reduce each via to minimum (outside-in, converging)
+    # ------------------------------------------------------------------
+    MAX_COMPACT_ROUNDS = 20
+    for _round in range(MAX_COMPACT_ROUNDS):
+        _improved = False
+        for si, gi in enumerate(signal_indices):
+            if gi not in final_placed or gi in keepout_set:
+                continue
+            vx_cur, vy_cur = final_placed[gi]
+            v         = face_pads[gi]
+            ls        = _lat_sign(v)
+            lat_off   = lat_offs_arr[si]
+            cur_axial = abs((vx_cur - v.pad_x) * edx + (vy_cur - v.pad_y) * edy)
+
+            other_placed = []
+            for sj, gj in enumerate(signal_indices):
+                if gj == gi or gj not in final_placed or gj in keepout_set:
+                    continue
+                vxj, vyj = final_placed[gj]
+                pvj  = face_pads[gj]
+                if pvj.net_name in _skip_nets:
+                    # Skip-net pads have a position in final_placed but no via is emitted.
+                    # Use r=0 (no via circle) so via-vs-via check doesn't block real vias,
+                    # but keep the full stub geometry so stub-vs-stub checks still fire.
+                    _sk_segs = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
+                                                 edx, edy, axial_first=True)
+                    if not _sk_segs:
+                        _sk_segs = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
+                    _sk_segs = [(x1, y1, x2, y2) for x1, y1, x2, y2 in _sk_segs
+                                if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                    other_placed.append({
+                        'vx': vxj, 'vy': vyj, 'r': 0.0,
+                        'stub_hw': pvj.neckdown_w_mm / 2.0,
+                        'segs': _sk_segs,
+                        'pad_i': gj, 'net': pvj.net_name, 'pad_num': pvj.pad_num,
+                    })
+                    continue
+                pcrj = pvj.via_drill_mm / 2.0 + ca
+                segsj = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
+                                          edx, edy, axial_first=True)
+                if not segsj:
+                    segsj = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
+                segsj = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segsj
+                         if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                other_placed.append({
+                    'vx': vxj, 'vy': vyj, 'r': pcrj,
+                    'stub_hw': pvj.neckdown_w_mm / 2.0,
+                    'segs': segsj,
+                    'pad_i': gj,
+                    'net': pvj.net_name,
+                    'pad_num': pvj.pad_num,
+                })
+
+            _vcr = v.via_drill_mm / 2.0 + ca
+            _thr = _vcr + CLEARANCE
+
+            def _own_depth_floor(lo, _v=v, _ls=ls, _thr=_thr, _ldx=ldx, _ldy=ldy,
+                                 _edy=edy, _edx=edx):
+                """Min axial depth at lateral offset lo so via copper clears own pad."""
+                vx_t = _v.pad_x + _ls * lo * _ldx
+                if _v.pad_bbox is None:
+                    return (_v.pad_h_mm if abs(_edy) > 0.5 else _v.pad_w_mm) / 2.0 + _thr
+                L, T, R, B = _v.pad_bbox
+                xd = max(0.0, L - vx_t, vx_t - R)
+                if xd >= _thr:
+                    return 0.0
+                yn = math.sqrt(max(0.0, _thr * _thr - xd * xd))
+                if   _edy < 0: return max(0.0, _v.pad_y - T + yn)
+                elif _edy > 0: return max(0.0, B - _v.pad_y + yn)
+                elif _edx < 0: return max(0.0, _v.pad_x - L + yn)
+                else:          return max(0.0, R - _v.pad_x + yn)
+
+            cur_cost  = math.hypot(lat_off, cur_axial)
+            best_vx, best_vy = vx_cur, vy_cur
+            best_cost = cur_cost
+
+            # Strategy A: reduce axial depth at current lat_off
+            depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off))
+            while depth_A < cur_axial - 1e-9:
+                vx_A = v.pad_x + ls * lat_off * ldx
+                vy_A = v.pad_y + ls * lat_off * ldy + edy * depth_A
+                if _check(v, vx_A, vy_A, other_placed) is None:
+                    c = math.hypot(lat_off, depth_A)
+                    if c < best_cost:
+                        best_cost, best_vx, best_vy = c, vx_A, vy_A
+                    break
+                depth_A += DEPTH_STEP
+
+            # Strategy B: push lateral offset outward at minimum own-pad depth
+            for _lsn in range(1, 31):
+                lat_B = lat_off + _lsn * STEP_MM
+                df    = _own_depth_floor(lat_B)
+                vx_B  = v.pad_x + ls * lat_B * ldx
+                vy_B  = v.pad_y + ls * lat_B * ldy + edy * df
+                if _check(v, vx_B, vy_B, other_placed) is None:
+                    c = math.hypot(lat_B, df)
+                    if c < best_cost:
+                        best_cost, best_vx, best_vy = c, vx_B, vy_B
+                        lat_offs_arr[si] = lat_B
+                    if df <= 1e-9:
+                        break  # depth=0; cost=lat_B only grows from here
+
+            # Strategy C: pull lateral offset inward, find minimum passing depth at each
+            # lat. After outside-in placement, a via may have been pushed far outward to
+            # avoid a neighbor that has since compacted inward — this strategy retreats it.
+            _lat_C_steps = max(0, int(round(lat_off / STEP_MM)))
+            for _lsm in range(1, _lat_C_steps + 1):
+                lat_C = lat_off - _lsm * STEP_MM
+                if lat_C < -1e-9:
+                    lat_C = 0.0
+                df_C = max(v.neckdown_len_mm, _own_depth_floor(lat_C))
+                depth_C = df_C
+                while True:
+                    _cost_C = math.hypot(lat_C, depth_C)
+                    if _cost_C >= best_cost - 1e-9:
+                        break
+                    if depth_C > cur_axial + 1e-9:
+                        break
+                    vx_C = v.pad_x + ls * lat_C * ldx
+                    vy_C = v.pad_y + ls * lat_C * ldy + edy * depth_C
+                    if _check(v, vx_C, vy_C, other_placed) is None:
+                        c = math.hypot(lat_C, depth_C)
+                        if c < best_cost:
+                            best_cost, best_vx, best_vy = c, vx_C, vy_C
+                            lat_offs_arr[si] = lat_C
+                        break  # found minimum depth at this lat_C
+                    depth_C += DEPTH_STEP
+                if lat_C <= 1e-9:
+                    break
+
+            if best_cost < cur_cost - 1e-9:
+                final_placed[gi] = (best_vx, best_vy)
+                _improved = True
+
+        if not _improved:
+            break
+
+    # ------------------------------------------------------------------
+    # 7b. Pair depth equalization: for each HS pair both vias get the
+    #     minimum shared depth where both clear all obstacles simultaneously.
+    #     If current lateral separation is less than the via-to-via minimum,
+    #     the outer via is first pushed outward to achieve minimum separation
+    #     before the shared depth scan.
+    # ------------------------------------------------------------------
+    def _pair_depth_floor(pv, ls_, lat_):
+        """Own-pad depth floor for an arbitrary pad at given lateral offset."""
+        pcr_ = pv.via_drill_mm / 2.0 + ca
+        thr_ = pcr_ + CLEARANCE
+        vx_t = pv.pad_x + ls_ * lat_ * ldx
+        if pv.pad_bbox is None:
+            return (pv.pad_h_mm if abs(edy) > 0.5 else pv.pad_w_mm) / 2.0 + thr_
+        L, T, R, B = pv.pad_bbox
+        xd = max(0.0, L - vx_t, vx_t - R)
+        if xd >= thr_:
+            return 0.0
+        yn = math.sqrt(max(0.0, thr_ * thr_ - xd * xd))
+        if   edy < 0: return max(0.0, pv.pad_y - T + yn)
+        elif edy > 0: return max(0.0, B - pv.pad_y + yn)
+        elif edx < 0: return max(0.0, pv.pad_x - L + yn)
+        else:         return max(0.0, R - pv.pad_x + yn)
+
+    _processed_pairs = set()
+    for _si, _gi in enumerate(signal_indices):
+        _gj = hs_partner.get(_gi)
+        if _gj is None:
+            continue
+        _sj = global_to_si.get(_gj)
+        if _sj is None:
+            continue
+        _pair_key = (min(_gi, _gj), max(_gi, _gj))
+        if _pair_key in _processed_pairs:
+            continue
+        _processed_pairs.add(_pair_key)
+
+        if _gi not in final_placed or _gj not in final_placed:
+            continue
+        if _gi in keepout_set or _gj in keepout_set:
+            continue
+
+        vi = face_pads[_gi]
+        vj = face_pads[_gj]
+        vxi_c, vyi_c = final_placed[_gi]
+        vxj_c, vyj_c = final_placed[_gj]
+        ls_i  = _lat_sign(vi)
+        ls_j  = _lat_sign(vj)
+        lat_i = lat_offs_arr[_si]
+        lat_j = lat_offs_arr[_sj]
+        pcr_i = vi.via_drill_mm / 2.0 + ca
+        pcr_j = vj.via_drill_mm / 2.0 + ca
+
+        di = abs((vxi_c - vi.pad_x) * edx + (vyi_c - vi.pad_y) * edy)
+        dj = abs((vxj_c - vj.pad_x) * edx + (vyj_c - vj.pad_y) * edy)
+        d_max = max(di, dj)
+
+        if abs(di - dj) < DEPTH_STEP:
+            continue  # already equal enough
+
+        # Lateral coordinates of the two vias (signed projection onto ldx/ldy axis)
+        via_lat_i = vi.pad_x * ldx + vi.pad_y * ldy + ls_i * lat_i
+        via_lat_j = vj.pad_x * ldx + vj.pad_y * ldy + ls_j * lat_j
+        cur_lat_sep = abs(via_lat_i - via_lat_j)
+        min_lat_sep = pcr_i + pcr_j + CLEARANCE
+
+        # Working lateral offsets — may be increased for the outer via if the
+        # pair's current lateral separation is less than the via-to-via minimum.
+        lat_i_w, lat_j_w = lat_i, lat_j
+        if cur_lat_sep < min_lat_sep - 1e-9:
+            extra = min_lat_sep - cur_lat_sep
+            # Push the outer via (further from face_center) outward
+            dist_i = abs(via_lat_i - face_center)
+            dist_j = abs(via_lat_j - face_center)
+            if dist_i >= dist_j:
+                lat_i_w = lat_i + extra
+            else:
+                lat_j_w = lat_j + extra
+
+        d_floor_i = max(vi.neckdown_len_mm, _pair_depth_floor(vi, ls_i, lat_i_w))
+        d_floor_j = max(vj.neckdown_len_mm, _pair_depth_floor(vj, ls_j, lat_j_w))
+        d_floor   = max(d_floor_i, d_floor_j)
+
+        # Base other_placed: all signal vias except both pair members
+        _base_op = []
+        for _sk2, _gk2 in enumerate(signal_indices):
+            if _gk2 == _gi or _gk2 == _gj:
+                continue
+            if _gk2 not in final_placed or _gk2 in keepout_set:
+                continue
+            vxk, vyk = final_placed[_gk2]
+            pvk      = face_pads[_gk2]
+            segs_k   = _route_45deg_stub(pvk.pad_x, pvk.pad_y, vxk, vyk,
+                                         edx, edy, axial_first=True)
+            if not segs_k:
+                segs_k = [(pvk.pad_x, pvk.pad_y, vxk, vyk)]
+            segs_k = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segs_k
+                      if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+            if pvk.net_name in _skip_nets:
+                _base_op.append({'vx': vxk, 'vy': vyk, 'r': 0.0,
+                                  'stub_hw': pvk.neckdown_w_mm / 2.0,
+                                  'segs': segs_k, 'pad_i': _gk2,
+                                  'net': pvk.net_name, 'pad_num': pvk.pad_num})
+            else:
+                _base_op.append({'vx': vxk, 'vy': vyk,
+                                  'r': pvk.via_drill_mm / 2.0 + ca,
+                                  'stub_hw': pvk.neckdown_w_mm / 2.0,
+                                  'segs': segs_k, 'pad_i': _gk2,
+                                  'net': pvk.net_name, 'pad_num': pvk.pad_num})
+
+        # Scan upward from d_floor to find minimum shared depth
+        best_shared    = None
+        best_lat_i_out = lat_i_w
+        best_lat_j_out = lat_j_w
+        _d_try = d_floor
+        while _d_try <= d_max + 1e-9:
+            vx_i_t = vi.pad_x + ls_i * lat_i_w * ldx + edx * _d_try
+            vy_i_t = vi.pad_y + ls_i * lat_i_w * ldy + edy * _d_try
+            vx_j_t = vj.pad_x + ls_j * lat_j_w * ldx + edx * _d_try
+            vy_j_t = vj.pad_y + ls_j * lat_j_w * ldy + edy * _d_try
+
+            segs_j_t = _route_45deg_stub(vj.pad_x, vj.pad_y, vx_j_t, vy_j_t,
+                                         edx, edy, axial_first=True)
+            if not segs_j_t:
+                segs_j_t = [(vj.pad_x, vj.pad_y, vx_j_t, vy_j_t)]
+            segs_j_t = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segs_j_t
+                        if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+            op_for_i = _base_op + [{'vx': vx_j_t, 'vy': vy_j_t, 'r': pcr_j,
+                                     'stub_hw': vj.neckdown_w_mm / 2.0,
+                                     'segs': segs_j_t, 'pad_i': _gj,
+                                     'net': vj.net_name, 'pad_num': vj.pad_num}]
+
+            segs_i_t = _route_45deg_stub(vi.pad_x, vi.pad_y, vx_i_t, vy_i_t,
+                                         edx, edy, axial_first=True)
+            if not segs_i_t:
+                segs_i_t = [(vi.pad_x, vi.pad_y, vx_i_t, vy_i_t)]
+            segs_i_t = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segs_i_t
+                        if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+            op_for_j = _base_op + [{'vx': vx_i_t, 'vy': vy_i_t, 'r': pcr_i,
+                                     'stub_hw': vi.neckdown_w_mm / 2.0,
+                                     'segs': segs_i_t, 'pad_i': _gi,
+                                     'net': vi.net_name, 'pad_num': vi.pad_num}]
+
+            if (_check(vi, vx_i_t, vy_i_t, op_for_i) is None
+                    and _check(vj, vx_j_t, vy_j_t, op_for_j) is None):
+                best_shared = _d_try
+                break
+            _d_try += DEPTH_STEP
+
+        if best_shared is not None and best_shared < d_max - 1e-9:
+            final_placed[_gi] = (vi.pad_x + ls_i * lat_i_w * ldx + edx * best_shared,
+                                  vi.pad_y + ls_i * lat_i_w * ldy + edy * best_shared)
+            final_placed[_gj] = (vj.pad_x + ls_j * lat_j_w * ldx + edx * best_shared,
+                                  vj.pad_y + ls_j * lat_j_w * ldy + edy * best_shared)
+            lat_offs_arr[_si] = lat_i_w
+            lat_offs_arr[_sj] = lat_j_w
+
+    # ------------------------------------------------------------------
+    # 7 (second pass): Re-compact after pair depth equalization so all
+    #     via-bearing pads benefit from the updated pair positions.
+    # ------------------------------------------------------------------
+    for _round in range(MAX_COMPACT_ROUNDS):
+        _improved = False
+        for si, gi in enumerate(signal_indices):
+            if gi not in final_placed or gi in keepout_set:
+                continue
+            vx_cur, vy_cur = final_placed[gi]
+            v         = face_pads[gi]
+            ls        = _lat_sign(v)
+            lat_off   = lat_offs_arr[si]
+            cur_axial = abs((vx_cur - v.pad_x) * edx + (vy_cur - v.pad_y) * edy)
+
+            other_placed = []
+            for sj, gj in enumerate(signal_indices):
+                if gj == gi or gj not in final_placed or gj in keepout_set:
+                    continue
+                vxj, vyj = final_placed[gj]
+                pvj  = face_pads[gj]
+                if pvj.net_name in _skip_nets:
+                    _sk_segs = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
+                                                 edx, edy, axial_first=True)
+                    if not _sk_segs:
+                        _sk_segs = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
+                    _sk_segs = [(x1, y1, x2, y2) for x1, y1, x2, y2 in _sk_segs
+                                if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                    other_placed.append({
+                        'vx': vxj, 'vy': vyj, 'r': 0.0,
+                        'stub_hw': pvj.neckdown_w_mm / 2.0,
+                        'segs': _sk_segs,
+                        'pad_i': gj, 'net': pvj.net_name, 'pad_num': pvj.pad_num,
+                    })
+                    continue
+                pcrj = pvj.via_drill_mm / 2.0 + ca
+                segsj = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
+                                          edx, edy, axial_first=True)
+                if not segsj:
+                    segsj = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
+                segsj = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segsj
+                         if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                other_placed.append({
+                    'vx': vxj, 'vy': vyj, 'r': pcrj,
+                    'stub_hw': pvj.neckdown_w_mm / 2.0,
+                    'segs': segsj,
+                    'pad_i': gj,
+                    'net': pvj.net_name,
+                    'pad_num': pvj.pad_num,
+                })
+
+            _vcr = v.via_drill_mm / 2.0 + ca
+            _thr = _vcr + CLEARANCE
+
+            def _own_depth_floor(lo, _v=v, _ls=ls, _thr=_thr, _ldx=ldx, _ldy=ldy,
+                                 _edy=edy, _edx=edx):
+                vx_t = _v.pad_x + _ls * lo * _ldx
+                if _v.pad_bbox is None:
+                    return (_v.pad_h_mm if abs(_edy) > 0.5 else _v.pad_w_mm) / 2.0 + _thr
+                L, T, R, B = _v.pad_bbox
+                xd = max(0.0, L - vx_t, vx_t - R)
+                if xd >= _thr:
+                    return 0.0
+                yn = math.sqrt(max(0.0, _thr * _thr - xd * xd))
+                if   _edy < 0: return max(0.0, _v.pad_y - T + yn)
+                elif _edy > 0: return max(0.0, B - _v.pad_y + yn)
+                elif _edx < 0: return max(0.0, _v.pad_x - L + yn)
+                else:          return max(0.0, R - _v.pad_x + yn)
+
+            cur_cost  = math.hypot(lat_off, cur_axial)
+            best_vx, best_vy = vx_cur, vy_cur
+            best_cost = cur_cost
+
+            # Strategy A: reduce axial depth at current lat_off
+            depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off))
+            while depth_A < cur_axial - 1e-9:
+                vx_A = v.pad_x + ls * lat_off * ldx
+                vy_A = v.pad_y + ls * lat_off * ldy + edy * depth_A
+                if _check(v, vx_A, vy_A, other_placed) is None:
+                    c = math.hypot(lat_off, depth_A)
+                    if c < best_cost:
+                        best_cost, best_vx, best_vy = c, vx_A, vy_A
+                    break
+                depth_A += DEPTH_STEP
+
+            # Strategy B: push lateral offset outward at minimum own-pad depth
+            for _lsn in range(1, 31):
+                lat_B = lat_off + _lsn * STEP_MM
+                df    = _own_depth_floor(lat_B)
+                vx_B  = v.pad_x + ls * lat_B * ldx
+                vy_B  = v.pad_y + ls * lat_B * ldy + edy * df
+                if _check(v, vx_B, vy_B, other_placed) is None:
+                    c = math.hypot(lat_B, df)
+                    if c < best_cost:
+                        best_cost, best_vx, best_vy = c, vx_B, vy_B
+                        lat_offs_arr[si] = lat_B
+                    if df <= 1e-9:
+                        break
+
+            # Strategy C: pull lateral offset inward, find minimum passing depth
+            _lat_C_steps = max(0, int(round(lat_off / STEP_MM)))
+            for _lsm in range(1, _lat_C_steps + 1):
+                lat_C = lat_off - _lsm * STEP_MM
+                if lat_C < -1e-9:
+                    lat_C = 0.0
+                df_C = max(v.neckdown_len_mm, _own_depth_floor(lat_C))
+                depth_C = df_C
+                while True:
+                    _cost_C = math.hypot(lat_C, depth_C)
+                    if _cost_C >= best_cost - 1e-9:
+                        break
+                    if depth_C > cur_axial + 1e-9:
+                        break
+                    vx_C = v.pad_x + ls * lat_C * ldx
+                    vy_C = v.pad_y + ls * lat_C * ldy + edy * depth_C
+                    if _check(v, vx_C, vy_C, other_placed) is None:
+                        c = math.hypot(lat_C, depth_C)
+                        if c < best_cost:
+                            best_cost, best_vx, best_vy = c, vx_C, vy_C
+                            lat_offs_arr[si] = lat_C
+                        break
+                    depth_C += DEPTH_STEP
+                if lat_C <= 1e-9:
+                    break
+
+            if best_cost < cur_cost - 1e-9:
+                final_placed[gi] = (best_vx, best_vy)
+                _improved = True
+
+        if not _improved:
+            break
+
+    # ------------------------------------------------------------------
+    # Post-processing: HS partner suppression
+    # ------------------------------------------------------------------
+    for global_i in list(keepout_set):
+        if global_i in hs_partner:
+            partner_i = hs_partner[global_i]
+            keepout_set.add(partner_i)
+            final_placed.pop(partner_i, None)
+
+    # Mark implicit keepouts on the PendingVia objects
+    for global_i in keepout_set:
+        if hasattr(face_pads[global_i], 'implicit_keepout'):
+            face_pads[global_i].implicit_keepout = True
+
+    # ------------------------------------------------------------------
+    # Stub-only pads: keep stub short, capped BEFORE any laterally-close via
+    # ------------------------------------------------------------------
+    for i, v in enumerate(face_pads):
+        if not v.net_name or v.net_name.startswith('unconnected'):
+            continue  # no-net or unconnected pad — not routable, skip entirely
+        if i in bus_pad_set:
+            continue
+        if (v.ref, v.pad_num) in pending_set:
+            continue  # via-bearing pad, handled above
+
+        stub_hw   = v.neckdown_w_mm / 2.0
+        v_lat     = v.pad_x * ldx + v.pad_y * ldy
+        axial_ext = v.neckdown_len_mm  # minimum; keep as short as possible
+
+        for gi, (vx, vy) in final_placed.items():
+            pv        = face_pads[gi]
+            placed_cr = pv.via_drill_mm / 2.0 + ca
+            via_lat   = vx * ldx + vy * ldy
+            if abs(via_lat - v_lat) < placed_cr + stub_hw + CLEARANCE:
+                via_axial   = abs((vx - v.pad_x) * edx + (vy - v.pad_y) * edy)
+                axial_limit = via_axial - placed_cr - stub_hw - CLEARANCE
+                if axial_limit > v.neckdown_len_mm:
+                    axial_ext = min(axial_ext, axial_limit)
+                # else via is within neckdown range — unavoidable at minimum stub
+
+        v.stub_only_vx = v.pad_x
+        v.stub_only_vy = v.pad_y + edy * axial_ext
+
+    # Store side-effect data for _run() and debug harness
+    _face_fanout._last_bus_stubs   = bus_stubs_to_write
+    _face_fanout._last_keepout_set = keepout_set
+
+    # Return (v, vx, vy) for via-bearing pads; skip-net pads get stub_only attrs.
+    result = []
+    for gi, (vx, vy) in final_placed.items():
+        if gi in keepout_set:
+            continue
+        pv = face_pads[gi]
+        if pv.net_name in _skip_nets or gi in bus_escape_indices:
+            # Fill-connected or bus-escape pad: emit stub to the
+            # compaction-computed endpoint but place no via.
+            pv.stub_only_vx = vx
+            pv.stub_only_vy = vy
+        else:
+            result.append((pv, vx, vy))
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -2443,6 +4046,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
     min_annular_mm = cfg.CLEARANCE_AUDIT.get("via_annular_ring_min_mm", 0.10)
     no_via         = set(cfg.CLEARANCE_AUDIT.get("via_keepout_exclude_refs", []))
     skip_nets      = set(getattr(cfg, "FANOUT_VIA_SKIP_NETS", []))
+
+    # Reset per-run bus-stub accumulator (populated by _face_fanout call site)
+    _run._all_bus_stubs = []
 
     hs_map = _hs_net_layer_map()
     sw_map = _sw_net_layer_map()
@@ -2625,7 +4231,14 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
     # escape_direction() they can get perpendicular escape directions,
     # guaranteeing a stub crossing.  For each HS pair on the same ref,
     # align N's escape direction to P's so both stubs are parallel.
+    #
+    # Exception: radial fanout components — P and N each have their own correct
+    # radial direction.  Aligning N to P would overwrite N's direction and cause
+    # both to escape the same way, colliding.
     from collections import defaultdict
+    _fp_by_ref: Dict[str, object] = {
+        fp.GetReference(): fp for fp in board.GetFootprints()
+    }
     _by_ref_net: Dict[str, Dict[str, PendingVia]] = defaultdict(dict)
     for _pv in pending:
         _by_ref_net[_pv.ref][_pv.net_name] = _pv
@@ -2651,6 +4264,10 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
             _pv_n = _net_map.get(_n_net)
             if _pv_p is None or _pv_n is None:
                 continue
+            _fp_1b = _fp_by_ref.get(_ref)
+            if _fp_1b is not None and _is_radial_fanout_fp(_fp_1b):
+                _hs_pairs_aligned.add((_ref, _p_net, _n_net))
+                continue  # radial escape — each pad keeps its own direction
             _align_pair(_pv_p, _pv_n)
             _hs_pairs_aligned.add((_ref, _p_net, _n_net))
 
@@ -2681,6 +4298,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
                 _n_net = _pv_n.net_name
                 if (_ref, _p_net, _n_net) in _hs_pairs_aligned:
                     break  # already done in pass 1
+                _fp_2b = _fp_by_ref.get(_ref)
+                if _fp_2b is not None and _is_radial_fanout_fp(_fp_2b):
+                    break  # radial escape — each pad keeps its own direction
                 _align_pair(_pv_p, _pv_n)
                 break
 
@@ -2715,6 +4335,69 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
                       f"< {_min_sep:.3f}mm needed for cross-routing clearance")
 
     # ------------------------------------------------------------------
+    # Sandwiched non-HS pad detection: non-HS pads flanked by HS pairs
+    # on the same chip face cannot escape outward through the HS via wall
+    # (insufficient lateral gap at 0.4mm pitch). Mark them sandwiched=True
+    # so they are excluded from proximity via sharing suppression — they
+    # still need their own via attempt (or become implicit keepouts). Their
+    # traces must route around flanking HS vias via route_critical.py.
+    #
+    # Runs BEFORE p-offset so the p-offset direction can be flipped when
+    # the natural offset direction would push a P-via toward a sandwiched pad.
+    # ------------------------------------------------------------------
+    _sandwich_pitch_tol = 0.45  # 0.4mm pitch + 0.05mm tolerance
+    for _pv in pending:
+        if _pv.priority == PRIORITY_HS or _pv.implicit_keepout:
+            continue
+        _same_face_hs = [
+            _hp for _hp in pending
+            if _hp.priority == PRIORITY_HS
+            and _hp.ref == _pv.ref
+            and abs(_hp.escape_dx - _pv.escape_dx) < 0.01
+            and abs(_hp.escape_dy - _pv.escape_dy) < 0.01
+        ]
+        if not _same_face_hs:
+            continue
+        # Lateral unit vector (90° CCW from escape direction).
+        _s_lat_dx = -_pv.escape_dy
+        _s_lat_dy =  _pv.escape_dx
+        _pv_lat   = _pv.pad_x * _s_lat_dx + _pv.pad_y * _s_lat_dy
+        # Check for HS pad within one pitch on both lateral sides.
+        _hs_above = any(
+            0.001 < ((_hp.pad_x * _s_lat_dx + _hp.pad_y * _s_lat_dy) - _pv_lat)
+                  < _sandwich_pitch_tol
+            for _hp in _same_face_hs
+        )
+        _hs_below = any(
+            0.001 < (_pv_lat - (_hp.pad_x * _s_lat_dx + _hp.pad_y * _s_lat_dy))
+                  < _sandwich_pitch_tol
+            for _hp in _same_face_hs
+        )
+        if not (_hs_above and _hs_below):
+            continue
+        _pv.sandwiched = True
+        print(f"  [sandwiched] {_pv.ref}/{_pv.pad_num} ({_pv.net_name}): sandwiched")
+
+    # Save real pad positions now (before cluster merging at step 1f changes pad_x to centroid).
+    _sw_real_pads = [
+        (pv.ref, pv.pad_num, pv.net_name, pv.netclass,
+         pv.pad_x, pv.pad_y, pv.escape_dx, pv.escape_dy,
+         pv.neckdown_w_mm, pv.pad_layer_id)
+        for pv in pending if pv.sandwiched
+    ]
+    # HS centroid per face — for innermost-first ordering in _sandwiched_trace_stubs.
+    _sw_centroid_by_face: Dict[tuple, float] = {}
+    for _pv2 in pending:
+        if _pv2.priority != PRIORITY_HS:
+            continue
+        _fk2 = (_pv2.ref, round(_pv2.escape_dx, 4), round(_pv2.escape_dy, 4))
+        _lat_proj2 = (_pv2.pad_x * (-_pv2.escape_dy)
+                      + _pv2.pad_y * _pv2.escape_dx)
+        _sw_centroid_by_face.setdefault(_fk2, []).append(_lat_proj2)
+    _sw_centroid_by_face = {k: sum(v) / len(v)
+                             for k, v in _sw_centroid_by_face.items()}
+
+    # ------------------------------------------------------------------
     # 1b-post2: HS pair P-offset pre-assignment.
     # For HS P/N pairs on the same face (same ref + same escape direction),
     # pre-assign the P via a minimum lateral offset away from N's escape
@@ -2736,6 +4419,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
     for _pv in pending:
         if _pv.priority != PRIORITY_HS:
             continue
+        _fp_pv = _fp_by_ref.get(_pv.ref)
+        if _fp_pv and _is_radial_fanout_fp(_fp_pv):
+            continue  # radial fanout: P and N escape at distinct radial angles; lat_off undefined
         _face_key = (_pv.ref, _pv.escape_dx, _pv.escape_dy)
         for _sfx, _opp in _PAIR_SFXS_OFF:
             if _pv.net_name.endswith(_sfx) or _pv.net_name.endswith(_opp):
@@ -2787,74 +4473,35 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
                 _n_lat = (_pv_n_off.pad_x * _ldx_off
                           + _pv_n_off.pad_y * _ldy_off)
                 _lat_sign = -1.0 if _p_lat < _n_lat else +1.0
+                # If the natural p-offset direction would push P toward a physically
+                # sandwiched pad, flip it so P moves away.  Only fires for pads
+                # that sandwiched detection has already flagged — these are non-HS
+                # pads trapped between HS pairs with no step-1e escape.
+                # HS N pads are NOT included: they use step-1e and do not need the
+                # P via to move; including them causes cascade flips that block
+                # adjacent N pads (J_DSI1 0.5mm pitch geometry is fundamentally
+                # unroutable for every N pad simultaneously at these via sizes).
+                _sw_in_pdir = any(
+                    _sw.sandwiched
+                    and _sw.ref == _pv_p_off.ref
+                    and abs(_sw.escape_dx - _pv_p_off.escape_dx) < 0.01
+                    and abs(_sw.escape_dy - _pv_p_off.escape_dy) < 0.01
+                    and 0 < _lat_sign * (
+                        (_sw.pad_x * _ldx_off + _sw.pad_y * _ldy_off) - _p_lat
+                    ) < _pad_pitch * 2
+                    for _sw in pending
+                    if _sw is not _pv_p_off
+                )
+                if _sw_in_pdir:
+                    _lat_sign = -_lat_sign
+                    print(f"  [p-offset-flip] {_pv_p_off.ref}/{_pv_p_off.pad_num} "
+                          f"({_pv_p_off.net_name}): direction flipped away from sandwiched pad")
                 _pv_p_off.corner_lat_offset_mm = _lat_sign * _min_lat
                 _pv_p_off.via_x, _pv_p_off.via_y = _via_corner(_pv_p_off)
                 print(f"  [p-offset] {_pv_p_off.ref}/{_pv_p_off.pad_num}"
                       f" ({_pv_p_off.net_name}): lat_off"
                       f" {_lat_sign * _min_lat:+.3f}mm"
                       f" (pitch={_pad_pitch:.3f}mm min_lat={_min_lat:.3f}mm)")
-
-    # ------------------------------------------------------------------
-    # Sandwiched non-HS pad detection: non-HS pads sitting between HS
-    # pairs on the same chip face cannot escape outward (HS via wall
-    # blocks — inter-via gap ~0.08mm at 0.4mm pitch) or laterally
-    # (adjacent HS pad gap 0.2mm, trace needs 0.5mm). Flip their escape
-    # direction inward so their vias land behind the chip pad inner edge
-    # in the chip interior space where there are no obstacles.
-    # ------------------------------------------------------------------
-    _sandwich_pitch_tol = 0.45  # 0.4mm pitch + 0.05mm tolerance
-    for _pv in pending:
-        if _pv.priority == PRIORITY_HS or _pv.implicit_keepout:
-            continue
-        _same_face_hs = [
-            _hp for _hp in pending
-            if _hp.priority == PRIORITY_HS
-            and _hp.ref == _pv.ref
-            and abs(_hp.escape_dx - _pv.escape_dx) < 0.01
-            and abs(_hp.escape_dy - _pv.escape_dy) < 0.01
-        ]
-        if not _same_face_hs:
-            continue
-        # Lateral unit vector (90° CCW from escape direction).
-        _s_lat_dx = -_pv.escape_dy
-        _s_lat_dy =  _pv.escape_dx
-        _pv_lat   = _pv.pad_x * _s_lat_dx + _pv.pad_y * _s_lat_dy
-        # Check for HS pad within one pitch on both lateral sides.
-        _hs_above = any(
-            0.001 < ((_hp.pad_x * _s_lat_dx + _hp.pad_y * _s_lat_dy) - _pv_lat)
-                  < _sandwich_pitch_tol
-            for _hp in _same_face_hs
-        )
-        _hs_below = any(
-            0.001 < (_pv_lat - (_hp.pad_x * _s_lat_dx + _hp.pad_y * _s_lat_dy))
-                  < _sandwich_pitch_tol
-            for _hp in _same_face_hs
-        )
-        if not (_hs_above and _hs_below):
-            continue
-        # Compute minimum inward depth: via must clear all adjacent HS pad
-        # inner corners (pad_inner_edge + geometric clearance from via circle).
-        _s_hs_half_len  = max(max(_hp.pad_w_mm, _hp.pad_h_mm) / 2.0
-                              for _hp in _same_face_hs)
-        _s_adj_lats     = sorted(
-            abs((_hp.pad_x * _s_lat_dx + _hp.pad_y * _s_lat_dy) - _pv_lat)
-            for _hp in _same_face_hs
-        )
-        _s_hs_half_narr = min(min(_hp.pad_w_mm, _hp.pad_h_mm) / 2.0
-                              for _hp in _same_face_hs)
-        _s_lat_clr      = _s_adj_lats[0] - _s_hs_half_narr
-        _s_via_r        = _pv.via_drill_mm / 2.0 + _pv.via_annular_mm
-        _s_inward_depth = (
-            _s_hs_half_len
-            + math.sqrt(max(0.0, (_s_via_r + _ca_clr) ** 2 - _s_lat_clr ** 2))
-            + 0.05
-        )
-        _pv.sandwiched      = True
-        _pv.escape_dx       = -_pv.escape_dx
-        _pv.escape_dy       = -_pv.escape_dy
-        _pv.neckdown_len_mm = max(_pv.neckdown_len_mm, _s_inward_depth)
-        print(f"  [sandwiched] {_pv.ref}/{_pv.pad_num} ({_pv.net_name}):"
-              f" inward escape, min_depth={_s_inward_depth:.3f}mm")
 
     # HS first, then switching, then other — determines displacement priority.
     # Within HS pairs on the same face: P-suffix vias are processed before
@@ -2956,7 +4603,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
         _fp_ref = _fp.GetReference()
         for _pad in _fp.Pads():
             _pad_obs_early.append(_pad_obstacle(_pad, clearance, _fp_ref))
-    pending = _suppress_proximity_via_sharing(pending, clearance, _pad_obs_early)
+    pending = _suppress_proximity_via_sharing(pending, clearance, _pad_obs_early, _fp_by_ref)
 
     # ------------------------------------------------------------------
     # 1e. Same-column corner offset
@@ -3152,6 +4799,80 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
               f"(|k|={abs(_xk):.3f})")
 
     # ------------------------------------------------------------------
+    # 1f-co. Co-optimized multi-pass face fanout for dense faces
+    # ------------------------------------------------------------------
+    # For each radial-fanout component face, check if the stub-to-adjacent-
+    # pad-copper gap is too narrow for any trace to pass.  If so, call
+    # _face_fanout to assign via positions using the multi-pass outside-in
+    # algorithm.  Marks v.face_fanout_assigned=True and sets v.via_x,
+    # v.via_y.  Steps 1g, 1g-2d, and run_passes() skip these pads.
+    _coopt_sg_clr = _ca["via_clearance_mm"]
+
+    _coopt_by_face: Dict[tuple, List[PendingVia]] = defaultdict(list)
+    for _pv_co in pending:
+        _fp_co = _fp_by_ref.get(_pv_co.ref)
+        if (_fp_co and _is_radial_fanout_fp(_fp_co)
+                and not _pv_co.implicit_keepout
+                and not _pv_co.via_in_pad):
+            _fkey_co = (_pv_co.ref,
+                        round(_pv_co.escape_dx, 4),
+                        round(_pv_co.escape_dy, 4))
+            _coopt_by_face[_fkey_co].append(_pv_co)
+
+    for _fkey_co, _face_grp_co in _coopt_by_face.items():
+        _co_ref  = _fkey_co[0]
+        _co_edx  = _fkey_co[1]
+        _co_edy  = _fkey_co[2]
+        if not _face_needs_coopt(_face_grp_co, _coopt_sg_clr):
+            continue
+
+        # Build pending_set for this call: pads in pending that are in this face group
+        # Use global pending set (all pads present in pending list = get a via)
+        _co_pending_set = {(_pv.ref, _pv.pad_num) for _pv in pending}
+        # ca = annular ring for the first pad's via size
+        _co_ca = _face_grp_co[0].via_annular_mm
+
+        print(f"  [face-fanout] {_co_ref} face ({_co_edx:.0f},{_co_edy:.0f}): "
+              f"{len(_face_grp_co)} pads → co-optimized multi-pass")
+
+        # Sort face group outside-in before passing to _face_fanout
+        _co_ldx, _co_ldy = -_co_edy, _co_edx
+        _co_fc = sum(v.pad_x * _co_ldx + v.pad_y * _co_ldy for v in _face_grp_co) / len(_face_grp_co)
+        _face_grp_co.sort(key=lambda v: -abs(v.pad_x * _co_ldx + v.pad_y * _co_ldy - _co_fc))
+
+        _co_assignments = _face_fanout(
+            _face_grp_co, _pad_obs_early, _co_pending_set,
+            _coopt_sg_clr, _co_ca, _co_edx, _co_edy,
+        )
+
+        # Collect bus stubs and keepout set from side-effect storage
+        _co_bus_stubs = getattr(_face_fanout, '_last_bus_stubs', [])
+        _co_keepout_set = getattr(_face_fanout, '_last_keepout_set', set())
+
+        for _pv_co, _vx_co, _vy_co in _co_assignments:
+            _pv_co.via_x = _vx_co
+            _pv_co.via_y = _vy_co
+            _pv_co.face_fanout_assigned = True
+            _pv_co.neckdown_len_mm = math.hypot(
+                _vx_co - _pv_co.pad_x, _vy_co - _pv_co.pad_y)
+
+        # Pads that were NOT placed and NOT keepout go through normal 1g/1g-2d stagger.
+        # (These are sandwiched pads that _face_fanout classifies as obstacles only.)
+        # face_fanout_assigned is set ONLY on placed pads and keepout pads here.
+        for _pv_co in _face_grp_co:
+            if _pv_co.implicit_keepout:
+                _pv_co.face_fanout_assigned = True  # keepout — skip all further stagger
+
+        # Store bus stubs for section 6 emission
+        _run._all_bus_stubs.extend(_co_bus_stubs)
+
+        _placed_co = len(_co_assignments)
+        _ko_co = sum(1 for v in _face_grp_co if v.implicit_keepout)
+        print(f"  [face-fanout] {_co_ref} face ({_co_edx:.0f},{_co_edy:.0f}): "
+              f"{_placed_co} placed, {_ko_co} keepout, "
+              f"{len(_co_bus_stubs)} bus-stub segments")
+
+    # ------------------------------------------------------------------
     # 1g. Greedy per-face via stagger
     # ------------------------------------------------------------------
     # For every group of pads that share the same component ref AND the
@@ -3188,6 +4909,8 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
 
     _face_groups: Dict[tuple, List[PendingVia]] = defaultdict(list)
     for _pv_sg in pending:
+        if _pv_sg.face_fanout_assigned:
+            continue
         _face_groups[(_pv_sg.ref,
                       _pv_sg.escape_dx,
                       _pv_sg.escape_dy)].append(_pv_sg)
@@ -3254,6 +4977,149 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
 
             _placed_sg.append((_pad_lat_sg, _pv_sg.neckdown_len_mm, _vpd_sg, _pv_sg))
 
+    # ------------------------------------------------------------------
+    # 1g-2d. 2D stagger for radial fanout components
+    # ------------------------------------------------------------------
+    # After snap removal, each radial fanout pad has a unique float escape
+    # direction → 1-member face groups above → existing stagger does nothing.
+    # This pass groups them by ref alone and uses a closed-form 2D constraint
+    # so no two via circles on the same component overlap.
+    #
+    # For via i vs already-assigned via j at position (vx_j, vy_j):
+    #   A = pad_xi - vx_j,  B = pad_yi - vy_j,  D = A²+B²
+    #   sep = r_i + r_j + clearance
+    #   If D >= sep²: no constraint from j.
+    #   C = A*edx_i + B*edy_i
+    #   min_n_i = sqrt(max(0, C²+sep²−D)) − C
+    # Process innermost-first (ascending pad distance from component centre).
+    # ------------------------------------------------------------------
+
+    def _stagger_neckdown_2d(vi: PendingVia, assigned: list) -> float:
+        n_min = vi.neckdown_len_mm
+        r_i = vi.via_drill_mm / 2.0 + vi.via_annular_mm
+        for vj in assigned:
+            r_j = vj.via_drill_mm / 2.0 + vj.via_annular_mm
+            sep = r_i + r_j + _sg_clr
+            vx_j, vy_j = vj.via_x, vj.via_y  # use actual position (col-exit vias != _via_corner)
+            A = vi.pad_x - vx_j
+            B = vi.pad_y - vy_j
+            D = A * A + B * B
+            C = A * vi.escape_dx + B * vi.escape_dy
+            # Minimum squared distance along the escape path: at n=−C when C<0 (path
+            # passes near vj), else at n=0.  Only skip when that minimum clears sep.
+            _d2_min = D - C * C if C < 0.0 else D
+            if _d2_min >= sep * sep:
+                continue
+            n_req = math.sqrt(max(0.0, C * C + sep * sep - D)) - C
+            if n_req > n_min:
+                n_min = n_req
+        return n_min
+
+    _radial_face_groups: Dict[str, List[PendingVia]] = defaultdict(list)
+    for _pv_r2 in pending:
+        if _pv_r2.face_fanout_assigned:
+            continue
+        _fp_r2 = _fp_by_ref.get(_pv_r2.ref)
+        if _fp_r2 and _is_radial_fanout_fp(_fp_r2):
+            _radial_face_groups[_pv_r2.ref].append(_pv_r2)
+
+    for _rref, _rgrp in _radial_face_groups.items():
+        if len(_rgrp) < 2:
+            continue
+        _rfp = _fp_by_ref.get(_rref)
+        if _rfp:
+            _rbbox = _rfp.GetBoundingBox()
+            _rcx = pcbnew.ToMM(_rbbox.GetCenter().x)
+            _rcy = pcbnew.ToMM(_rbbox.GetCenter().y)
+            _rgrp.sort(key=lambda pv: math.hypot(pv.pad_x - _rcx, pv.pad_y - _rcy))
+        _assigned_r2: List[PendingVia] = []
+        for _pv_r2 in _rgrp:
+            _nl_r2 = _stagger_neckdown_2d(_pv_r2, _assigned_r2)
+            if _nl_r2 > _pv_r2.neckdown_len_mm + 1e-6:
+                _old_r2 = _pv_r2.neckdown_len_mm
+                _pv_r2.neckdown_len_mm = _nl_r2
+                _pv_r2.via_x, _pv_r2.via_y = _via_corner(_pv_r2)
+                print(f"  [stagger-2d] {_pv_r2.ref}/{_pv_r2.pad_num} "
+                      f"({_pv_r2.net_name}): neckdown {_old_r2:.3f}→{_nl_r2:.3f}mm")
+
+            # Phase 3.5 Part A: verify the neckdown stub segment clears all
+            # adjacent pad copper.  Increasing neckdown does NOT help for
+            # corner pads (the minimum lateral distance to the adjacent pad is
+            # at the stub START and is determined by geometry, not length).
+            # Scan from n_min upward to confirm; if all n fail → mark keepout.
+            # IMPORTANT: check using the snapped escape direction (same direction
+            # _make_neckdown actually emits the stub), not the raw radial direction.
+            _35_trace_hw = _pv_r2.neckdown_w_mm / 2.0
+            _35_snap_a = (round(math.atan2(_pv_r2.escape_dy, _pv_r2.escape_dx)
+                                / (math.pi / 4.0)) * (math.pi / 4.0))
+            _35_edx_s = math.cos(_35_snap_a)
+            _35_edy_s = math.sin(_35_snap_a)
+            _35_n = _pv_r2.neckdown_len_mm
+            _35_stub_ok = False
+            _35_max_n = 15.0
+            while _35_n <= _35_max_n + 1e-9:
+                _35_vx = _pv_r2.pad_x + _35_edx_s * _35_n
+                _35_vy = _pv_r2.pad_y + _35_edy_s * _35_n
+                _35_ok = True
+                for _obs35 in _pad_obs_early:
+                    if _obs35.net_name == _pv_r2.net_name:
+                        continue
+                    if _obs35.ref != _pv_r2.ref:
+                        continue  # only check adjacent pads on same footprint
+                    if _obs35.bbox is not None:
+                        if _seg_bbox_dist(_pv_r2.pad_x, _pv_r2.pad_y,
+                                          _35_vx, _35_vy,
+                                          _obs35.bbox) < _35_trace_hw + _sg_clr:
+                            _35_ok = False
+                            break
+                    else:
+                        if (_pt_to_seg_dist(_obs35.cx, _obs35.cy,
+                                            _pv_r2.pad_x, _pv_r2.pad_y,
+                                            _35_vx, _35_vy)
+                                < _obs35.r + _35_trace_hw + _sg_clr):
+                            _35_ok = False
+                            break
+                if _35_ok:
+                    if _35_n > _pv_r2.neckdown_len_mm + 1e-6:
+                        _pv_r2.neckdown_len_mm = _35_n
+                        _pv_r2.via_x = _35_vx
+                        _pv_r2.via_y = _35_vy
+                        print(f"  [stagger-2d-stub] {_pv_r2.ref}/{_pv_r2.pad_num} "
+                              f"({_pv_r2.net_name}): neckdown extended to {_35_n:.3f}mm "
+                              f"for stub clearance")
+                    _35_stub_ok = True
+                    break
+                _35_n += STEP_MM
+
+            if not _35_stub_ok:
+                # Stub clearance geometrically insufficient — mark as implicit keepout.
+                # Section 4a will attempt col-exit with the full obstacle set.
+                print(f"  [stagger-2d-ko] {_pv_r2.ref}/{_pv_r2.pad_num} "
+                      f"({_pv_r2.net_name}): stub clearance failed, marking keepout")
+                _pv_r2.implicit_keepout = True
+                _pv_r2.via_x = _pv_r2.pad_x
+                _pv_r2.via_y = _pv_r2.pad_y
+                if _pv_r2.priority == PRIORITY_HS:
+                    for _sfx35, _opp35 in (("_P", "_N"), ("_N", "_P"),
+                                           ("+", "-"), ("-", "+")):
+                        if _pv_r2.net_name.endswith(_sfx35):
+                            _pnet35 = _pv_r2.net_name[:-len(_sfx35)] + _opp35
+                            for _pg35 in _rgrp:
+                                if (_pg35.ref == _pv_r2.ref
+                                        and _pg35.net_name == _pnet35
+                                        and not _pg35.implicit_keepout):
+                                    _pg35.implicit_keepout = True
+                                    _pg35.via_x = _pg35.pad_x
+                                    _pg35.via_y = _pg35.pad_y
+                                    print(f"  [pair-error] {_pv_r2.ref}/{_pv_r2.pad_num} "
+                                          f"({_pv_r2.net_name}): stagger stub fail "
+                                          f"→ partner {_pg35.ref}/{_pg35.pad_num} "
+                                          f"({_pg35.net_name}) also suppressed")
+                                    break
+                continue  # do not add to _assigned_r2
+
+            _assigned_r2.append(_pv_r2)
+
     hs_c = sum(1 for v in pending if v.priority == PRIORITY_HS)
     sw_c = sum(1 for v in pending if v.priority == PRIORITY_SW)
     ot_c = sum(1 for v in pending if v.priority == PRIORITY_OTHER)
@@ -3277,15 +5143,303 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
     # 3. Multi-pass conflict resolution
     # ------------------------------------------------------------------
     board_stubs = _load_board_tracks(board, clearance)
+
+    # Emit real PCB_TRACKs for sandwiched pad escape corridors and inject
+    # matching StubSeg obstacles.  Using real positions saved before cluster
+    # merging so corridor centres are correct.  Tracks are written to board
+    # now (apply mode) so run_passes sees them as physical obstacles; they
+    # are re-emitted in section 6 after section 5 removes them.
+    # Corridor-width filter: skip sandwiched stubs that would permanently
+    # block adjacent HS via placement.  A 5mm straight stub at lateral position X
+    # blocks HS vias whose pad is within (stub_hw_bare + hs_via_copper_r + clearance)
+    # of X (_clear_of_stub_segs threshold).  For U3 north face at 0.400mm pitch,
+    # threshold = 0.100 + 0.300 + 0.150 = 0.550mm > 0.400mm — every stub blocks
+    # its immediate HS neighbours.  Skip such stubs; stagger-2d places HS vias
+    # in the now-clear corridor.  Skipped sandwiched pads remain in _sw_real_pads
+    # so section 6 handles their escape trace + via independently.
+    _hs_pads_by_face: Dict[tuple, list] = {}
+    for _pv_sf in pending:
+        if _pv_sf.priority == PRIORITY_HS:
+            _fk_sf = (_pv_sf.ref,
+                      round(_pv_sf.escape_dx, 4),
+                      round(_pv_sf.escape_dy, 4))
+            _hs_pads_by_face.setdefault(_fk_sf, []).append(_pv_sf)
+    _hs_drill_sf, _hs_annular_sf = via_params(PRIORITY_HS)
+    _hs_via_copper_r_sf = _hs_drill_sf / 2.0 + _hs_annular_sf
+    _sw_real_pads_for_stubs = []
+    for _rec_sf in _sw_real_pads:
+        (_rref_sf, _rpad_sf, _rnet_sf, _rnc_sf,
+         _rpx_sf, _rpy_sf, _redx_sf, _redy_sf,
+         _rnw_sf, _rlid_sf) = _rec_sf
+        _fk_sf = (_rref_sf,
+                  round(_redx_sf, 4),
+                  round(_redy_sf, 4))
+        _hs_face_sf = _hs_pads_by_face.get(_fk_sf, [])
+        _lat_dx_sf, _lat_dy_sf = -_redy_sf, _redx_sf  # 90° CCW from escape
+        _sw_lat_pos_sf = _rpx_sf * _lat_dx_sf + _rpy_sf * _lat_dy_sf
+        _corridor_thr_sf = _rnw_sf / 2.0 + _hs_via_copper_r_sf + clearance
+        _corridor_clear_sf = all(
+            abs((_hp_sf.pad_x * _lat_dx_sf + _hp_sf.pad_y * _lat_dy_sf)
+                - _sw_lat_pos_sf) >= _corridor_thr_sf
+            for _hp_sf in _hs_face_sf
+        )
+        if _corridor_clear_sf:
+            _sw_real_pads_for_stubs.append(_rec_sf)
+        else:
+            print(f"  [sandwich-skip] {_rref_sf}/{_rpad_sf} ({_rnet_sf}): "
+                  f"corridor <{_corridor_thr_sf:.3f}mm — stub skipped, "
+                  f"HS vias placed by stagger-2d")
+
+    sw_stubs, sw_tracks = _sandwiched_trace_stubs(
+        board, _sw_real_pads_for_stubs, _sw_centroid_by_face, clearance, reach_mm=5.0
+    )
+    if sw_stubs:
+        n_sw_pads = len({r[0] + '/' + r[1] for r in _sw_real_pads_for_stubs})
+        print(f"  [sandwiched-pre] {len(sw_stubs)} corridor stub(s) for "
+              f"{n_sw_pads} sandwiched pad(s)")
+        board_stubs = sw_stubs + board_stubs
+        if apply and sw_tracks:
+            for _t in sw_tracks:
+                board.Add(_t)
+            board_stubs = _load_board_tracks(board, clearance)
+            print(f"  [sandwiched-pre] {len(sw_tracks)} escape trace(s) written to board")
+
     for line in run_passes(pending, pad_obs, clearance, min_annular_mm, max_passes,
                            edge_segs=edge_segs, board_stubs=board_stubs):
         print(line)
+
+    n_tight = _tighten_vias(pending, pad_obs, board_stubs, clearance, edge_segs)
+    if n_tight:
+        print(f"  [tighten] {n_tight} via(s) pulled closer to component.")
+
+    # ------------------------------------------------------------------
+    # 4a. Compute keepout escape lengths (after all vias are in final positions)
+    #
+    # Process sequentially: after computing each keepout's escape length and
+    # via position, add that via to placed_vias so subsequent keepouts treat
+    # it as an obstacle.  This prevents keepout vias from shorting each other.
+    # ------------------------------------------------------------------
+    placed_vias = [v for v in pending if not v.implicit_keepout and not v.via_in_pad]
+    _keepout_escape_data: list = []  # (via, escape_len_mm) for non-sandwiched keepouts
+    _ko_trace_segs: list = []  # (x1,y1,x2,y2,trace_hw,net_name) — keepout escape trace segs
+    keepouts = [v for v in pending if v.implicit_keepout]
+    for v in keepouts:
+        if v.sandwiched:
+            continue  # sandwiched pads handled separately via _sw_real_pads
+        trace_hw = v.neckdown_w_mm / 2.0
+        ko_via_copper = v.via_drill_mm / 2.0 + v.via_annular_mm
+        esc_len = _keepout_escape_length(
+            v.pad_x, v.pad_y, v.escape_dx, v.escape_dy,
+            trace_hw, clearance, placed_vias,
+            via_copper_keepout=ko_via_copper,
+            pad_obs=pad_obs, board_stubs=board_stubs,
+            net_name=v.net_name,
+        )
+        # Snap direction for via position registration (must match _make_neckdown emission)
+        _ko_snap_a = (round(math.atan2(v.escape_dy, v.escape_dx) / (math.pi / 4.0))
+                      * (math.pi / 4.0))
+        _ko_edx_s = math.cos(_ko_snap_a)
+        _ko_edy_s = math.sin(_ko_snap_a)
+        if esc_len < 0.05 and v.priority == PRIORITY_HS:
+            # Phase 4: column-exit-first fallback for HS keepouts on radial fanout components.
+            # For narrow pads where the straight radial corridor is blocked by sibling pads,
+            # first exit in the face-normal direction (nearest 90° cardinal to escape), then
+            # search radially from that exit point for a clear via position.
+            _fp_v4 = _fp_by_ref.get(v.ref)
+            if _fp_v4 and _is_radial_fanout_fp(_fp_v4):
+                # Face normal = nearest 90° cardinal to escape
+                _face_ang4 = round(math.atan2(v.escape_dy, v.escape_dx) / (math.pi / 2.0)) * (math.pi / 2.0)
+                _col_dx4 = round(math.cos(_face_ang4))  # 0, 1, or -1
+                _col_dy4 = round(math.sin(_face_ang4))  # 0, 1, or -1
+                # Only proceed if footprint is at 0/90/180/270° rotation (±1° tolerance).
+                # A diagonal footprint would make the col exit non-cardinal (PROHIBITED 3).
+                _rot4 = _fp_v4.GetOrientation().AsDegrees() % 90.0
+                if _rot4 > 1.0 and _rot4 < 89.0:
+                    print(f"  [col-exit] {v.ref}/{v.pad_num}: footprint at non-cardinal "
+                          f"rotation ({_rot4:.1f}°) — col-exit skipped")
+                else:
+                    _col_min4 = max(v.pad_w_mm / 2.0, v.pad_h_mm / 2.0) + clearance
+                    _col_max4 = 2.0
+                    _col_len4 = _col_min4
+                    _found_col4 = False
+                    while _col_len4 <= _col_max4 + 1e-9:
+                        _col_ex4 = v.pad_x + _col_dx4 * _col_len4
+                        _col_ey4 = v.pad_y + _col_dy4 * _col_len4
+                        _seg_ok4 = True
+                        for _obs4 in pad_obs:
+                            if _obs4.net_name == v.net_name:
+                                continue
+                            if _obs4.bbox is not None:
+                                if _seg_bbox_dist(v.pad_x, v.pad_y, _col_ex4, _col_ey4,
+                                                  _obs4.bbox) < clearance:
+                                    _seg_ok4 = False
+                                    break
+                            else:
+                                if _pt_to_seg_dist(_obs4.cx, _obs4.cy,
+                                                   v.pad_x, v.pad_y, _col_ex4, _col_ey4) < _obs4.r:
+                                    _seg_ok4 = False
+                                    break
+                        if _seg_ok4:
+                            # Also verify col exit segment clears placed via copper
+                            for _pv4 in placed_vias:
+                                if _pv4.net_name == v.net_name:
+                                    continue
+                                _pv4_r = (_pv4.via_drill_mm / 2.0 + _pv4.via_annular_mm
+                                          + trace_hw + clearance)
+                                if _pt_to_seg_dist(_pv4.via_x, _pv4.via_y,
+                                                   v.pad_x, v.pad_y, _col_ex4, _col_ey4) < _pv4_r:
+                                    _seg_ok4 = False
+                                    break
+                        if _seg_ok4:
+                            # Also verify col exit segment clears placed via escape tracks.
+                            # The col segment may cross a diagonal stub even when both via copper
+                            # circles are far enough away — _seg_min_dist handles exact crossings.
+                            for _pv4s in placed_vias:
+                                if _pv4s.net_name == v.net_name:
+                                    continue
+                                for _stub4s in _stub_segs_for(_pv4s, clearance):
+                                    if _seg_min_dist(v.pad_x, v.pad_y, _col_ex4, _col_ey4,
+                                                     _stub4s.x1, _stub4s.y1,
+                                                     _stub4s.x2, _stub4s.y2) < _stub4s.half_w + trace_hw:
+                                        _seg_ok4 = False
+                                        break
+                                if not _seg_ok4:
+                                    break
+                        if _seg_ok4:
+                            _col_esc_len4 = _keepout_escape_length(
+                                _col_ex4, _col_ey4, v.escape_dx, v.escape_dy,
+                                trace_hw, clearance, placed_vias,
+                                via_copper_keepout=ko_via_copper,
+                                pad_obs=pad_obs, board_stubs=board_stubs,
+                                net_name=v.net_name,
+                            )
+                            if _col_esc_len4 >= 0.05:
+                                esc_len = _col_esc_len4
+                                v._col_exit = (_col_dx4, _col_dy4, _col_len4, _col_ex4, _col_ey4)
+                                print(f"  [col-exit] {v.ref}/{v.pad_num} ({v.net_name}): "
+                                      f"col {_col_len4:.3f}mm → escape {_col_esc_len4:.3f}mm")
+                                _found_col4 = True
+                                break
+                        _col_len4 += STEP_MM
+                    if not _found_col4:
+                        print(f"  [col-exit] {v.ref}/{v.pad_num} ({v.net_name}): "
+                              f"col-exit also failed — staying keepout")
+        # PROHIBITED 7: when an HS keepout pad ends up with escape=0 after all
+        # col-exit attempts, retroactively suppress any already-processed partner
+        # keepout pad that placed a via.  Placing the partner via while leaving
+        # this pad unresolved creates an incoherent pair handoff to route_highspeed.py.
+        if esc_len < 0.05 and v.priority == PRIORITY_HS:
+            for _sfx7k, _opp7k in (("_P", "_N"), ("_N", "_P"), ("+", "-"), ("-", "+")):
+                if v.net_name.endswith(_sfx7k):
+                    _pnet7k = v.net_name[:-len(_sfx7k)] + _opp7k
+                    for _ki7k in range(len(_keepout_escape_data)):
+                        _kv7k, _ke7k = _keepout_escape_data[_ki7k]
+                        if (_kv7k.ref == v.ref
+                                and _kv7k.net_name == _pnet7k
+                                and _ke7k > 0.0):
+                            _keepout_escape_data[_ki7k] = (_kv7k, 0.0)
+                            if _kv7k in placed_vias:
+                                placed_vias.remove(_kv7k)
+                            _ko_trace_segs[:] = [_s for _s in _ko_trace_segs
+                                                 if _s[5] != _pnet7k]
+                            print(f"  [ko-pair-suppress] {v.ref}/{v.pad_num} "
+                                  f"({v.net_name}): escape=0 → partner "
+                                  f"{_kv7k.ref}/{_kv7k.pad_num} ({_pnet7k}) "
+                                  f"also suppressed")
+                            break
+                    break
+        _keepout_escape_data.append((v, esc_len))
+        if esc_len >= 0.05:
+            # Register this keepout's via as an obstacle for subsequent keepouts.
+            # Use snapped escape direction — _make_neckdown emits in snapped direction,
+            # so placed_vias must reflect the actual emitted via position.
+            _ko_snap_a4 = (round(math.atan2(v.escape_dy, v.escape_dx) / (math.pi / 4.0))
+                           * (math.pi / 4.0))
+            _ko_edx_s4 = math.cos(_ko_snap_a4)
+            _ko_edy_s4 = math.sin(_ko_snap_a4)
+            if hasattr(v, '_col_exit'):
+                _cdx4, _cdy4, _cl4, _cex4, _cey4 = v._col_exit
+                v.via_x = _cex4 + _ko_edx_s4 * esc_len
+                v.via_y = _cey4 + _ko_edy_s4 * esc_len
+            else:
+                v.via_x = v.pad_x + _ko_edx_s4 * esc_len
+                v.via_y = v.pad_y + _ko_edy_s4 * esc_len
+            # Post-check: via endpoint copper must clear all pad obstacles (not just trace
+            # corridor). _keepout_escape_length only checks corridor width; the via annular
+            # ring is larger and can land inside an adjacent pad even when the trace cleared.
+            _ko_ep_r = ko_via_copper + clearance
+            _ko_ep_ok = True
+            for _obs_ep in pad_obs:
+                if _obs_ep.net_name == v.net_name:
+                    continue
+                if _obs_ep.bbox is not None:
+                    if _dist_point_to_bbox(v.via_x, v.via_y, _obs_ep.bbox) < _ko_ep_r:
+                        _ko_ep_ok = False
+                        break
+                else:
+                    if math.hypot(v.via_x - _obs_ep.cx, v.via_y - _obs_ep.cy) < _obs_ep.r + _ko_ep_r:
+                        _ko_ep_ok = False
+                        break
+            # Trace-segment check: via copper must also clear escape traces of
+            # previously-placed keepout pads (not in pad_obs — those are pads, not tracks).
+            if _ko_ep_ok:
+                for _seg_ko in _ko_trace_segs:
+                    _skx1, _sky1, _skx2, _sky2, _sktw, _sknet = _seg_ko
+                    if _sknet == v.net_name:
+                        continue
+                    if _pt_to_seg_dist(v.via_x, v.via_y,
+                                       _skx1, _sky1, _skx2, _sky2) < ko_via_copper + _sktw + clearance:
+                        _ko_ep_ok = False
+                        # PROHIBITED 7: if this is an HS pad, retroactively suppress the
+                        # partner keepout whose trace caused the conflict so neither ends
+                        # up with a dangling via pointing at a phantom partner position.
+                        if v.priority == PRIORITY_HS:
+                            for _sfx7b, _opp7b in (("_P", "_N"), ("_N", "_P"),
+                                                    ("+", "-"), ("-", "+")):
+                                if v.net_name.endswith(_sfx7b):
+                                    _pnet7b = v.net_name[:-len(_sfx7b)] + _opp7b
+                                    for _ki7b in range(len(_keepout_escape_data)):
+                                        _kv7b, _ke7b = _keepout_escape_data[_ki7b]
+                                        if (_kv7b.ref == v.ref
+                                                and _kv7b.net_name == _pnet7b
+                                                and _ke7b > 0.0):
+                                            _keepout_escape_data[_ki7b] = (_kv7b, 0.0)
+                                            if _kv7b in placed_vias:
+                                                placed_vias.remove(_kv7b)
+                                            _ko_trace_segs[:] = [_s for _s in _ko_trace_segs
+                                                                  if _s[5] != _pnet7b]
+                                            print(f"  [ko-pair-suppress] "
+                                                  f"{v.ref}/{v.pad_num} ({v.net_name}) "
+                                                  f"via conflicts with "
+                                                  f"{_kv7b.ref}/{_kv7b.pad_num} "
+                                                  f"({_pnet7b}) trace — both suppressed")
+                                            break
+                                    break
+                        break
+            if _ko_ep_ok:
+                placed_vias.append(v)
+                # Register escape trace segments so subsequent keepout via-vs-trace checks
+                # can detect conflicts. Uses snapped via position (same as section 4a set).
+                _ko_tw_reg = v.neckdown_w_mm / 2.0
+                if hasattr(v, '_col_exit'):
+                    _, _, _, _cex_ks, _cey_ks = v._col_exit
+                    _ko_trace_segs.append((v.pad_x, v.pad_y,
+                                           _cex_ks, _cey_ks, _ko_tw_reg, v.net_name))
+                    _ko_trace_segs.append((_cex_ks, _cey_ks,
+                                           v.via_x, v.via_y, _ko_tw_reg, v.net_name))
+                else:
+                    _ko_trace_segs.append((v.pad_x, v.pad_y,
+                                           v.via_x, v.via_y, _ko_tw_reg, v.net_name))
+            else:
+                esc_len = 0.0
+                # Update the stored tuple — replace last entry
+                if _keepout_escape_data and _keepout_escape_data[-1][0] is v:
+                    _keepout_escape_data[-1] = (v, 0.0)
 
     # ------------------------------------------------------------------
     # 4. Result summary
     # ------------------------------------------------------------------
     vippo    = [v for v in pending if v.via_in_pad]
-    keepouts = [v for v in pending if v.implicit_keepout]
     placed   = [v for v in pending if not v.implicit_keepout]
     if vippo:
         print(f"\nVIPPO required — {len(vippo)} via-in-pad placement(s):")
@@ -3293,11 +5447,15 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
             print(f"  {v.ref}/{v.pad_num}  net={v.net_name}  "
                   f"annular={v.via_annular_mm:.3f}mm")
     if keepouts:
-        print(f"\nImplicit keepouts — {len(keepouts)} pad(s) with no viable via position:")
-        print(f"  Via for these nets must be placed along the route by a routing script.")
-        for v in keepouts:
+        print(f"\nImplicit keepouts — {len(keepouts)} pad(s) — escape traces will be emitted:")
+        for v, esc_len in _keepout_escape_data:
             print(f"  {v.ref}/{v.pad_num}  net={v.net_name}  "
-                  f"pad={v.pad_w_mm:.3f}×{v.pad_h_mm:.3f}mm")
+                  f"pad={v.pad_w_mm:.3f}×{v.pad_h_mm:.3f}mm  "
+                  f"escape={esc_len:.3f}mm")
+        sw_ko = [v for v in keepouts if v.sandwiched]
+        for v in sw_ko:
+            print(f"  {v.ref}/{v.pad_num}  net={v.net_name}  "
+                  f"pad={v.pad_w_mm:.3f}×{v.pad_h_mm:.3f}mm  (sandwiched — handled separately)")
     print(f"\n{len(placed)} via(s) placed  "
           f"({len(vippo)} via-in-pad  "
           f"{len(placed)-len(vippo)} side-exit)  "
@@ -3358,6 +5516,216 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
             for seg in _make_neckdown(board, via, net):
                 board.Add(seg)
         n_placed += 1
+
+    # Emit escape traces + vias for keepout pads (non-sandwiched).
+    if _keepout_escape_data:
+        _ko_emit_count = 0
+        for _kv, _klen in _keepout_escape_data:
+            if _klen < 0.05:
+                print(f"  [keepout-escape] {_kv.ref}/{_kv.pad_num}: escape length {_klen:.3f}mm too short, skipping")
+                continue
+            _ko_net = board.FindNet(_kv.net_name)
+            if _ko_net is None:
+                continue
+            if hasattr(_kv, '_col_exit'):
+                # Phase 4: two-segment col-exit stub
+                _cdx_ko, _cdy_ko, _cl_ko, _cex_ko, _cey_ko = _kv._col_exit
+                # Segment 1: pad → col exit point (cardinal direction, verified clear)
+                _kt1 = pcbnew.PCB_TRACK(board)
+                _kt1.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(_kv.pad_x), pcbnew.FromMM(_kv.pad_y)))
+                _kt1.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(_cex_ko), pcbnew.FromMM(_cey_ko)))
+                _kt1.SetWidth(pcbnew.FromMM(_kv.neckdown_w_mm))
+                _kt1.SetLayer(_kv.pad_layer_id)
+                _kt1.SetNet(_ko_net)
+                board.Add(_kt1)
+                # Segments 2+: col exit → via using _route_45deg_stub (0/45/90 compliant)
+                # Use snapped escape direction — must match section 4a via_x/via_y so the
+                # post-endpoint check and the emitted via land at the same position.
+                _ko_snap_a_em = (round(math.atan2(_kv.escape_dy, _kv.escape_dx)
+                                       / (math.pi / 4.0)) * (math.pi / 4.0))
+                _ko_via_x = _cex_ko + math.cos(_ko_snap_a_em) * _klen
+                _ko_via_y = _cey_ko + math.sin(_ko_snap_a_em) * _klen
+                for _seg_xy in _route_45deg_stub(_cex_ko, _cey_ko, _ko_via_x, _ko_via_y,
+                                                  _kv.escape_dx, _kv.escape_dy):
+                    _kts = pcbnew.PCB_TRACK(board)
+                    _kts.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(_seg_xy[0]), pcbnew.FromMM(_seg_xy[1])))
+                    _kts.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(_seg_xy[2]), pcbnew.FromMM(_seg_xy[3])))
+                    _kts.SetWidth(pcbnew.FromMM(_kv.neckdown_w_mm))
+                    _kts.SetLayer(_kv.pad_layer_id)
+                    _kts.SetNet(_ko_net)
+                    board.Add(_kts)
+                _kv.via_x = _ko_via_x
+                _kv.via_y = _ko_via_y
+                board.Add(_make_via(board, _kv, _ko_net))
+            else:
+                # Normal single-segment keepout escape (Phase 3B: snap trace angle)
+                _ko_ang = round(math.atan2(_kv.escape_dy, _kv.escape_dx) / (math.pi / 4.0)) * (math.pi / 4.0)
+                _ko_edx = math.cos(_ko_ang)
+                _ko_edy = math.sin(_ko_ang)
+                _ko_end_x = _kv.pad_x + _ko_edx * _klen
+                _ko_end_y = _kv.pad_y + _ko_edy * _klen
+                _kt = pcbnew.PCB_TRACK(board)
+                _kt.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(_kv.pad_x), pcbnew.FromMM(_kv.pad_y)))
+                _kt.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(_ko_end_x), pcbnew.FromMM(_ko_end_y)))
+                _kt.SetWidth(pcbnew.FromMM(_kv.neckdown_w_mm))
+                _kt.SetLayer(_kv.pad_layer_id)
+                _kt.SetNet(_ko_net)
+                board.Add(_kt)
+                _kv.via_x = _ko_end_x
+                _kv.via_y = _ko_end_y
+                board.Add(_make_via(board, _kv, _ko_net))
+            _ko_emit_count += 1
+        if _ko_emit_count:
+            print(f"Emitted {_ko_emit_count} keepout pad escape trace(s) + via(s).")
+
+    # Re-emit sandwiched escape traces + vias (section 5 removed them along with other stubs).
+    # Only emit for pads that ended up as implicit keepouts — pads that got vias placed
+    # already have a neckdown stub and do not need a separate escape trace.
+    if _sw_real_pads:
+        _sw_emit_count = 0
+        _sw_drill, _sw_annular = via_params(PRIORITY_OTHER)
+        _sw_via_r = _sw_drill / 2.0 + _sw_annular
+        _sw_tgt_layer = cfg.CLEARANCE_AUDIT.get("default_target_layer_id",
+                                                  pending[0].target_layer_id if pending else pcbnew.In2_Cu)
+        _placed_refs = {(v.ref, v.pad_num) for v in pending if not v.implicit_keepout}
+        # Copper circles of all placed (non-keepout) fanout vias for conflict checking.
+        _placed_via_circles = [
+            (v.via_x, v.via_y, v.via_drill_mm / 2.0 + v.via_annular_mm)
+            for v in pending if not v.implicit_keepout
+        ]
+        _SW_REACH_START = 5.0
+        _SW_REACH_MAX = 12.0
+        for _rec in _sw_real_pads:
+            _ref, _pad, _net, _nc, _px, _py, _edx, _edy, _nw, _lid = _rec
+            # Phase 3B: snap trace direction to nearest 45° (PROHIBITED 3 — must be 0/45/90)
+            _sw_ang = round(math.atan2(_edy, _edx) / (math.pi / 4.0)) * (math.pi / 4.0)
+            _edx = math.cos(_sw_ang)
+            _edy = math.sin(_sw_ang)
+            if (_ref, _pad) in _placed_refs:
+                continue  # via placed — neckdown already present, skip escape trace
+            _net_obj = board.FindNet(_net)
+            if _net_obj is None:
+                continue
+            # Pre-check: verify the trace corridor itself is clear of placed via copper.
+            # Lateral distance from a via to the escape axis is fixed regardless of reach —
+            # if it conflicts at any axial position, extending reach cannot resolve it.
+            # Clearance applied once: lat_dist >= trace_hw + via_r + clearance.
+            _trace_hw = _nw / 2.0
+            _lat_dx = -_edy   # unit vector perpendicular to escape
+            _lat_dy = _edx
+            _corridor_blocked = False
+            for _vx, _vy, _vr in _placed_via_circles:
+                _axial = (_vx - _px) * _edx + (_vy - _py) * _edy
+                if _axial <= 0:
+                    continue  # via is behind the pad — not in the escape corridor
+                _lat_dist = abs((_vx - _px) * _lat_dx + (_vy - _py) * _lat_dy)
+                if _lat_dist < _trace_hw + _vr + clearance:
+                    _corridor_blocked = True
+                    break
+            if _corridor_blocked:
+                continue  # trace corridor permanently blocked — skip this sandwiched pad
+            # Extend reach until via endpoint is clear of all placed via copper.
+            # Clearance applied once: center_dist >= sw_via_r + placed_via_r + clearance.
+            _sw_reach = _SW_REACH_START
+            while _sw_reach <= _SW_REACH_MAX:
+                _sw_end_x = _px + _edx * _sw_reach
+                _sw_end_y = _py + _edy * _sw_reach
+                _conflict = any(
+                    math.hypot(_sw_end_x - _vx, _sw_end_y - _vy) < _sw_via_r + _vr + clearance
+                    for _vx, _vy, _vr in _placed_via_circles
+                )
+                if not _conflict:
+                    break
+                _sw_reach += STEP_MM
+            _sw_end_x = _px + _edx * _sw_reach
+            _sw_end_y = _py + _edy * _sw_reach
+            _nt = pcbnew.PCB_TRACK(board)
+            _nt.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(_px), pcbnew.FromMM(_py)))
+            _nt.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(_sw_end_x), pcbnew.FromMM(_sw_end_y)))
+            _nt.SetWidth(pcbnew.FromMM(_nw))
+            _nt.SetLayer(_lid)
+            _nt.SetNet(_net_obj)
+            board.Add(_nt)
+            if _sw_reach <= _SW_REACH_MAX:
+                _sw_v = pcbnew.PCB_VIA(board)
+                _sw_v.SetPosition(pcbnew.VECTOR2I(
+                    pcbnew.FromMM(_sw_end_x), pcbnew.FromMM(_sw_end_y)))
+                _sw_v.SetDrill(pcbnew.FromMM(_sw_drill))
+                _sw_v.SetWidth(pcbnew.FromMM(_sw_drill + 2.0 * _sw_annular))
+                _sw_v.SetLayerPair(_lid, _sw_tgt_layer)
+                _sw_v.SetNet(_net_obj)
+                board.Add(_sw_v)
+                _sw_emit_count += 1
+        if _sw_emit_count:
+            print(f"Emitted {_sw_emit_count} sandwiched pad escape trace(s) + via(s).")
+
+    # ------------------------------------------------------------------
+    # 6b. Emit bus stubs from co-optimized face fanout
+    # ------------------------------------------------------------------
+    _bus_stubs_all = getattr(_run, '_all_bus_stubs', [])
+    if _bus_stubs_all:
+        _bus_emit_count = 0
+        for _bx1, _by1, _bx2, _by2, _bnw, _bnet in _bus_stubs_all:
+            if math.hypot(_bx2 - _bx1, _by2 - _by1) < 1e-6:
+                continue
+            _bnet_obj = board.FindNet(_bnet)
+            if _bnet_obj is None:
+                continue
+            _bt = pcbnew.PCB_TRACK(board)
+            _bt.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(_bx1), pcbnew.FromMM(_by1)))
+            _bt.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(_bx2), pcbnew.FromMM(_by2)))
+            _bt.SetWidth(pcbnew.FromMM(_bnw))
+            _bt.SetLayer(pcbnew.F_Cu)
+            _bt.SetNet(_bnet_obj)
+            board.Add(_bt)
+            _bus_emit_count += 1
+        if _bus_emit_count:
+            print(f"Emitted {_bus_emit_count} co-opt bus stub segment(s).")
+
+    # ------------------------------------------------------------------
+    # 6c. Emit stub-only traces from co-optimized face fanout
+    #     (face pads that have stub_only_vx/vy set by _face_fanout)
+    # ------------------------------------------------------------------
+    _so_emit_count = 0
+    for _so_pv in pending:
+        if not _so_pv.face_fanout_assigned:
+            continue
+        if not (hasattr(_so_pv, 'stub_only_vx') and hasattr(_so_pv, 'stub_only_vy')):
+            continue
+        _so_net_obj = board.FindNet(_so_pv.net_name)
+        if _so_net_obj is None:
+            continue
+        _so_segs = _route_45deg_stub(
+            _so_pv.pad_x, _so_pv.pad_y,
+            _so_pv.stub_only_vx, _so_pv.stub_only_vy,
+            _so_pv.escape_dx, _so_pv.escape_dy, axial_first=True)
+        if not _so_segs:
+            _so_segs = [(_so_pv.pad_x, _so_pv.pad_y,
+                         _so_pv.stub_only_vx, _so_pv.stub_only_vy)]
+        for _sx1, _sy1, _sx2, _sy2 in _so_segs:
+            if math.hypot(_sx2 - _sx1, _sy2 - _sy1) < 1e-6:
+                continue
+            _st = pcbnew.PCB_TRACK(board)
+            _st.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(_sx1), pcbnew.FromMM(_sy1)))
+            _st.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(_sx2), pcbnew.FromMM(_sy2)))
+            _st.SetWidth(pcbnew.FromMM(_so_pv.neckdown_w_mm))
+            _st.SetLayer(_so_pv.pad_layer_id)
+            _st.SetNet(_so_net_obj)
+            board.Add(_st)
+        if hasattr(_so_pv, 'stub_ext_vx'):
+            _ex1, _ey1 = _so_pv.stub_only_vx, _so_pv.stub_only_vy
+            _ex2, _ey2 = _so_pv.stub_ext_vx,  _so_pv.stub_ext_vy
+            if math.hypot(_ex2 - _ex1, _ey2 - _ey1) >= 1e-6:
+                _et = pcbnew.PCB_TRACK(board)
+                _et.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(_ex1), pcbnew.FromMM(_ey1)))
+                _et.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(_ex2), pcbnew.FromMM(_ey2)))
+                _et.SetWidth(pcbnew.FromMM(_so_pv.neckdown_w_mm))
+                _et.SetLayer(_so_pv.pad_layer_id)
+                _et.SetNet(_so_net_obj)
+                board.Add(_et)
+        _so_emit_count += 1
+    if _so_emit_count:
+        print(f"Emitted {_so_emit_count} co-opt stub-only trace(s).")
 
     pcbnew.Refresh()
     print(f"\nEmitted {n_placed} via(s), skipped {n_skip} (net not found).")

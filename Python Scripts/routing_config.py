@@ -185,6 +185,8 @@ LAYER_SCHEME = {
 # fill-connected net names should be skipped.
 FANOUT_VIA_SKIP_NETS = [
     "GND",
+    "LT_1V2",
+    "LT_3V3",
 ]
 
 # ── Routing layer priority ────────────────────────────────────────────────────
