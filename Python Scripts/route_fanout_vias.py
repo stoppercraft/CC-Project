@@ -4007,8 +4007,12 @@ def _face_fanout(
             _gap7c    = _ls7c * (_vlat_j7c - _v_lat7c)
             if _gap7c <= 0:
                 continue
-            _dj7c  = (_vxj7c - _pvj7c.pad_x) * edx + (_vyj7c - _pvj7c.pad_y) * edy
+            _dj7c    = (_vxj7c - _pvj7c.pad_x) * edx + (_vyj7c - _pvj7c.pad_y) * edy
             _pcr_j7c = _pvj7c.via_drill_mm / 2.0 + ca
+            # Skip vias the axial stub cannot laterally clear — the stub at pad_lat
+            # going straight axially would violate clearance with this via.
+            if abs(_vlat_j7c - _v_lat7c) < _pcr_j7c + _shw7c + CLEARANCE - 1e-9:
+                continue
             _outers7c.append((_gap7c, _vlat_j7c, _dj7c, _pcr_j7c,
                                _pvj7c.via_annular_mm, _pvj7c.net_name, _gj7c))
 
@@ -4032,9 +4036,46 @@ def _face_fanout(
         _req_d7c  = max(_ov[2] + _ov[3] + _shw7c + CLEARANCE for _ov in _group7c)
         _ext_d7c  = min(max(_cur_d7c, _req_d7c), FANOUT_DEPTH_CAP)
 
-        # Outermost via in group → extension lateral endpoint (via_lat + ls * annular)
-        _outmost7c  = max(_group7c, key=lambda x: x[0])
+        # Outermost via in group clearable at actual _ext_d7c → extension endpoint
+        _clearable7c = [_ov for _ov in _group7c
+                        if _ext_d7c - _ov[2] - _ov[3] - _shw7c >= CLEARANCE - 1e-9]
+        if not _clearable7c:
+            continue
+        _outmost7c  = max(_clearable7c, key=lambda x: x[0])
         _ext_lat7c  = _outmost7c[1] + _ls7c * _outmost7c[4]
+
+        # Clip extension: if any signal via in the lateral sweep path cannot be
+        # cleared vertically at _ext_d7c, stop before the nearest such via.
+        _blocked_lat7c = None
+        for _gj7c_sw in signal_indices:
+            if (_gj7c_sw == _gi7c or _gj7c_sw not in final_placed
+                    or _gj7c_sw in keepout_set):
+                continue
+            _pvj_sw = face_pads[_gj7c_sw]
+            if _pvj_sw.net_name in _skip_nets or not _pvj_sw.net_name:
+                continue
+            _vxj_sw, _vyj_sw = final_placed[_gj7c_sw]
+            _vlat_sw = _vxj_sw * ldx + _vyj_sw * ldy
+            _dj_sw   = ((_vxj_sw - _pvj_sw.pad_x) * edx
+                        + (_vyj_sw - _pvj_sw.pad_y) * edy)
+            _pcr_sw  = _pvj_sw.via_drill_mm / 2.0 + ca
+            if _ls7c * (_vlat_sw - _v_lat7c) < 1e-9:
+                continue
+            if _ls7c * (_ext_lat7c - _vlat_sw) < -1e-9:
+                continue
+            if abs(_ext_d7c - _dj_sw) - _pcr_sw - _shw7c >= CLEARANCE - 1e-9:
+                continue
+            _clip = _vlat_sw - _ls7c * (_pcr_sw + _shw7c + CLEARANCE)
+            if _blocked_lat7c is None or _ls7c * (_blocked_lat7c - _clip) > 1e-9:
+                _blocked_lat7c = _clip
+        if _blocked_lat7c is not None:
+            if _ls7c * (_blocked_lat7c - _v_lat7c) < 1e-9:
+                continue
+            _ext_lat7c = _blocked_lat7c
+
+        # Skip if clipping prevented reaching the outermost clearable via
+        if _ls7c * (_ext_lat7c - _outmost7c[1]) < -1e-9:
+            continue
 
         # Only extend if endpoint is actually further out than current stub tip
         _stub_lat7c = _v_lat7c + _ls7c * _lo7c
