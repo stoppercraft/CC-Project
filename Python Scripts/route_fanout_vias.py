@@ -3799,8 +3799,21 @@ def _face_fanout(
                 best_vx, best_vy = vx_cur, vy_cur
                 best_cost = cur_cost
 
+                # Pair depth floor: prevent going shallower than equalized partner,
+                # preserving depth equality established by 7b across outer passes.
+                _partner_gi_1p = hs_partner.get(gi)
+                _partner_depth_1p = 0.0
+                if (_partner_gi_1p is not None
+                        and _partner_gi_1p in final_placed
+                        and _partner_gi_1p not in keepout_set):
+                    _pvp1 = face_pads[_partner_gi_1p]
+                    _vxp1, _vyp1 = final_placed[_partner_gi_1p]
+                    _partner_depth_1p = abs((_vxp1 - _pvp1.pad_x) * edx
+                                            + (_vyp1 - _pvp1.pad_y) * edy)
+
                 # Strategy A: reduce axial depth at current lat_off
-                depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off))
+                depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off),
+                              _partner_depth_1p)
                 while depth_A < cur_axial - 1e-9:
                     vx_A = v.pad_x + ls * lat_off * ldx
                     vy_A = v.pad_y + ls * lat_off * ldy + edy * depth_A
@@ -3814,7 +3827,7 @@ def _face_fanout(
                 # Strategy B: push lateral offset outward at minimum own-pad depth
                 for _lsn in range(1, 31):
                     lat_B = lat_off + _lsn * STEP_MM
-                    df    = _own_depth_floor(lat_B)
+                    df    = max(_own_depth_floor(lat_B), _partner_depth_1p)
                     vx_B  = v.pad_x + ls * lat_B * ldx
                     vy_B  = v.pad_y + ls * lat_B * ldy + edy * df
                     if _check(v, vx_B, vy_B, other_placed) is None:
@@ -3833,7 +3846,8 @@ def _face_fanout(
                     lat_C = lat_off - _lsm * STEP_MM
                     if lat_C < -1e-9:
                         lat_C = 0.0
-                    df_C = max(v.neckdown_len_mm, _own_depth_floor(lat_C))
+                    df_C = max(v.neckdown_len_mm, _own_depth_floor(lat_C),
+                               _partner_depth_1p)
                     depth_C = df_C
                     while True:
                         _cost_C = math.hypot(lat_C, depth_C)
@@ -3917,9 +3931,6 @@ def _face_fanout(
             dj = abs((vxj_c - vj.pad_x) * edx + (vyj_c - vj.pad_y) * edy)
             d_max = max(di, dj)
 
-            if abs(di - dj) < DEPTH_STEP:
-                continue  # already equal enough
-
             # Lateral coordinates of the two vias (signed projection onto ldx/ldy axis)
             via_lat_i = vi.pad_x * ldx + vi.pad_y * ldy + ls_i * lat_i
             via_lat_j = vj.pad_x * ldx + vj.pad_y * ldy + ls_j * lat_j
@@ -3938,6 +3949,31 @@ def _face_fanout(
                     lat_i_w = lat_i + extra
                 else:
                     lat_j_w = lat_j + extra
+
+            # Pre-scan: ensure intra-pair stub clearance is satisfied analytically.
+            # The distance from each stub's axial-segment endpoint to the partner
+            # via is depth-independent (= hypot(delta_lat, axial_offset)), so a
+            # depth scan can never resolve it.  Compute the minimum lat needed to
+            # clear, and bump the outer via's lat_w before computing d_floor.
+            _stub_lat_i  = vi.pad_x * ldx + vi.pad_y * ldy
+            _stub_lat_j  = vj.pad_x * ldx + vj.pad_y * ldy
+            _dpad_ax_ij  = (vj.pad_x - vi.pad_x)*edx + (vj.pad_y - vi.pad_y)*edy
+            # vi stub axial endpoint vs vj trial via
+            _hax_ij = _dpad_ax_ij + lat_i_w
+            if _hax_ij > 0.0:
+                _via_lat_j_w_t = _stub_lat_j + ls_j * lat_j_w
+                _dlat_ij = abs(_via_lat_j_w_t - _stub_lat_i)
+                _thr_ij  = vi.neckdown_w_mm / 2.0 + pcr_j + CLEARANCE
+                if _dlat_ij < _thr_ij and _hax_ij**2 + _dlat_ij**2 < _thr_ij**2 - 1e-9:
+                    lat_i_w = max(lat_i_w, math.sqrt(_thr_ij**2 - _dlat_ij**2) - _dpad_ax_ij + 1e-6)
+            # vj stub axial endpoint vs vi trial via (dpad_ax flipped)
+            _hax_ji = -_dpad_ax_ij + lat_j_w
+            if _hax_ji > 0.0:
+                _via_lat_i_w_t = _stub_lat_i + ls_i * lat_i_w   # use possibly bumped lat_i_w
+                _dlat_ji = abs(_via_lat_i_w_t - _stub_lat_j)
+                _thr_ji  = vj.neckdown_w_mm / 2.0 + pcr_i + CLEARANCE
+                if _dlat_ji < _thr_ji and _hax_ji**2 + _dlat_ji**2 < _thr_ji**2 - 1e-9:
+                    lat_j_w = max(lat_j_w, math.sqrt(_thr_ji**2 - _dlat_ji**2) + _dpad_ax_ij + 1e-6)
 
             d_floor_i = max(vi.neckdown_len_mm, _pair_depth_floor(vi, ls_i, lat_i_w))
             d_floor_j = max(vj.neckdown_len_mm, _pair_depth_floor(vj, ls_j, lat_j_w))
@@ -3975,7 +4011,7 @@ def _face_fanout(
             best_lat_i_out = lat_i_w
             best_lat_j_out = lat_j_w
             _d_try = d_floor
-            while _d_try <= d_max + 1e-9:
+            while _d_try <= FANOUT_DEPTH_CAP + 1e-9:
                 vx_i_t = vi.pad_x + ls_i * lat_i_w * ldx + edx * _d_try
                 vy_i_t = vi.pad_y + ls_i * lat_i_w * ldy + edy * _d_try
                 vx_j_t = vj.pad_x + ls_j * lat_j_w * ldx + edx * _d_try
@@ -4003,13 +4039,14 @@ def _face_fanout(
                                          'segs': segs_i_t, 'pad_i': _gi,
                                          'net': vi.net_name, 'pad_num': vi.pad_num}]
 
-                if (_check(vi, vx_i_t, vy_i_t, op_for_i) is None
-                        and _check(vj, vx_j_t, vy_j_t, op_for_j) is None):
+                _ci = _check(vi, vx_i_t, vy_i_t, op_for_i)
+                _cj = _check(vj, vx_j_t, vy_j_t, op_for_j)
+                if _ci is None and _cj is None:
                     best_shared = _d_try
                     break
                 _d_try += DEPTH_STEP
 
-            if best_shared is not None and best_shared < d_max - 1e-9:
+            if best_shared is not None and best_shared < d_max - DEPTH_STEP:
                 final_placed[_gi] = (vi.pad_x + ls_i * lat_i_w * ldx + edx * best_shared,
                                       vi.pad_y + ls_i * lat_i_w * ldy + edy * best_shared)
                 final_placed[_gj] = (vj.pad_x + ls_j * lat_j_w * ldx + edx * best_shared,
@@ -4090,8 +4127,21 @@ def _face_fanout(
                 best_vx, best_vy = vx_cur, vy_cur
                 best_cost = cur_cost
 
+                # Pair depth floor: prevent this via from going shallower than its
+                # equalized partner, preserving the depth equality 7b just established.
+                _partner_gi_2p = hs_partner.get(gi)
+                _partner_depth_2p = 0.0
+                if (_partner_gi_2p is not None
+                        and _partner_gi_2p in final_placed
+                        and _partner_gi_2p not in keepout_set):
+                    _pvp2 = face_pads[_partner_gi_2p]
+                    _vxp2, _vyp2 = final_placed[_partner_gi_2p]
+                    _partner_depth_2p = abs((_vxp2 - _pvp2.pad_x) * edx
+                                            + (_vyp2 - _pvp2.pad_y) * edy)
+
                 # Strategy A: reduce axial depth at current lat_off
-                depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off))
+                depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off),
+                              _partner_depth_2p)
                 while depth_A < cur_axial - 1e-9:
                     vx_A = v.pad_x + ls * lat_off * ldx
                     vy_A = v.pad_y + ls * lat_off * ldy + edy * depth_A
@@ -4105,7 +4155,7 @@ def _face_fanout(
                 # Strategy B: push lateral offset outward at minimum own-pad depth
                 for _lsn in range(1, 31):
                     lat_B = lat_off + _lsn * STEP_MM
-                    df    = _own_depth_floor(lat_B)
+                    df    = max(_own_depth_floor(lat_B), _partner_depth_2p)
                     vx_B  = v.pad_x + ls * lat_B * ldx
                     vy_B  = v.pad_y + ls * lat_B * ldy + edy * df
                     if _check(v, vx_B, vy_B, other_placed) is None:
@@ -4122,7 +4172,8 @@ def _face_fanout(
                     lat_C = lat_off - _lsm * STEP_MM
                     if lat_C < -1e-9:
                         lat_C = 0.0
-                    df_C = max(v.neckdown_len_mm, _own_depth_floor(lat_C))
+                    df_C = max(v.neckdown_len_mm, _own_depth_floor(lat_C),
+                               _partner_depth_2p)
                     depth_C = df_C
                     while True:
                         _cost_C = math.hypot(lat_C, depth_C)
