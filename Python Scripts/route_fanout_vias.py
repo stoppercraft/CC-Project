@@ -3080,6 +3080,145 @@ def _face_needs_coopt(face_pads: list, sg_clr: float) -> bool:
     return min_gap < min_trace_total
 
 
+def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
+                        skip_nets: set) -> list:
+    """Build PendingVia objects for skip-net pads on a face.
+
+    Skip-net pads are excluded from pending (no via needed) but _face_fanout
+    must see them as obstacles and generate lateral bus stubs for them.
+    Returns a list of PendingVia objects, one per qualifying skip-net pad.
+    """
+    if not fp or not face_grp:
+        return []
+    tgt_layer  = face_grp[0].target_layer_id
+    nl_ref     = face_grp[0].neckdown_len_mm
+    face_axial = (sum(v.pad_x * edx + v.pad_y * edy for v in face_grp)
+                  / len(face_grp))
+    existing_nums = {pv.pad_num for pv in face_grp}
+    skip_pvs: list = []
+    for sk_pad in fp.Pads():
+        if _is_pth(sk_pad):
+            continue
+        sk_net = sk_pad.GetNetname()
+        if not sk_net or sk_net.startswith("unconnected"):
+            continue
+        if sk_net not in skip_nets:
+            continue
+        sk_dx, sk_dy = escape_direction(fp, sk_pad, nl_ref)
+        if abs(sk_dx - edx) > 0.01 or abs(sk_dy - edy) > 0.01:
+            continue
+        sk_px  = pcbnew.ToMM(sk_pad.GetPosition().x)
+        sk_py  = pcbnew.ToMM(sk_pad.GetPosition().y)
+        if abs(sk_px * edx + sk_py * edy - face_axial) > 1.0:
+            continue
+        sk_num = sk_pad.GetNumber()
+        if sk_num in existing_nums:
+            continue
+        sk_drill, sk_ann        = via_params(PRIORITY_OTHER)
+        sk_floor, sk_nl, sk_mx  = neckdown_params(PRIORITY_OTHER, sk_net)
+        sk_pw  = pcbnew.ToMM(sk_pad.GetSizeX())
+        sk_ph  = pcbnew.ToMM(sk_pad.GetSizeY())
+        sk_nw  = neckdown_stub_width(sk_floor, sk_pw, sk_ph, sk_net, PRIORITY_OTHER)
+        sk_bb  = sk_pad.GetBoundingBox()
+        skip_pvs.append(PendingVia(
+            net_name        = sk_net,
+            ref             = fp.GetReference(),
+            pad_num         = sk_num,
+            pad_x           = sk_px,
+            pad_y           = sk_py,
+            pad_layer_id    = sk_pad.GetLayer(),
+            target_layer_id = tgt_layer,
+            escape_dx       = edx,
+            escape_dy       = edy,
+            priority        = PRIORITY_OTHER,
+            via_drill_mm    = sk_drill,
+            via_annular_mm  = sk_ann,
+            neckdown_w_mm   = sk_nw,
+            neckdown_len_mm = sk_nl,
+            max_search_mm   = sk_mx,
+            pad_w_mm        = sk_pw,
+            pad_h_mm        = sk_ph,
+            pad_bbox        = (pcbnew.ToMM(sk_bb.GetLeft()),
+                               pcbnew.ToMM(sk_bb.GetTop()),
+                               pcbnew.ToMM(sk_bb.GetRight()),
+                               pcbnew.ToMM(sk_bb.GetBottom())),
+        ))
+    return skip_pvs
+
+
+def _find_tight_subgroups(face_pads: list, sg_clr: float) -> list:
+    """Find contiguous tight-pitch sub-groups within a face, expanded by one boundary pad.
+
+    Returns a list of pad sub-lists.  Each sub-list is a candidate for _face_fanout.
+    A pair is tight when gap < min_trace_half + sg_clr (same threshold as
+    _face_needs_coopt).  Each sub-group is expanded by one pad on each side so the
+    outermost tight pads get lateral anchors in the outside-in sort.
+    Sub-groups that overlap after expansion are merged into one.
+    """
+    if len(face_pads) < 2:
+        return []
+
+    edx = face_pads[0].escape_dx
+    edy = face_pads[0].escape_dy
+
+    if abs(edy) > abs(edx):  # N/S face — lateral = X
+        coords = [(v.pad_bbox[0] + v.pad_bbox[2]) / 2.0 if v.pad_bbox else v.pad_x
+                  for v in face_pads]
+        halves = [(v.pad_bbox[3] - v.pad_bbox[1]) / 2.0 if v.pad_bbox else v.pad_h_mm / 2.0
+                  for v in face_pads]
+    else:  # E/W face — lateral = Y
+        coords = [(v.pad_bbox[1] + v.pad_bbox[3]) / 2.0 if v.pad_bbox else v.pad_y
+                  for v in face_pads]
+        halves = [(v.pad_bbox[3] - v.pad_bbox[1]) / 2.0 if v.pad_bbox else v.pad_h_mm / 2.0
+                  for v in face_pads]
+
+    order = sorted(range(len(face_pads)), key=lambda i: coords[i])
+    min_trace_total = min(v.neckdown_w_mm / 2.0 for v in face_pads) + sg_clr
+
+    tight = [False] * max(0, len(order) - 1)
+    for k in range(len(tight)):
+        i, j = order[k], order[k + 1]
+        gap = abs(coords[j] - coords[i]) - max(halves[i], halves[j])
+        tight[k] = gap < min_trace_total
+
+    if not any(tight):
+        return []
+
+    # Build contiguous tight runs as (start_ord, end_ord) index pairs (inclusive)
+    raw_groups = []
+    k = 0
+    while k < len(order):
+        if k < len(tight) and tight[k]:
+            start = k
+            while k < len(tight) and tight[k]:
+                k += 1
+            raw_groups.append((start, k))
+        else:
+            k += 1
+
+    # Expand each run by one pad on each side
+    expanded = []
+    for start, end in raw_groups:
+        exp_start = max(0, start - 1)
+        exp_end = min(len(order) - 1, end + 1)
+        expanded.append([face_pads[order[i]] for i in range(exp_start, exp_end + 1)])
+
+    # Merge overlapping sub-groups (possible when expansion bridges a gap)
+    merged: list = []
+    for sg in expanded:
+        sg_ids = {id(pv) for pv in sg}
+        if merged and sg_ids & {id(pv) for pv in merged[-1]}:
+            seen = {id(pv): pv for pv in merged[-1]}
+            for pv in sg:
+                if id(pv) not in seen:
+                    merged[-1].append(pv)
+                    seen[id(pv)] = pv
+        else:
+            merged.append(list(sg))
+
+    return merged
+
+
 def _stub_only_depth(px: float, py: float, edx: float, edy: float,
                      lat_off: float,
                      placed_vias: list, trace_hw: float, clearance: float,
@@ -4181,10 +4320,94 @@ def _face_fanout(
 
 
 # ---------------------------------------------------------------------------
+# Stagger
+# ---------------------------------------------------------------------------
+
+def _stagger_vias(pending: List[PendingVia], ca: dict, clearance: float) -> None:
+    """Greedy per-face via stagger (step 1g).
+
+    For every group of pads sharing the same component ref and escape direction,
+    assigns the minimum neckdown_len_mm so no two vias on the same face violate
+    copper-to-copper clearance.  Updates pv.neckdown_len_mm and pv.via_x/via_y
+    in-place.  Skips pads with face_fanout_assigned=True.
+
+    Callable independently so debug scripts and the main _run() share one
+    implementation.
+    """
+    from collections import defaultdict
+    _sg_hvpd = ca["hs_via_drill_mm"] + 2 * ca["hs_via_annular_ring_mm"]
+    _sg_nvpd = ca["via_drill_mm"]     + 2 * ca["via_annular_ring_mm"]
+    _sg_clr  = ca["via_clearance_mm"]
+
+    _face_groups: Dict[tuple, List[PendingVia]] = defaultdict(list)
+    for _pv_sg in pending:
+        if _pv_sg.face_fanout_assigned:
+            continue
+        _face_groups[(_pv_sg.ref,
+                      _pv_sg.escape_dx,
+                      _pv_sg.escape_dy)].append(_pv_sg)
+
+    for _fkey, _fgrp in _face_groups.items():
+        if len(_fgrp) < 2:
+            continue
+        _edx_sg, _edy_sg = _fkey[1], _fkey[2]
+        _ldx_sg, _ldy_sg = -_edy_sg, _edx_sg   # lateral unit vector
+
+        _fgrp.sort(key=lambda pv: pv.pad_x * _ldx_sg + pv.pad_y * _ldy_sg)
+
+        # _placed: list of (pad_lat, assigned_neckdown, via_copper_d, pv_object)
+        _placed_sg: List[tuple] = []
+
+        for _pv_sg in _fgrp:
+            _pad_lat_sg = _pv_sg.pad_x * _ldx_sg + _pv_sg.pad_y * _ldy_sg
+            _lat_sg = _pad_lat_sg + _pv_sg.corner_lat_offset_mm
+            _vpd_sg = (_sg_hvpd if _pv_sg.priority == PRIORITY_HS
+                       else _sg_nvpd)
+            _sig_trace_w = ca.get("signal_trace_width_mm", 0.20)
+
+            if _pv_sg.pad_bbox is not None:
+                _bbl, _bbt, _bbr, _bbb = _pv_sg.pad_bbox
+                _pad_half_esc = max(
+                    _edx_sg * (_bbr - _pv_sg.pad_x) + _edy_sg * (_bbb - _pv_sg.pad_y),
+                    _edx_sg * (_bbr - _pv_sg.pad_x) + _edy_sg * (_bbt - _pv_sg.pad_y),
+                    _edx_sg * (_bbl - _pv_sg.pad_x) + _edy_sg * (_bbb - _pv_sg.pad_y),
+                    _edx_sg * (_bbl - _pv_sg.pad_x) + _edy_sg * (_bbt - _pv_sg.pad_y),
+                    0.0)
+            else:
+                _pad_half_esc = (abs(_edx_sg) * _pv_sg.pad_w_mm
+                                 + abs(_edy_sg) * _pv_sg.pad_h_mm) / 2.0
+
+            _nl_sg = max(_pv_sg.neckdown_len_mm,
+                         _pad_half_esc + _sg_clr + _sig_trace_w + _sg_clr + _vpd_sg / 2.0)
+
+            for _nb_pad_lat, _nb_nl, _nb_vpd, _nb_pv in _placed_sg:
+                _nb_lat = _nb_pad_lat + _nb_pv.corner_lat_offset_mm
+                _dx_sg  = abs(_lat_sg - _nb_lat)
+                _req_sg = _vpd_sg / 2.0 + _nb_vpd / 2.0 + _sg_clr
+                if _dx_sg >= _req_sg:
+                    continue
+                _dy_sg    = math.sqrt(max(0.0, _req_sg ** 2 - _dx_sg ** 2))
+                _nl_close = _nb_nl - _dy_sg
+                if _nl_sg > _nl_close:
+                    _nl_sg = max(_nl_sg, _nb_nl + _dy_sg)
+
+            if _nl_sg > _pv_sg.neckdown_len_mm + 1e-6:
+                _old_sg = _pv_sg.neckdown_len_mm
+                _pv_sg.neckdown_len_mm = _nl_sg
+                _pv_sg.via_x, _pv_sg.via_y = _via_corner(_pv_sg)
+                print(f"  [stagger] {_pv_sg.ref}/{_pv_sg.pad_num} "
+                      f"({_pv_sg.net_name}): "
+                      f"neckdown {_old_sg:.3f}→{_nl_sg:.3f}mm")
+
+            _placed_sg.append((_pad_lat_sg, _pv_sg.neckdown_len_mm, _vpd_sg, _pv_sg))
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
+def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
+         _debug_return_pending: bool = False):
     clearance      = cfg.CLEARANCE_AUDIT["via_clearance_mm"]
     min_annular_mm = cfg.CLEARANCE_AUDIT.get("via_annular_ring_min_mm", 0.10)
     no_via         = set(cfg.CLEARANCE_AUDIT.get("via_keepout_exclude_refs", []))
@@ -4749,6 +4972,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
             _pad_obs_early.append(_pad_obstacle(_pad, clearance, _fp_ref))
     pending = _suppress_proximity_via_sharing(pending, clearance, _pad_obs_early, _fp_by_ref)
 
+    if _debug_return_pending:
+        return pending, _pad_obs_early, _fp_by_ref, clearance, skip_nets
+
     # ------------------------------------------------------------------
     # 1e. Same-column corner offset
     # ------------------------------------------------------------------
@@ -4979,76 +5205,10 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
         # ca = annular ring for the first pad's via size
         _co_ca = _face_grp_co[0].via_annular_mm
 
-        # Augment face group with skip-net pads on this face.  These pads were
-        # excluded from pending (no via needed) but _face_fanout must see them
-        # so it can avoid placing signal vias on top of them and can generate
-        # lateral stubs for them.  They are NOT added to pending or pending_set,
-        # so _face_fanout treats them as skip-net (stub-only) pads automatically.
-        _co_skip_pvs: list = []
-        _co_fp = _fp_by_ref.get(_co_ref)
-        if _co_fp is not None:
-            _tgt_layer_co = _face_grp_co[0].target_layer_id
-            for _sk_pad in _co_fp.Pads():
-                if _is_pth(_sk_pad):
-                    continue
-                _sk_net = _sk_pad.GetNetname()
-                if not _sk_net or _sk_net.startswith("unconnected"):
-                    continue
-                if _sk_net not in skip_nets:
-                    continue
-                # Only include pads on the same face direction
-                _sk_dx, _sk_dy = escape_direction(_co_fp, _sk_pad,
-                                                   _face_grp_co[0].neckdown_len_mm)
-                if abs(_sk_dx - _co_edx) > 0.01 or abs(_sk_dy - _co_edy) > 0.01:
-                    continue
-                # Reject interior pads (e.g. thermal / exposed pads) whose axial
-                # position is not flush with the face.  Compute axial position as
-                # projection onto escape direction; the face's axial position is
-                # taken from the mean of the signal pads.  Any pad more than 1mm
-                # away along the escape axis is interior, not a perimeter pad.
-                _sk_px = pcbnew.ToMM(_sk_pad.GetPosition().x)
-                _sk_py = pcbnew.ToMM(_sk_pad.GetPosition().y)
-                _sk_axial = _sk_px * _co_edx + _sk_py * _co_edy
-                _face_axial = sum(v.pad_x * _co_edx + v.pad_y * _co_edy
-                                  for v in _face_grp_co) / len(_face_grp_co)
-                if abs(_sk_axial - _face_axial) > 1.0:
-                    continue
-                # Skip if already in the face group (shouldn't happen, but guard)
-                _sk_num = _sk_pad.GetNumber()
-                if any(pv.pad_num == _sk_num for pv in _face_grp_co):
-                    continue
-                _sk_drill, _sk_ann  = via_params(PRIORITY_OTHER)
-                _sk_floor, _sk_nl, _sk_mx = neckdown_params(PRIORITY_OTHER, _sk_net)
-                _sk_pw   = pcbnew.ToMM(_sk_pad.GetSizeX())
-                _sk_ph   = pcbnew.ToMM(_sk_pad.GetSizeY())
-                _sk_nw   = neckdown_stub_width(_sk_floor, _sk_pw, _sk_ph,
-                                               _sk_net, PRIORITY_OTHER)
-                _sk_bb   = _sk_pad.GetBoundingBox()
-                _sk_bbox = (pcbnew.ToMM(_sk_bb.GetLeft()),
-                            pcbnew.ToMM(_sk_bb.GetTop()),
-                            pcbnew.ToMM(_sk_bb.GetRight()),
-                            pcbnew.ToMM(_sk_bb.GetBottom()))
-                _sk_pv = PendingVia(
-                    net_name        = _sk_net,
-                    ref             = _co_ref,
-                    pad_num         = _sk_num,
-                    pad_x           = _sk_px,
-                    pad_y           = _sk_py,
-                    pad_layer_id    = _sk_pad.GetLayer(),
-                    target_layer_id = _tgt_layer_co,
-                    escape_dx       = _co_edx,
-                    escape_dy       = _co_edy,
-                    priority        = PRIORITY_OTHER,
-                    via_drill_mm    = _sk_drill,
-                    via_annular_mm  = _sk_ann,
-                    neckdown_w_mm   = _sk_nw,
-                    neckdown_len_mm = _sk_nl,
-                    max_search_mm   = _sk_mx,
-                    pad_w_mm        = _sk_pw,
-                    pad_h_mm        = _sk_ph,
-                    pad_bbox        = _sk_bbox,
-                )
-                _co_skip_pvs.append(_sk_pv)
+        # Augment face group with skip-net pads on this face.
+        _co_skip_pvs = _build_skip_net_pvs(
+            _fp_by_ref.get(_co_ref), _face_grp_co, _co_edx, _co_edy, skip_nets
+        )
 
         _face_grp_aug = _face_grp_co + _co_skip_pvs
         # Add skip-net pvs to pending_set so _face_fanout includes them in
@@ -5100,109 +5260,80 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
               f"{len(_co_bus_stubs)} bus-stub segments")
 
     # ------------------------------------------------------------------
-    # 1g. Greedy per-face via stagger
+    # 1f-sub. Tight-pitch sub-group fanout (all footprint types)
     # ------------------------------------------------------------------
-    # For every group of pads that share the same component ref AND the
-    # same escape direction (one component face), assign the minimum
-    # neckdown_len_mm to each via so that no two vias on the same face
-    # violate their copper-to-copper clearance.
-    #
-    # Vias stay directly above/below their pads — no lateral (x) shift.
-    # Clearance is achieved in the escape direction (y/z): adjacent pads
-    # are placed in alternating "close" and "far" rows, like a brick
-    # pattern.  For 0.4 mm pitch HS pads the result is:
-    #   close row  neckdown = neckdown_min  (~0.50 mm)
-    #   far   row  neckdown = neckdown_min + sqrt(req² − dx²)  (~1.25 mm)
-    # which is the industry-standard fanout stagger for fine-pitch BGAs
-    # and QFPs.
-    #
-    # Algorithm (greedy, lateral order):
-    #   Sort pads by lateral position (pad coord projected onto lateral
-    #   axis = perpendicular to escape direction).
-    #   For each pad in order:
-    #     For every already-placed via on this face:
-    #       dx = |pad_lat_curr − pad_lat_nb|
-    #       req = via_copper_r_curr + via_copper_r_nb + clearance
-    #       If dx < req:
-    #         dy_need = sqrt(req² − dx²)
-    #         nl_close = nb.neckdown − dy_need   (safe "closer" threshold)
-    #         If current nl > nl_close:           (can't be safe below nb)
-    #           nl = max(nl, nb.neckdown + dy_need)   (must be safe above)
-    #   Apply new neckdown and refresh via position.
+    # For faces not handled by _face_needs_coopt above, detect contiguous
+    # tight-pitch sub-groups and apply _face_fanout to each one.
+    # Trigger: tight pad pitch (general), not component type or HS nets.
+
+    _sub_by_face: Dict[tuple, List[PendingVia]] = defaultdict(list)
+    for _pv_sub in pending:
+        if _pv_sub.face_fanout_assigned or _pv_sub.implicit_keepout or _pv_sub.via_in_pad:
+            continue
+        _fkey_sub = (_pv_sub.ref,
+                     round(_pv_sub.escape_dx, 4),
+                     round(_pv_sub.escape_dy, 4))
+        _sub_by_face[_fkey_sub].append(_pv_sub)
+
+    for _fkey_sub, _face_grp_sub in _sub_by_face.items():
+        _sub_ref = _fkey_sub[0]
+        _sub_edx = _fkey_sub[1]
+        _sub_edy = _fkey_sub[2]
+
+        _sub_groups = _find_tight_subgroups(_face_grp_sub, _coopt_sg_clr)
+        if not _sub_groups:
+            continue
+
+        for _sg_pads in _sub_groups:
+            if len(_sg_pads) < 2:
+                continue
+
+            _sg_pending_set = {(_pv.ref, _pv.pad_num) for _pv in pending}
+            _sg_ca = _sg_pads[0].via_annular_mm
+
+            # Augment with adjacent skip-net pads so they serve as boundary
+            # anchors and can absorb bus stubs — same as the whole-face coopt path.
+            _fp_sg = _fp_by_ref.get(_sub_ref)
+            _sg_skip_pvs = _build_skip_net_pvs(
+                _fp_sg, _sg_pads, _sub_edx, _sub_edy, skip_nets)
+            _sg_pads_aug = _sg_pads + _sg_skip_pvs
+
+            _sg_ldx, _sg_ldy = -_sub_edy, _sub_edx
+            _sg_fc = sum(v.pad_x * _sg_ldx + v.pad_y * _sg_ldy for v in _sg_pads_aug) / len(_sg_pads_aug)
+            _sg_pads_aug.sort(key=lambda v: -abs(v.pad_x * _sg_ldx + v.pad_y * _sg_ldy - _sg_fc))
+
+            print(f"  [sub-fanout] {_sub_ref} face ({_sub_edx:.0f},{_sub_edy:.0f}): "
+                  f"{len(_sg_pads)} signal + {len(_sg_skip_pvs)} skip-net pad(s) → tight-pitch sub-group")
+
+            _sg_assignments = _face_fanout(
+                _sg_pads_aug, _pad_obs_early, _sg_pending_set,
+                _coopt_sg_clr, _sg_ca, _sub_edx, _sub_edy,
+            )
+            _sg_bus_stubs = getattr(_face_fanout, '_last_bus_stubs', [])
+
+            for _pv_sg, _vx_sg, _vy_sg in _sg_assignments:
+                _pv_sg.via_x = _vx_sg
+                _pv_sg.via_y = _vy_sg
+                _pv_sg.face_fanout_assigned = True
+                _pv_sg.neckdown_len_mm = math.hypot(
+                    _vx_sg - _pv_sg.pad_x, _vy_sg - _pv_sg.pad_y)
+
+            for _pv_sg in _sg_pads_aug:
+                if _pv_sg.implicit_keepout:
+                    _pv_sg.face_fanout_assigned = True
+
+            _run._all_bus_stubs.extend(_sg_bus_stubs)
+
+            _placed_sg_n = len(_sg_assignments)
+            _ko_sg_n = sum(1 for v in _sg_pads_aug if v.implicit_keepout)
+            print(f"  [sub-fanout] {_sub_ref} face ({_sub_edx:.0f},{_sub_edy:.0f}): "
+                  f"{_placed_sg_n} placed, {_ko_sg_n} keepout, "
+                  f"{len(_sg_bus_stubs)} bus-stub segments")
+
     # ------------------------------------------------------------------
-    _sg_hvpd = _ca["hs_via_drill_mm"] + 2 * _ca["hs_via_annular_ring_mm"]
-    _sg_nvpd = _ca["via_drill_mm"]     + 2 * _ca["via_annular_ring_mm"]
-    _sg_clr  = _ca["via_clearance_mm"]
-
-    _face_groups: Dict[tuple, List[PendingVia]] = defaultdict(list)
-    for _pv_sg in pending:
-        if _pv_sg.face_fanout_assigned:
-            continue
-        _face_groups[(_pv_sg.ref,
-                      _pv_sg.escape_dx,
-                      _pv_sg.escape_dy)].append(_pv_sg)
-
-    for _fkey, _fgrp in _face_groups.items():
-        if len(_fgrp) < 2:
-            continue
-        _edx_sg, _edy_sg = _fkey[1], _fkey[2]
-        _ldx_sg, _ldy_sg = -_edy_sg, _edx_sg   # lateral unit vector
-
-        # Sort by pad lateral position so the greedy pass is deterministic.
-        _fgrp.sort(key=lambda pv: pv.pad_x * _ldx_sg + pv.pad_y * _ldy_sg)
-
-        # _placed: list of (pad_lat, assigned_neckdown, via_copper_d, pv_object)
-        # pad_lat is stored (not via_lat) so effective via lateral position can
-        # be recomputed as pad_lat + pv.corner_lat_offset_mm at any time.
-        _placed_sg: List[tuple] = []
-
-        for _pv_sg in _fgrp:
-            _pad_lat_sg = _pv_sg.pad_x * _ldx_sg + _pv_sg.pad_y * _ldy_sg
-            # Effective via lateral position accounts for pre-assigned P offset.
-            _lat_sg = _pad_lat_sg + _pv_sg.corner_lat_offset_mm
-            _vpd_sg = (_sg_hvpd if _pv_sg.priority == PRIORITY_HS
-                       else _sg_nvpd)
-            _sig_trace_w = _ca.get("signal_trace_width_mm", 0.20)
-            # Pad half-extent in escape direction (from pad centre to pad copper edge)
-            if _pv_sg.pad_bbox is not None:
-                _bbl, _bbt, _bbr, _bbb = _pv_sg.pad_bbox
-                _pad_half_esc = max(
-                    _edx_sg * (_bbr - _pv_sg.pad_x) + _edy_sg * (_bbb - _pv_sg.pad_y),
-                    _edx_sg * (_bbr - _pv_sg.pad_x) + _edy_sg * (_bbt - _pv_sg.pad_y),
-                    _edx_sg * (_bbl - _pv_sg.pad_x) + _edy_sg * (_bbb - _pv_sg.pad_y),
-                    _edx_sg * (_bbl - _pv_sg.pad_x) + _edy_sg * (_bbt - _pv_sg.pad_y),
-                    0.0)
-            else:
-                _pad_half_esc = (abs(_edx_sg) * _pv_sg.pad_w_mm
-                                 + abs(_edy_sg) * _pv_sg.pad_h_mm) / 2.0
-            # Floor: pad_edge → clr → trace → clr → via_copper_edge → via_centre
-            _nl_sg = max(_pv_sg.neckdown_len_mm,
-                         _pad_half_esc + _sg_clr + _sig_trace_w + _sg_clr + _vpd_sg / 2.0)
-
-            for _nb_pad_lat, _nb_nl, _nb_vpd, _nb_pv in _placed_sg:
-                # Use effective via lateral (pad_lat + lat_off) for both vias
-                # so the geometry reflects actual via circle positions, not pad
-                # centres.  This gives accurate axial separation when P has a
-                # pre-assigned lateral offset and N is straight (lat_off=0).
-                _nb_lat = _nb_pad_lat + _nb_pv.corner_lat_offset_mm
-                _dx_sg  = abs(_lat_sg - _nb_lat)
-                _req_sg = _vpd_sg / 2.0 + _nb_vpd / 2.0 + _sg_clr
-                if _dx_sg >= _req_sg:
-                    continue   # laterally clear — no constraint
-                _dy_sg    = math.sqrt(max(0.0, _req_sg ** 2 - _dx_sg ** 2))
-                _nl_close = _nb_nl - _dy_sg    # max nl to be safely "below"
-                if _nl_sg > _nl_close:         # can't safely be below nb
-                    _nl_sg = max(_nl_sg, _nb_nl + _dy_sg)
-
-            if _nl_sg > _pv_sg.neckdown_len_mm + 1e-6:
-                _old_sg = _pv_sg.neckdown_len_mm
-                _pv_sg.neckdown_len_mm = _nl_sg
-                _pv_sg.via_x, _pv_sg.via_y = _via_corner(_pv_sg)
-                print(f"  [stagger] {_pv_sg.ref}/{_pv_sg.pad_num} "
-                      f"({_pv_sg.net_name}): "
-                      f"neckdown {_old_sg:.3f}→{_nl_sg:.3f}mm")
-
-            _placed_sg.append((_pad_lat_sg, _pv_sg.neckdown_len_mm, _vpd_sg, _pv_sg))
+    # 1g. Greedy per-face via stagger (delegated to _stagger_vias)
+    # ------------------------------------------------------------------
+    _stagger_vias(pending, _ca, clearance)
 
     # ------------------------------------------------------------------
     # 1g-2d. 2D stagger for radial fanout components
@@ -5226,7 +5357,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
         r_i = vi.via_drill_mm / 2.0 + vi.via_annular_mm
         for vj in assigned:
             r_j = vj.via_drill_mm / 2.0 + vj.via_annular_mm
-            sep = r_i + r_j + _sg_clr
+            sep = r_i + r_j + _hs_clr
             vx_j, vy_j = vj.via_x, vj.via_y  # use actual position (col-exit vias != _via_corner)
             A = vi.pad_x - vx_j
             B = vi.pad_y - vy_j
@@ -5296,14 +5427,14 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False):
                     if _obs35.bbox is not None:
                         if _seg_bbox_dist(_pv_r2.pad_x, _pv_r2.pad_y,
                                           _35_vx, _35_vy,
-                                          _obs35.bbox) < _35_trace_hw + _sg_clr:
+                                          _obs35.bbox) < _35_trace_hw + _hs_clr:
                             _35_ok = False
                             break
                     else:
                         if (_pt_to_seg_dist(_obs35.cx, _obs35.cy,
                                             _pv_r2.pad_x, _pv_r2.pad_y,
                                             _35_vx, _35_vy)
-                                < _obs35.r + _35_trace_hw + _sg_clr):
+                                < _obs35.r + _35_trace_hw + _hs_clr):
                             _35_ok = False
                             break
                 if _35_ok:
