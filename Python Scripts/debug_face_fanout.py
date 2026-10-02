@@ -186,22 +186,30 @@ for ref, edx, edy, pad_filter in FACES:
         if subgroups:
             sg_pad_ids = set()
             for sg in subgroups:
-                fc = sum(v.pad_x * ldx + v.pad_y * ldy for v in sg) / len(sg)
-                sg.sort(key=lambda v: -abs(v.pad_x * ldx + v.pad_y * ldy - fc))
+                # Augment with adjacent skip-net pads — mirrors _run() 1f-sub block.
+                sg_skip = rfv._build_skip_net_pvs(fp, sg, edx, edy, skip_nets)
+                sg_min_lat = min(v.pad_x * ldx + v.pad_y * ldy for v in sg)
+                sg_max_lat = max(v.pad_x * ldx + v.pad_y * ldy for v in sg)
+                sg_skip = [pv for pv in sg_skip
+                           if sg_min_lat - 1.0 <= pv.pad_x * ldx + pv.pad_y * ldy <= sg_max_lat + 1.0]
+                sg_aug = sg + sg_skip
+                pending_set.update((pv.ref, pv.pad_num) for pv in sg_skip)
+                fc = sum(v.pad_x * ldx + v.pad_y * ldy for v in sg_aug) / len(sg_aug)
+                sg_aug.sort(key=lambda v: -abs(v.pad_x * ldx + v.pad_y * ldy - fc))
                 assignments = rfv._face_fanout(
-                    sg, pad_obs, pending_set,
-                    clearance, sg[0].via_annular_mm, edx, edy,
+                    sg_aug, pad_obs, pending_set,
+                    clearance, sg_aug[0].via_annular_mm, edx, edy,
                 )
                 bus_stubs = getattr(rfv._face_fanout, '_last_bus_stubs',   [])
                 keepouts  = getattr(rfv._face_fanout, '_last_keepout_set', set())
-                print(f"  [sub-group fanout] {len(sg)} pads → "
+                print(f"  [sub-group fanout] {len(sg)} signal + {len(sg_skip)} skip-net → "
                       f"{len(assignments)} placed, {len(keepouts)} keepout(s), "
                       f"{len(bus_stubs)} bus-stub segment(s)")
-                _emit_assignments(assignments, sg, bus_stubs, edx, edy)
+                _emit_assignments(assignments, sg_aug, bus_stubs, edx, edy)
                 for pv, _, _ in assignments:
                     pv.face_fanout_assigned = True
                     sg_pad_ids.add(id(pv))
-                for pv in sg:
+                for pv in sg_aug:
                     if pv.implicit_keepout:
                         pv.face_fanout_assigned = True
                         sg_pad_ids.add(id(pv))

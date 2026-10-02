@@ -3140,9 +3140,6 @@ def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
             continue
         if sk_net not in skip_nets:
             continue
-        sk_dx, sk_dy = escape_direction(fp, sk_pad, nl_ref)
-        if abs(sk_dx - edx) > 0.01 or abs(sk_dy - edy) > 0.01:
-            continue
         sk_px  = pcbnew.ToMM(sk_pad.GetPosition().x)
         sk_py  = pcbnew.ToMM(sk_pad.GetPosition().y)
         if abs(sk_px * edx + sk_py * edy - face_axial) > 1.0:
