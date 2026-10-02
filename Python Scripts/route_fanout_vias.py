@@ -4348,8 +4348,6 @@ def _stagger_vias(pending: List[PendingVia], ca: dict, clearance: float) -> None
                       _pv_sg.escape_dy)].append(_pv_sg)
 
     for _fkey, _fgrp in _face_groups.items():
-        if len(_fgrp) < 2:
-            continue
         _edx_sg, _edy_sg = _fkey[1], _fkey[2]
         _ldx_sg, _ldy_sg = -_edy_sg, _edx_sg   # lateral unit vector
 
@@ -5291,14 +5289,25 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             _sg_pending_set = {(_pv.ref, _pv.pad_num) for _pv in pending}
             _sg_ca = _sg_pads[0].via_annular_mm
 
-            # Augment with adjacent skip-net pads so they serve as boundary
-            # anchors and can absorb bus stubs — same as the whole-face coopt path.
-            _fp_sg = _fp_by_ref.get(_sub_ref)
-            _sg_skip_pvs = _build_skip_net_pvs(
-                _fp_sg, _sg_pads, _sub_edx, _sub_edy, skip_nets)
-            _sg_pads_aug = _sg_pads + _sg_skip_pvs
-
             _sg_ldx, _sg_ldy = -_sub_edy, _sub_edx
+
+            # Augment with skip-net pads that are laterally adjacent to the
+            # sub-group (within one pad-pitch of its edge) so they serve as
+            # boundary anchors.  A loose margin keeps pads far along the face
+            # from generating bus stubs that reach unrelated pads.
+            _fp_sg = _fp_by_ref.get(_sub_ref)
+            _sg_all_skip = _build_skip_net_pvs(
+                _fp_sg, _sg_pads, _sub_edx, _sub_edy, skip_nets)
+            _sg_min_lat = min(v.pad_x * _sg_ldx + v.pad_y * _sg_ldy for v in _sg_pads)
+            _sg_max_lat = max(v.pad_x * _sg_ldx + v.pad_y * _sg_ldy for v in _sg_pads)
+            _sg_lat_margin = 1.0  # mm — roughly 2× max expected pad pitch
+            _sg_skip_pvs = [
+                pv for pv in _sg_all_skip
+                if (_sg_min_lat - _sg_lat_margin
+                    <= pv.pad_x * _sg_ldx + pv.pad_y * _sg_ldy
+                    <= _sg_max_lat + _sg_lat_margin)
+            ]
+            _sg_pads_aug = _sg_pads + _sg_skip_pvs
             _sg_fc = sum(v.pad_x * _sg_ldx + v.pad_y * _sg_ldy for v in _sg_pads_aug) / len(_sg_pads_aug)
             _sg_pads_aug.sort(key=lambda v: -abs(v.pad_x * _sg_ldx + v.pad_y * _sg_ldy - _sg_fc))
 
