@@ -108,37 +108,38 @@ def _emit_assignments(assignments, face_pads, bus_stubs, edx, edy):
         if math.hypot(x2-x1, y2-y1) < 1e-6: continue
         _add_track(x1, y1, x2, y2, nw, _find_net(bnet))
 
-def _emit_stagger(face_pads, edx, edy):
+def _emit_one_stagger(pv, edx, edy):
     global n_vias
-    rfv._stagger_vias(face_pads, ca, clearance)
-    for pv in face_pads:
-        if pv.face_fanout_assigned: continue
-        if not pv.net_name or pv.net_name.startswith('unconnected-'): continue
-        net = _find_net(pv.net_name)
-        vx, vy = pv.via_x, pv.via_y
-        via = pcbnew.PCB_VIA(board)
-        via.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(vx), pcbnew.FromMM(vy)))
-        via.SetDrill(pcbnew.FromMM(pv.via_drill_mm))
-        via.SetWidth(pcbnew.FromMM(pv.via_drill_mm + 2 * pv.via_annular_mm))
-        via.SetLayerPair(layer_fcu, layer_bcu)
-        if net: via.SetNet(net)
-        board.Add(via)
-        n_vias += 1
-        if pv.cluster_real_pads:
-            for px, py, nw in pv.cluster_real_pads:
-                segs = rfv._route_45deg_stub(px, py, vx, vy, edx, edy, axial_first=False)
-                if not segs:
-                    segs = [(px, py, vx, vy)]
-                for x1, y1, x2, y2 in segs:
-                    if math.hypot(x2-x1, y2-y1) < 1e-6: continue
-                    _add_track(x1, y1, x2, y2, nw, net)
-        else:
-            segs = rfv._route_45deg_stub(pv.pad_x, pv.pad_y, vx, vy, edx, edy, axial_first=True)
+    if pv.face_fanout_assigned: return
+    if not pv.net_name or pv.net_name.startswith('unconnected-'): return
+    net = _find_net(pv.net_name)
+    vx, vy = pv.via_x, pv.via_y
+    via = pcbnew.PCB_VIA(board)
+    via.SetPosition(pcbnew.VECTOR2I(pcbnew.FromMM(vx), pcbnew.FromMM(vy)))
+    via.SetDrill(pcbnew.FromMM(pv.via_drill_mm))
+    via.SetWidth(pcbnew.FromMM(pv.via_drill_mm + 2 * pv.via_annular_mm))
+    via.SetLayerPair(layer_fcu, layer_bcu)
+    if net: via.SetNet(net)
+    board.Add(via)
+    n_vias += 1
+    if pv.cluster_real_pads:
+        for px, py, nw in pv.cluster_real_pads:
+            segs = rfv._route_45deg_stub(px, py, vx, vy, edx, edy, axial_first=False)
             if not segs:
-                segs = [(pv.pad_x, pv.pad_y, vx, vy)]
+                segs = [(px, py, vx, vy)]
             for x1, y1, x2, y2 in segs:
                 if math.hypot(x2-x1, y2-y1) < 1e-6: continue
-                _add_track(x1, y1, x2, y2, pv.neckdown_w_mm, net)
+                _add_track(x1, y1, x2, y2, nw, net)
+    else:
+        segs = rfv._route_45deg_stub(pv.pad_x, pv.pad_y, vx, vy, edx, edy, axial_first=True)
+        if not segs:
+            segs = [(pv.pad_x, pv.pad_y, vx, vy)]
+        for x1, y1, x2, y2 in segs:
+            if math.hypot(x2-x1, y2-y1) < 1e-6: continue
+            _add_track(x1, y1, x2, y2, pv.neckdown_w_mm, net)
+
+# Stagger queue: filled during face loop, tightened then emitted after.
+_stagger_queue: list = []  # [(face_pads, edx, edy), ...]
 
 # ── Process each face ─────────────────────────────────────────────────────────
 pending_set = {(pv.ref, pv.pad_num) for pv in pending}
@@ -208,10 +209,25 @@ for ref, edx, edy, pad_filter in FACES:
             remainder = [pv for pv in face_pads if id(pv) not in sg_pad_ids]
             if remainder:
                 print(f"  [standard stagger] {len(remainder)} pad(s)")
-                _emit_stagger(remainder, edx, edy)
+                rfv._stagger_vias(remainder, ca, clearance)
+                _stagger_queue.append((remainder, edx, edy))
         else:
             print(f"  [standard stagger] {len(face_pads)} pad(s)")
-            _emit_stagger(face_pads, edx, edy)
+            rfv._stagger_vias(face_pads, ca, clearance)
+            _stagger_queue.append((face_pads, edx, edy))
+
+# ── Tighten stagger vias then emit ────────────────────────────────────────────
+_all_stagger = [pv for grp, _, _ in _stagger_queue
+                for pv in grp
+                if not pv.face_fanout_assigned
+                and pv.net_name and not pv.net_name.startswith('unconnected-')]
+if _all_stagger:
+    n_tight = rfv._tighten_vias(_all_stagger, pad_obs, [], clearance)
+    if n_tight:
+        print(f"\n[tighten] {n_tight} stagger via(s) compacted")
+for grp, edx, edy in _stagger_queue:
+    for pv in grp:
+        _emit_one_stagger(pv, edx, edy)
 
 board.Save(board.GetFileName())
 print(f"\nWritten: {n_vias} vias, {n_tracks} tracks")

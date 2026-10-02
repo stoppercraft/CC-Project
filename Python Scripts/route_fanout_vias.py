@@ -858,32 +858,68 @@ def _tighten_vias(pending: List["PendingVia"], pad_obs: List[Obstacle],
             if ok:
                 _old_vx, _old_vy = via.via_x, via.via_y
                 via.via_x, via.via_y = vx, vy
-                segs45 = _route_45deg_stub(via.pad_x, via.pad_y, vx, vy,
-                                            via.escape_dx, via.escape_dy)
-                cx, cy = (segs45[0][2], segs45[0][3]) if segs45 else (vx, vy)
-                stub_ok = _stub_clear(via, cx, cy, pad_obs, clearance,
-                                      ext_stubs, edge_segs)
+                if via.cluster_real_pads:
+                    _old_px, _old_py = via.pad_x, via.pad_y
+                    for _rpx, _rpy, _rnw in via.cluster_real_pads:
+                        _rsegs = _route_45deg_stub(_rpx, _rpy, vx, vy,
+                                                   via.escape_dx, via.escape_dy,
+                                                   axial_first=False)
+                        _rcx = _rsegs[0][2] if _rsegs else vx
+                        _rcy = _rsegs[0][3] if _rsegs else vy
+                        via.pad_x, via.pad_y = _rpx, _rpy
+                        if not _stub_clear(via, _rcx, _rcy, pad_obs, clearance,
+                                           ext_stubs, edge_segs):
+                            ok = False
+                            break
+                    via.pad_x, via.pad_y = _old_px, _old_py
+                else:
+                    segs45 = _route_45deg_stub(via.pad_x, via.pad_y, vx, vy,
+                                                via.escape_dx, via.escape_dy)
+                    cx, cy = (segs45[0][2], segs45[0][3]) if segs45 else (vx, vy)
+                    if not _stub_clear(via, cx, cy, pad_obs, clearance,
+                                       ext_stubs, edge_segs):
+                        ok = False
                 via.via_x, via.via_y = _old_vx, _old_vy
-                if not stub_ok:
-                    ok = False
 
             # Stub segments vs other via copper circles
             if ok:
-                segs45 = _route_45deg_stub(via.pad_x, via.pad_y, vx, vy,
-                                            via.escape_dx, via.escape_dy)
-                cx, cy = (segs45[0][2], segs45[0][3]) if segs45 else (vx, vy)
-                bent = len(segs45) > 1
-                for other in other_vias:
-                    oc  = other.via_drill_mm / 2.0 + other.via_annular_mm
-                    thr = stub_hw + clearance + oc
-                    if _dist_to_segment(other.via_x, other.via_y,
-                                        via.pad_x, via.pad_y, cx, cy) < thr:
-                        ok = False
-                        break
-                    if ok and bent and _dist_to_segment(other.via_x, other.via_y,
-                                                         cx, cy, vx, vy) < thr:
-                        ok = False
-                        break
+                if via.cluster_real_pads:
+                    for _rpx, _rpy, _rnw in via.cluster_real_pads:
+                        _rsegs = _route_45deg_stub(_rpx, _rpy, vx, vy,
+                                                   via.escape_dx, via.escape_dy,
+                                                   axial_first=False)
+                        _rcx = _rsegs[0][2] if _rsegs else vx
+                        _rcy = _rsegs[0][3] if _rsegs else vy
+                        _rbent = len(_rsegs) > 1
+                        for other in other_vias:
+                            oc  = other.via_drill_mm / 2.0 + other.via_annular_mm
+                            thr = stub_hw + clearance + oc
+                            if _dist_to_segment(other.via_x, other.via_y,
+                                                _rpx, _rpy, _rcx, _rcy) < thr:
+                                ok = False
+                                break
+                            if ok and _rbent and _dist_to_segment(other.via_x, other.via_y,
+                                                                   _rcx, _rcy, vx, vy) < thr:
+                                ok = False
+                                break
+                        if not ok:
+                            break
+                else:
+                    segs45 = _route_45deg_stub(via.pad_x, via.pad_y, vx, vy,
+                                                via.escape_dx, via.escape_dy)
+                    cx, cy = (segs45[0][2], segs45[0][3]) if segs45 else (vx, vy)
+                    bent = len(segs45) > 1
+                    for other in other_vias:
+                        oc  = other.via_drill_mm / 2.0 + other.via_annular_mm
+                        thr = stub_hw + clearance + oc
+                        if _dist_to_segment(other.via_x, other.via_y,
+                                            via.pad_x, via.pad_y, cx, cy) < thr:
+                            ok = False
+                            break
+                        if ok and bent and _dist_to_segment(other.via_x, other.via_y,
+                                                             cx, cy, vx, vy) < thr:
+                            ok = False
+                            break
 
             if ok:
                 best_ax = ax
@@ -4375,8 +4411,14 @@ def _stagger_vias(pending: List[PendingVia], ca: dict, clearance: float) -> None
                 _pad_half_esc = (abs(_edx_sg) * _pv_sg.pad_w_mm
                                  + abs(_edy_sg) * _pv_sg.pad_h_mm) / 2.0
 
-            _nl_sg = max(_pv_sg.neckdown_len_mm,
-                         _pad_half_esc + _sg_clr + _sig_trace_w + _sg_clr + _vpd_sg / 2.0)
+            if _pv_sg.cluster_real_pads:
+                # Cluster via: herringbone stubs, no external trace threads between
+                # pad edge and via — skip the trace-passage margin.
+                _nl_sg = max(_pv_sg.neckdown_len_mm,
+                             _pad_half_esc + _sg_clr + _vpd_sg / 2.0)
+            else:
+                _nl_sg = max(_pv_sg.neckdown_len_mm,
+                             _pad_half_esc + _sg_clr + _sig_trace_w + _sg_clr + _vpd_sg / 2.0)
 
             for _nb_pad_lat, _nb_nl, _nb_vpd, _nb_pv in _placed_sg:
                 _nb_lat = _nb_pad_lat + _nb_pv.corner_lat_offset_mm
