@@ -3429,7 +3429,14 @@ def _face_fanout(
         v0     = face_pads[indices[0]]
         nw     = v0.neckdown_w_mm
         bus_hw = nw / 2.0
-        bus_depth = v0.neckdown_len_mm
+        # Bus line must clear all pad copper in the group — use the maximum pad
+        # half-extent across the face (conservative: longer pad dimension) so the
+        # horizontal connector doesn't short adjacent non-GND pads.
+        _max_half_esc = max(
+            (max(fp.pad_w_mm, fp.pad_h_mm) / 2.0 for fp in face_pads), default=0.0
+        )
+        bus_depth = max(v0.neckdown_len_mm,
+                        _max_half_esc + CLEARANCE + nw / 2.0)
 
         if abs(edy) > abs(edx):  # N/S face — escape is Y
             bus_esc = v0.pad_y + edy * bus_depth
