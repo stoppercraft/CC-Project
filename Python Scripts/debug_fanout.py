@@ -88,15 +88,25 @@ for ref in TARGET_REFS:
         emitted += 1
 
         if pv.cluster_real_pads:
-            # Each member pad exits axially (northward) then moves laterally to the via.
-            for px, py, nw in pv.cluster_real_pads:
-                segs = rfv._route_45deg_stub(px, py, pv.via_x, pv.via_y,
-                                             pv.escape_dx, pv.escape_dy, axial_first=True)
-                if not segs:
-                    segs = [(px, py, pv.via_x, pv.via_y)]
-                for x1, y1, x2, y2 in segs:
-                    if math.hypot(x2-x1, y2-y1) < 1e-6: continue
-                    _add_track(x1, y1, x2, y2, nw, net)
+            # Bus topology: axial stub from each pad to via depth, lateral bus connects all.
+            edx, edy = pv.escape_dx, pv.escape_dy
+            ldx, ldy = -edy, edx
+            via_along = pv.via_x * edx + pv.via_y * edy
+            lat_coords = ([px * ldx + py * ldy for px, py, _ in pv.cluster_real_pads]
+                          + [pv.via_x * ldx + pv.via_y * ldy])
+            lat_min, lat_max = min(lat_coords), max(lat_coords)
+            bx1 = lat_min * ldx + via_along * edx
+            by1 = lat_min * ldy + via_along * edy
+            bx2 = lat_max * ldx + via_along * edx
+            by2 = lat_max * ldy + via_along * edy
+            if math.hypot(bx2 - bx1, by2 - by1) >= 1e-6:
+                _add_track(bx1, by1, bx2, by2, pv.neckdown_w_mm, net)
+            for px, py, pad_nw in pv.cluster_real_pads:
+                pad_lat = px * ldx + py * ldy
+                sx2 = pad_lat * ldx + via_along * edx
+                sy2 = pad_lat * ldy + via_along * edy
+                if math.hypot(sx2 - px, sy2 - py) >= 1e-6:
+                    _add_track(px, py, sx2, sy2, pad_nw, net)
         else:
             segs = rfv._route_45deg_stub(pv.pad_x, pv.pad_y, pv.via_x, pv.via_y,
                                          pv.escape_dx, pv.escape_dy, axial_first=True)

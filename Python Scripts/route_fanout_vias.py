@@ -3026,21 +3026,49 @@ def _make_neckdown(board, via: PendingVia, net) -> list:
     _mn_edx_s  = math.cos(_mn_snap_a)
     _mn_edy_s  = math.sin(_mn_snap_a)
     if via.cluster_real_pads:
-        # Herringbone cluster: emit one stub per real pad converging at the via.
-        # The primary's pad_x/pad_y was moved to the centroid; emit from each
-        # original pad position instead so no stub has a dangling endpoint.
+        # Bus topology: each pad exits straight axially to the via's depth level,
+        # then a single lateral bus connects all stubs to the via.
+        # Multiple pads on the same side of the via always produce overlapping
+        # diagonals with any 45° approach — axial+lateral avoids this entirely.
+        _cl_edx = _mn_edx_s
+        _cl_edy = _mn_edy_s
+        _cl_ldx = -_cl_edy   # lateral unit vector x
+        _cl_ldy =  _cl_edx   # lateral unit vector y
+        # Axial coordinate of the via along the escape direction
+        _via_along = via.via_x * _cl_edx + via.via_y * _cl_edy
+        # Lateral coordinates of all real pads + via
+        _lat_coords = ([px * _cl_ldx + py * _cl_ldy
+                        for px, py, _nw in via.cluster_real_pads]
+                       + [via.via_x * _cl_ldx + via.via_y * _cl_ldy])
+        _lat_min = min(_lat_coords)
+        _lat_max = max(_lat_coords)
         segs = []
+        # Lateral bus at via's axial position
+        _bx1 = _lat_min * _cl_ldx + _via_along * _cl_edx
+        _by1 = _lat_min * _cl_ldy + _via_along * _cl_edy
+        _bx2 = _lat_max * _cl_ldx + _via_along * _cl_edx
+        _by2 = _lat_max * _cl_ldy + _via_along * _cl_edy
+        t_bus = pcbnew.PCB_TRACK(board)
+        t_bus.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(_bx1), pcbnew.FromMM(_by1)))
+        t_bus.SetEnd  (pcbnew.VECTOR2I(pcbnew.FromMM(_bx2), pcbnew.FromMM(_by2)))
+        t_bus.SetWidth(pcbnew.FromMM(via.neckdown_w_mm))
+        t_bus.SetLayer(via.pad_layer_id)
+        t_bus.SetNet(net)
+        segs.append(t_bus)
+        # Axial stub from each real pad to the bus level
         for px, py, nw in via.cluster_real_pads:
-            for seg in _route_45deg_stub(px, py, via.via_x, via.via_y,
-                                         _mn_edx_s, _mn_edy_s,
-                                         axial_first=False):
-                t = pcbnew.PCB_TRACK(board)
-                t.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(seg[0]), pcbnew.FromMM(seg[1])))
-                t.SetEnd  (pcbnew.VECTOR2I(pcbnew.FromMM(seg[2]), pcbnew.FromMM(seg[3])))
-                t.SetWidth(pcbnew.FromMM(nw))
-                t.SetLayer(via.pad_layer_id)
-                t.SetNet(net)
-                segs.append(t)
+            _pad_lat = px * _cl_ldx + py * _cl_ldy
+            _sx2 = _pad_lat * _cl_ldx + _via_along * _cl_edx
+            _sy2 = _pad_lat * _cl_ldy + _via_along * _cl_edy
+            if math.hypot(_sx2 - px, _sy2 - py) < 1e-6:
+                continue
+            t_stub = pcbnew.PCB_TRACK(board)
+            t_stub.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(px),   pcbnew.FromMM(py)))
+            t_stub.SetEnd  (pcbnew.VECTOR2I(pcbnew.FromMM(_sx2), pcbnew.FromMM(_sy2)))
+            t_stub.SetWidth(pcbnew.FromMM(nw))
+            t_stub.SetLayer(via.pad_layer_id)
+            t_stub.SetNet(net)
+            segs.append(t_stub)
         return segs
     if hasattr(via, '_col_exit'):
         # Phase 3.5 col-exit: segment 1 is straight cardinal to col endpoint,
