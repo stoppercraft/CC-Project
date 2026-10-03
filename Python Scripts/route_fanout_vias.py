@@ -4495,7 +4495,8 @@ def _stagger_vias(pending: List[PendingVia], ca: dict, clearance: float) -> None
 # ---------------------------------------------------------------------------
 
 def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
-         _debug_return_pending: bool = False):
+         _debug_return_pending: bool = False,
+         _debug_return_computed: bool = False):
     clearance      = cfg.CLEARANCE_AUDIT["via_clearance_mm"]
     min_annular_mm = cfg.CLEARANCE_AUDIT.get("via_annular_ring_min_mm", 0.10)
     no_via         = set(cfg.CLEARANCE_AUDIT.get("via_keepout_exclude_refs", []))
@@ -5917,6 +5918,12 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
           f"({len(vippo)} via-in-pad  "
           f"{len(placed)-len(vippo)} side-exit)  "
           f"{len(keepouts)} implicit keepout(s).")
+
+    if _debug_return_computed:
+        return (pending, _pad_obs_early, _fp_by_ref, clearance, skip_nets,
+                list(getattr(_run, '_all_bus_stubs', [])),
+                list(getattr(_run, '_all_skip_net_pvs', [])),
+                _keepout_escape_data)
 
     if not apply:
         print("\nDry-run complete — pass --apply to write to board.")
