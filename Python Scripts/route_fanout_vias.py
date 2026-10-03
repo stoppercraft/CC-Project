@@ -3629,6 +3629,35 @@ def _face_fanout(
     # 6. Main multi-pass loop — signal pads only, outside-in
     # ------------------------------------------------------------------
 
+    def _cluster_segs(pv, vx, vy):
+        """Stub segments for pv at via position (vx,vy).
+        Cluster primaries get bus topology (real per-pad axial stubs + lateral bus)
+        so clearance checks see the actual copper footprint, not just the centroid stub."""
+        if pv.cluster_real_pads:
+            _via_along = vx * edx + vy * edy
+            _lat_coords = ([_px * ldx + _py * ldy for _px, _py, _ in pv.cluster_real_pads]
+                           + [vx * ldx + vy * ldy])
+            _lat_min, _lat_max = min(_lat_coords), max(_lat_coords)
+            _bx1 = _lat_min * ldx + _via_along * edx
+            _by1 = _lat_min * ldy + _via_along * edy
+            _bx2 = _lat_max * ldx + _via_along * edx
+            _by2 = _lat_max * ldy + _via_along * edy
+            _segs = []
+            if math.hypot(_bx2 - _bx1, _by2 - _by1) >= 1e-6:
+                _segs.append((_bx1, _by1, _bx2, _by2))
+            for _px, _py, _ in pv.cluster_real_pads:
+                _pad_lat = _px * ldx + _py * ldy
+                _sx2 = _pad_lat * ldx + _via_along * edx
+                _sy2 = _pad_lat * ldy + _via_along * edy
+                if math.hypot(_sx2 - _px, _sy2 - _py) >= 1e-6:
+                    _segs.append((_px, _py, _sx2, _sy2))
+            return _segs
+        _segs = _route_45deg_stub(pv.pad_x, pv.pad_y, vx, vy, edx, edy, axial_first=True)
+        if not _segs:
+            _segs = [(pv.pad_x, pv.pad_y, vx, vy)]
+        return [(x1, y1, x2, y2) for x1, y1, x2, y2 in _segs
+                if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+
     # Stub-only pads are excluded from signal_indices, so their minimum
     # stubs are not in `placed` by default.  Pre-compute them as fixed
     # obstacles so via placement respects the space they occupy.
@@ -3644,6 +3673,23 @@ def _face_fanout(
         _sy2 = _v.pad_y + edy * _v.neckdown_len_mm
         _stub_only_segs.append((_v.pad_x, _v.pad_y, _sx2, _sy2,
                                  _v.neckdown_w_mm / 2.0, _v.net_name))
+
+    # Pre-add cluster primaries' real-pad axial columns to _stub_only_segs.
+    # Outside-in ordering can place a signal pad before a cluster primary that
+    # is laterally closer to face center.  The cluster primary's physical stubs
+    # aren't in `placed` yet, so the earlier pad can't be checked against them.
+    # Adding each real pad's full axial column as a pre-obstacle ensures pads
+    # placed before the cluster primary still avoid its copper footprint.
+    for _i, _v in enumerate(face_pads):
+        if not _v.cluster_real_pads:
+            continue
+        if (_v.ref, _v.pad_num) not in pending_set:
+            continue
+        for _px, _py, _pnw in _v.cluster_real_pads:
+            _ex = _px + edx * FANOUT_DEPTH_CAP
+            _ey = _py + edy * FANOUT_DEPTH_CAP
+            _stub_only_segs.append((_px, _py, _ex, _ey,
+                                    _pnw / 2.0, _v.net_name))
 
     sig_n        = len(signal_indices)
     lat_offs_arr = [0.0] * sig_n
@@ -3684,13 +3730,7 @@ def _face_fanout(
                 vy  = v.pad_y + ls * lat_off * ldy + edy * depth
                 blk = _check(v, vx, vy, placed)
                 if blk is None:
-                    stub_segs = _route_45deg_stub(
-                        v.pad_x, v.pad_y, vx, vy, edx, edy, axial_first=True)
-                    if not stub_segs:
-                        stub_segs = [(v.pad_x, v.pad_y, vx, vy)]
-                    stub_segs = [(x1, y1, x2, y2)
-                                 for x1, y1, x2, y2 in stub_segs
-                                 if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
+                    stub_segs = _cluster_segs(v, vx, vy)
                     placed.append({
                         'vx':      vx,
                         'vy':      vy,
@@ -3793,30 +3833,18 @@ def _face_fanout(
                         # Skip-net pads have a position in final_placed but no via is emitted.
                         # Use r=0 (no via circle) so via-vs-via check doesn't block real vias,
                         # but keep the full stub geometry so stub-vs-stub checks still fire.
-                        _sk_segs = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
-                                                     edx, edy, axial_first=True)
-                        if not _sk_segs:
-                            _sk_segs = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
-                        _sk_segs = [(x1, y1, x2, y2) for x1, y1, x2, y2 in _sk_segs
-                                    if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
                         other_placed.append({
                             'vx': vxj, 'vy': vyj, 'r': 0.0,
                             'stub_hw': pvj.neckdown_w_mm / 2.0,
-                            'segs': _sk_segs,
+                            'segs': _cluster_segs(pvj, vxj, vyj),
                             'pad_i': gj, 'net': pvj.net_name, 'pad_num': pvj.pad_num,
                         })
                         continue
                     pcrj = pvj.via_drill_mm / 2.0 + ca
-                    segsj = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
-                                              edx, edy, axial_first=True)
-                    if not segsj:
-                        segsj = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
-                    segsj = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segsj
-                             if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
                     other_placed.append({
                         'vx': vxj, 'vy': vyj, 'r': pcrj,
                         'stub_hw': pvj.neckdown_w_mm / 2.0,
-                        'segs': segsj,
+                        'segs': _cluster_segs(pvj, vxj, vyj),
                         'pad_i': gj,
                         'net': pvj.net_name,
                         'pad_num': pvj.pad_num,
@@ -4122,30 +4150,18 @@ def _face_fanout(
                     vxj, vyj = final_placed[gj]
                     pvj  = face_pads[gj]
                     if pvj.net_name in _skip_nets:
-                        _sk_segs = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
-                                                     edx, edy, axial_first=True)
-                        if not _sk_segs:
-                            _sk_segs = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
-                        _sk_segs = [(x1, y1, x2, y2) for x1, y1, x2, y2 in _sk_segs
-                                    if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
                         other_placed.append({
                             'vx': vxj, 'vy': vyj, 'r': 0.0,
                             'stub_hw': pvj.neckdown_w_mm / 2.0,
-                            'segs': _sk_segs,
+                            'segs': _cluster_segs(pvj, vxj, vyj),
                             'pad_i': gj, 'net': pvj.net_name, 'pad_num': pvj.pad_num,
                         })
                         continue
                     pcrj = pvj.via_drill_mm / 2.0 + ca
-                    segsj = _route_45deg_stub(pvj.pad_x, pvj.pad_y, vxj, vyj,
-                                              edx, edy, axial_first=True)
-                    if not segsj:
-                        segsj = [(pvj.pad_x, pvj.pad_y, vxj, vyj)]
-                    segsj = [(x1, y1, x2, y2) for x1, y1, x2, y2 in segsj
-                             if math.hypot(x2 - x1, y2 - y1) >= 1e-6]
                     other_placed.append({
                         'vx': vxj, 'vy': vyj, 'r': pcrj,
                         'stub_hw': pvj.neckdown_w_mm / 2.0,
-                        'segs': segsj,
+                        'segs': _cluster_segs(pvj, vxj, vyj),
                         'pad_i': gj,
                         'net': pvj.net_name,
                         'pad_num': pvj.pad_num,
