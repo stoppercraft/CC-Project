@@ -32,7 +32,7 @@ board = pcbnew.LoadBoard(BOARD)
 
 # ── Run full pipeline, get computed positions ─────────────────────────────────
 result = rfv._run(board, apply=False, _debug_return_computed=True)
-pending, pad_obs, fp_by_ref, clearance, skip_nets, all_bus_stubs, all_skip_pvs, keepout_data = result
+pending, pad_obs, fp_by_ref, clearance, skip_nets, bus_stubs_by_ref, all_skip_pvs, keepout_data = result
 print(f"full pipeline done: {len(pending)} pad(s) in pending")
 
 layer_fcu = board.GetLayerID("F.Cu")
@@ -137,6 +137,14 @@ for pv in som1_skip:
             _add_track(pv.stub_only_vx, pv.stub_only_vy, ex2, ey2, pv.neckdown_w_mm, net)
 if som1_skip:
     print(f"SOM1 skip-net stubs: {len(som1_skip)} emitted")
+
+# ── Emit SOM1 bus stubs (GND/skip-net track segments from face fanout) ─────────
+som1_bus = bus_stubs_by_ref.get('SOM1', [])
+for x1, y1, x2, y2, nw, bnet in som1_bus:
+    if math.hypot(x2-x1, y2-y1) < 1e-6: continue
+    _add_track(x1, y1, x2, y2, nw, board.FindNet(bnet))
+if som1_bus:
+    print(f"SOM1 bus stubs: {len(som1_bus)} segment(s) emitted")
 
 board.Save(board.GetFileName())
 print(f"\nWritten: {n_vias} vias, {n_tracks} tracks")

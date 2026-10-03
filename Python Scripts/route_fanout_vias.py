@@ -4503,8 +4503,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
     skip_nets      = set(getattr(cfg, "FANOUT_VIA_SKIP_NETS", []))
 
     # Reset per-run accumulators (populated by _face_fanout call site)
-    _run._all_bus_stubs    = []
-    _run._all_skip_net_pvs = []   # PendingVia stubs for skip-net pads on co-opt faces
+    _run._all_bus_stubs        = []
+    _run._all_bus_stubs_by_ref = {}   # same segments, keyed by footprint ref
+    _run._all_skip_net_pvs     = []   # PendingVia stubs for skip-net pads on co-opt faces
 
     hs_map = _hs_net_layer_map()
     sw_map = _sw_net_layer_map()
@@ -5341,6 +5342,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
 
         # Store bus stubs for section 6 emission
         _run._all_bus_stubs.extend(_co_bus_stubs)
+        _run._all_bus_stubs_by_ref.setdefault(_co_ref, []).extend(_co_bus_stubs)
 
         _placed_co = len(_co_assignments)
         _ko_co = sum(1 for v in _face_grp_co if v.implicit_keepout)
@@ -5423,6 +5425,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                     _pv_sg.face_fanout_assigned = True
 
             _run._all_bus_stubs.extend(_sg_bus_stubs)
+            _run._all_bus_stubs_by_ref.setdefault(_sub_ref, []).extend(_sg_bus_stubs)
 
             _placed_sg_n = len(_sg_assignments)
             _ko_sg_n = sum(1 for v in _sg_pads_aug if v.implicit_keepout)
@@ -5921,7 +5924,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
 
     if _debug_return_computed:
         return (pending, _pad_obs_early, _fp_by_ref, clearance, skip_nets,
-                list(getattr(_run, '_all_bus_stubs', [])),
+                dict(getattr(_run, '_all_bus_stubs_by_ref', {})),
                 list(getattr(_run, '_all_skip_net_pvs', [])),
                 _keepout_escape_data)
 
