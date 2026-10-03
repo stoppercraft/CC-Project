@@ -1813,6 +1813,12 @@ def _cluster_adjacent_pads(pending: List["PendingVia"],
             primary.pad_x = centroid_perp * pdx + orig_along * edx
             primary.pad_y = centroid_perp * pdy + orig_along * edy
 
+            # After centroid move pad_bbox still refers to the primary's original
+            # pad position, not the centroid.  Clearing it forces _own_depth_floor
+            # in _face_fanout to use the pad's axial half-extent formula, which
+            # always requires the via to clear the pad row regardless of lateral offset.
+            primary.pad_bbox = None
+
             # Extend neckdown length enough to clear the widest lateral offset.
             primary.neckdown_len_mm = max(primary.neckdown_len_mm, max_lat + 0.1)
 

@@ -88,10 +88,10 @@ for ref in TARGET_REFS:
         emitted += 1
 
         if pv.cluster_real_pads:
-            # Herringbone: each member pad routes to the shared via
+            # Each member pad exits axially (northward) then moves laterally to the via.
             for px, py, nw in pv.cluster_real_pads:
                 segs = rfv._route_45deg_stub(px, py, pv.via_x, pv.via_y,
-                                             pv.escape_dx, pv.escape_dy, axial_first=False)
+                                             pv.escape_dx, pv.escape_dy, axial_first=True)
                 if not segs:
                     segs = [(px, py, pv.via_x, pv.via_y)]
                 for x1, y1, x2, y2 in segs:
