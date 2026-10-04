@@ -3447,9 +3447,14 @@ def _face_fanout(
         and i not in bus_pad_set
         and face_pads[i].net_name  # skip no-net pads
     ]
+    # Cluster representatives first so their via positions and stubs are in
+    # `placed` before adjacent signal pads are evaluated.  Within each group
+    # the original outside-in (descending lateral distance) order is kept.
     signal_indices.sort(
-        key=lambda i: abs(face_pads[i].pad_x * ldx + face_pads[i].pad_y * ldy - face_center),
-        reverse=True,
+        key=lambda i: (
+            0 if face_pads[i].cluster_real_pads else 1,
+            -abs(face_pads[i].pad_x * ldx + face_pads[i].pad_y * ldy - face_center),
+        ),
     )
     global_to_si = {gi: si for si, gi in enumerate(signal_indices)}
 
