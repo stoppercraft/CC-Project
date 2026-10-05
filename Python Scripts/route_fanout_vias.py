@@ -3522,6 +3522,11 @@ def _face_fanout(
         via_copper_r = v.via_drill_mm / 2.0 + ca
         stub_hw      = v.neckdown_w_mm / 2.0
         chk_r        = via_copper_r + CLEARANCE
+        # Skip-net pads emit a stub tip, not a via.  Use stub_hw as the effective
+        # copper radius at (vx, vy) for sections 3/4/4b; skip section 2 entirely
+        # (sections 5b/5c already check stub-tip vs via/stub with correct thresholds).
+        _v_skip  = v.net_name in _skip_nets
+        _eff_r   = stub_hw if _v_skip else via_copper_r
 
         # 1. via vs pad obstacles
         for obs in pad_obs_list:
@@ -3538,20 +3543,21 @@ def _face_fanout(
             if d < thr:
                 return (f"{obs.ref}/{obs.net_name}", d, thr, "via-vs-pad", None)
 
-        # 2. via vs placed vias
-        for j, pc in enumerate(placed):
-            d   = math.hypot(vx - pc['vx'], vy - pc['vy'])
-            thr = via_copper_r + pc['r'] + CLEARANCE
-            if d < thr:
-                return (f"via[{pc['pad_num']}]", d, thr, "via-vs-via", j)
+        # 2. via vs placed vias — only for pads that emit a real via
+        if not _v_skip:
+            for j, pc in enumerate(placed):
+                d   = math.hypot(vx - pc['vx'], vy - pc['vy'])
+                thr = via_copper_r + pc['r'] + CLEARANCE
+                if d < thr:
+                    return (f"via[{pc['pad_num']}]", d, thr, "via-vs-via", j)
 
-        # 3. via vs placed stub segments (different net only)
+        # 3. via (or stub tip) vs placed stub segments (different net only)
         for j, pc in enumerate(placed):
             if pc['net'] == v.net_name:
                 continue
             for x1s, y1s, x2s, y2s in pc['segs']:
                 d   = _dist_to_segment(vx, vy, x1s, y1s, x2s, y2s)
-                thr = via_copper_r + pc['stub_hw'] + CLEARANCE
+                thr = _eff_r + pc['stub_hw'] + CLEARANCE
                 if d < thr:
                     return (f"stub[{pc['pad_num']}]", d, thr, "via-vs-stub", j)
 
@@ -3561,7 +3567,7 @@ def _face_fanout(
                 continue
             d   = _dist_to_segment(vx, vy,
                                    bobs['x1'], bobs['y1'], bobs['x2'], bobs['y2'])
-            thr = via_copper_r + bobs['hw'] + CLEARANCE
+            thr = _eff_r + bobs['hw'] + CLEARANCE
             if d < thr:
                 return (f"bus/{bobs['net']}", d, thr, "via-vs-bus", None)
 
@@ -3570,7 +3576,7 @@ def _face_fanout(
             if _snet == v.net_name:
                 continue
             _d   = _dist_to_segment(vx, vy, _x1s, _y1s, _x2s, _y2s)
-            _thr = via_copper_r + _shw + CLEARANCE
+            _thr = _eff_r + _shw + CLEARANCE
             if _d < _thr:
                 return ("stub_only", _d, _thr, "via-vs-stub-only", None)
 
@@ -3739,7 +3745,7 @@ def _face_fanout(
                     placed.append({
                         'vx':      vx,
                         'vy':      vy,
-                        'r':       via_copper_r,
+                        'r':       0.0 if v.net_name in _skip_nets else via_copper_r,
                         'stub_hw': v.neckdown_w_mm / 2.0,
                         'segs':    stub_segs,
                         'pad_i':   global_i,
@@ -4421,9 +4427,11 @@ def _face_fanout(
                             for _ov, _gr in zip(_group7c, _gr7c))
             _ext_d7c  = min(max(_req_d7c, _pv7c.neckdown_len_mm), FANOUT_DEPTH_CAP)
 
-            # Only extend when shallowing: if the outer via is deeper than the
-            # stub, the stub already clears it axially and no extension is needed.
-            if _ext_d7c >= _cur_d7c - 1e-9:
+            # Skip only when the outer via is strictly deeper than the current
+            # stub depth — in that case the stub can't be deepened to clear it.
+            # When _ext_d7c == _cur_d7c the stub is exactly deep enough; proceed
+            # so the lateral extension endpoint gets computed and stored.
+            if _ext_d7c > _cur_d7c + 1e-9:
                 continue
 
             # Outermost via in group clearable at actual _ext_d7c → extension endpoint
