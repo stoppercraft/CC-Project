@@ -4049,15 +4049,23 @@ def _face_fanout(
             cur_lat_sep = abs(via_lat_i - via_lat_j)
             min_lat_sep = pcr_i + pcr_j + CLEARANCE
 
+            # Pad lateral positions — used for outer-via selection and jog-crossing cap.
+            # Via positions may be geometrically inverted (an inner pad's via pushed
+            # past the outer pad's column by compaction), so always use pad positions
+            # when deciding which side is "outer".
+            _pad_lat_i  = vi.pad_x * ldx + vi.pad_y * ldy
+            _pad_lat_j  = vj.pad_x * ldx + vj.pad_y * ldy
+            _dist_pad_i = abs(_pad_lat_i - face_center)
+            _dist_pad_j = abs(_pad_lat_j - face_center)
+
             # Working lateral offsets — may be increased for the outer via if the
             # pair's current lateral separation is less than the via-to-via minimum.
             lat_i_w, lat_j_w = lat_i, lat_j
             if cur_lat_sep < min_lat_sep - 1e-9:
                 extra = min_lat_sep - cur_lat_sep
-                # Push the outer via (further from face_center) outward
-                dist_i = abs(via_lat_i - face_center)
-                dist_j = abs(via_lat_j - face_center)
-                if dist_i >= dist_j:
+                # Push the outer via (further from face_center) outward, determined
+                # by pad position not via position.
+                if _dist_pad_i >= _dist_pad_j:
                     lat_i_w = lat_i + extra
                 else:
                     lat_j_w = lat_j + extra
@@ -4067,8 +4075,8 @@ def _face_fanout(
             # via is depth-independent (= hypot(delta_lat, axial_offset)), so a
             # depth scan can never resolve it.  Compute the minimum lat needed to
             # clear, and bump the outer via's lat_w before computing d_floor.
-            _stub_lat_i  = vi.pad_x * ldx + vi.pad_y * ldy
-            _stub_lat_j  = vj.pad_x * ldx + vj.pad_y * ldy
+            _stub_lat_i  = _pad_lat_i
+            _stub_lat_j  = _pad_lat_j
             _dpad_ax_ij  = (vj.pad_x - vi.pad_x)*edx + (vj.pad_y - vi.pad_y)*edy
             # vi stub axial endpoint vs vj trial via
             _hax_ij = _dpad_ax_ij + lat_i_w
@@ -4086,6 +4094,34 @@ def _face_fanout(
                 _thr_ji  = vj.neckdown_w_mm / 2.0 + pcr_i + CLEARANCE
                 if _dlat_ji < _thr_ji and _hax_ji**2 + _dlat_ji**2 < _thr_ji**2 - 1e-9:
                     lat_j_w = max(lat_j_w, math.sqrt(_thr_ji**2 - _dlat_ji**2) + _dpad_ax_ij + 1e-6)
+
+            # Jog-crossing cap: if the inner via's lateral position overshoots the
+            # outer pad's axial column, the 45° jog sweeps through the outer pad's
+            # stub at every depth — a depth scan can never resolve it.  Cap the
+            # inner via's lat so its jog stops clear of the outer column.
+            # Only cap when the outer column lies in the jog's travel direction.
+            if _dist_pad_i < _dist_pad_j:
+                # i is inner, j is outer
+                if ls_i * (_pad_lat_j - _pad_lat_i) > 0:
+                    _nw_clr_7b = vi.neckdown_w_mm / 2.0 + CLEARANCE
+                    _lat_cap_7b = max(0.0, abs(_pad_lat_j - _pad_lat_i) - _nw_clr_7b - 1e-6)
+                    if lat_i_w > _lat_cap_7b + 1e-9:
+                        lat_i_w = _lat_cap_7b
+                        _via_i_c = _pad_lat_i + ls_i * lat_i_w
+                        _via_j_c = _pad_lat_j + ls_j * lat_j_w
+                        if abs(_via_i_c - _via_j_c) < min_lat_sep - 1e-9:
+                            lat_j_w += min_lat_sep - abs(_via_i_c - _via_j_c)
+            else:
+                # j is inner, i is outer
+                if ls_j * (_pad_lat_i - _pad_lat_j) > 0:
+                    _nw_clr_7b = vj.neckdown_w_mm / 2.0 + CLEARANCE
+                    _lat_cap_7b = max(0.0, abs(_pad_lat_i - _pad_lat_j) - _nw_clr_7b - 1e-6)
+                    if lat_j_w > _lat_cap_7b + 1e-9:
+                        lat_j_w = _lat_cap_7b
+                        _via_i_c = _pad_lat_i + ls_i * lat_i_w
+                        _via_j_c = _pad_lat_j + ls_j * lat_j_w
+                        if abs(_via_i_c - _via_j_c) < min_lat_sep - 1e-9:
+                            lat_i_w += min_lat_sep - abs(_via_i_c - _via_j_c)
 
             d_floor_i = max(vi.neckdown_len_mm, _pair_depth_floor(vi, ls_i, lat_i_w))
             d_floor_j = max(vj.neckdown_len_mm, _pair_depth_floor(vj, ls_j, lat_j_w))
@@ -4320,6 +4356,12 @@ def _face_fanout(
                 continue
             if _gi7c not in final_placed or _gi7c in keepout_set:
                 continue
+
+            # Clear any stale extension from a previous outer_pass so it does
+            # not persist as a diagonal obstacle after compaction shallows the via.
+            if hasattr(_pv7c, 'stub_ext_vx'):
+                del _pv7c.stub_ext_vx
+                del _pv7c.stub_ext_vy
 
             _ls7c    = _lat_sign(_pv7c)
             _v_lat7c = _pv7c.pad_x * ldx + _pv7c.pad_y * ldy
