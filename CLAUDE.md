@@ -14,19 +14,21 @@ A subagent prompt that does not include AGENT_RULES.md content is a protocol vio
 
 ---
 
-## --apply Workflow — EXECUTE ALL THREE STEPS EVERY TIME, IN ORDER, WITHOUT EXCEPTION
+## Route and Verify Workflow — EXECUTE ALL FOUR STEPS EVERY TIME, IN ORDER, WITHOUT EXCEPTION
+
+**Trigger:** Only the exact phrase "Route and Verify" from the user starts this workflow. No other phrasing ("run the script", "apply it", "run route_fanout_vias.py on the board", etc.) triggers it.
 
 ### CRITICAL BEHAVIOR RULES — VIOLATION OF ANY OF THESE IS A FAILURE
 
-1. **DO NOT ask the user to do anything.** The user saying `--apply` is the only input required. Every step from that point is Claude's responsibility. Asking the user to clear the board, run DRC, confirm anything, or do any other step is WRONG.
+1. **DO NOT ask the user to do anything.** The user saying "Route and Verify" is the only input required. Every step from that point is Claude's responsibility. Asking the user to clear the board, run DRC, confirm anything, or do any other step is WRONG.
 2. **DO NOT skip Step 1 (clear).** Running the script on a board that still has tracks from a previous run produces meaningless results. Step 1 is not optional under any circumstance, including dry runs.
 3. **DO NOT run Step 2 twice.** Run the script once, capture all output in that single command. Never re-run to filter output.
 4. **DO NOT present results without completing Steps 3 AND 4.** The script completing without errors does not mean the board is correct. DRC alone is not sufficient — a passing DRC does not catch logical errors like a pad getting both a placed via AND a spurious escape trace. Always inspect the board programmatically after DRC.
 5. **DO NOT narrate the steps.** Do not say "I'll clear the board now" or "Running DRC..." — just execute. Report results when all three steps are done.
 
-### WHAT TO DO WHEN `--apply` IS SAID
+### WHAT TO DO WHEN "Route and Verify" IS SAID
 
-Execute steps 1, 2, and 3 in sequence immediately. No confirmation. No pausing. No asking.
+Execute steps 1, 2, 3, and 4 in sequence immediately. No confirmation. No pausing. No asking.
 
 ---
 

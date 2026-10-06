@@ -5,7 +5,7 @@
 
 ## Route and Verify — EXECUTE ALL FOUR STEPS IN ORDER, NO EXCEPTIONS
 
-When the user says "Route and Verify" or asks to route the full board:
+When the user says exactly "Route and Verify" (no other phrasing triggers this workflow):
 
 **Step 1 — Clear board**
 ```
