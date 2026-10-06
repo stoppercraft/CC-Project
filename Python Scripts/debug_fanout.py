@@ -20,7 +20,7 @@ BOARD = cfg.PCB_FILE
 # ── Configure target(s) ───────────────────────────────────────────────────────
 # List one or more footprint references to inspect.
 # All faces and pad types are emitted automatically.
-TARGET_REFS = ['SOM1']
+TARGET_REFS = ['U3']
 
 # ── Clear board ───────────────────────────────────────────────────────────────
 import subprocess as _sp
@@ -135,6 +135,10 @@ for ref in TARGET_REFS:
             ex2, ey2 = pv.stub_ext_vx, pv.stub_ext_vy
             if math.hypot(ex2 - pv.stub_only_vx, ey2 - pv.stub_only_vy) >= 1e-6:
                 _add_track(pv.stub_only_vx, pv.stub_only_vy, ex2, ey2, pv.neckdown_w_mm, net)
+        if hasattr(pv, 'stub_ext2_vx'):
+            ex3, ey3 = pv.stub_ext2_vx, pv.stub_ext2_vy
+            if math.hypot(ex3 - pv.stub_ext_vx, ey3 - pv.stub_ext_vy) >= 1e-6:
+                _add_track(pv.stub_ext_vx, pv.stub_ext_vy, ex3, ey3, pv.neckdown_w_mm, net)
 
     # Skip-net pvs (e.g. GND pads added as face fanout boundary anchors)
     target_skip = [pv for pv in all_skip_pvs
@@ -152,6 +156,10 @@ for ref in TARGET_REFS:
             ex2, ey2 = pv.stub_ext_vx, pv.stub_ext_vy
             if math.hypot(ex2 - pv.stub_only_vx, ey2 - pv.stub_only_vy) >= 1e-6:
                 _add_track(pv.stub_only_vx, pv.stub_only_vy, ex2, ey2, pv.neckdown_w_mm, net)
+        if hasattr(pv, 'stub_ext2_vx'):
+            ex3, ey3 = pv.stub_ext2_vx, pv.stub_ext2_vy
+            if math.hypot(ex3 - pv.stub_ext_vx, ey3 - pv.stub_ext_vy) >= 1e-6:
+                _add_track(pv.stub_ext_vx, pv.stub_ext_vy, ex3, ey3, pv.neckdown_w_mm, net)
 
     # Bus stubs (GND/skip-net track segments from face fanout for this ref)
     ref_bus = bus_stubs_by_ref.get(ref, [])
