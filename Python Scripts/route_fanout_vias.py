@@ -4339,6 +4339,28 @@ def _face_fanout(
             if not _outers7c:
                 continue
 
+            # If no signal via deeper than the current stub tip is within lateral
+            # clearance of the stub's x-position, the straight axial path is already
+            # clear and the compacted depth is sufficient — skip lateral extension.
+            _axial_blocked7c = False
+            for _gk7c in signal_indices:
+                if _gk7c == _gi7c or _gk7c not in final_placed or _gk7c in keepout_set:
+                    continue
+                _pvk7c = face_pads[_gk7c]
+                if _pvk7c.net_name in _skip_nets or not _pvk7c.net_name:
+                    continue
+                _vxk7c, _vyk7c = final_placed[_gk7c]
+                _dk7c = (_vxk7c - _pvk7c.pad_x) * edx + (_vyk7c - _pvk7c.pad_y) * edy
+                if _dk7c <= _cur_d7c + 1e-9:
+                    continue  # not deeper than current stub tip — already cleared
+                _vlat_k7c = _vxk7c * ldx + _vyk7c * ldy
+                _pcr_k7c  = _pvk7c.via_drill_mm / 2.0 + ca
+                if abs(_vlat_k7c - _v_lat7c) < _pcr_k7c + _shw7c + CLEARANCE - 1e-9:
+                    _axial_blocked7c = True
+                    break
+            if not _axial_blocked7c:
+                continue  # straight axial is clear — let compacted depth stand
+
             _outers7c.sort(key=lambda x: x[0])  # nearest first
 
             # Build adjacent group: nearest via + its HS partner if present
