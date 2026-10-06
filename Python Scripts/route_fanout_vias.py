@@ -3824,6 +3824,8 @@ def _face_fanout(
                     continue
                 vx_cur, vy_cur = final_placed[gi]
                 v         = face_pads[gi]
+                if v.net_name in _skip_nets:
+                    continue  # skip-net: stub only, no via emitted — axial position from section 6 is correct
                 ls        = _lat_sign(v)
                 lat_off   = lat_offs_arr[si]
                 cur_axial = abs((vx_cur - v.pad_x) * edx + (vy_cur - v.pad_y) * edy)
@@ -4170,6 +4172,8 @@ def _face_fanout(
                     continue
                 vx_cur, vy_cur = final_placed[gi]
                 v         = face_pads[gi]
+                if v.net_name in _skip_nets:
+                    continue  # skip-net: stub only, no via emitted — axial position from section 6 is correct
                 ls        = _lat_sign(v)
                 lat_off   = lat_offs_arr[si]
                 cur_axial = abs((vx_cur - v.pad_x) * edx + (vy_cur - v.pad_y) * edy)
