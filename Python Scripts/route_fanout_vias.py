@@ -3324,6 +3324,7 @@ def _face_fanout(
     edy: float,
     step_mm: float = 0.050,
     max_iter: int = 200,
+    is_radial_face: bool = False,
 ) -> list:
     """Co-optimized multi-pass outside-in fanout for a single dense IC face.
 
@@ -4391,10 +4392,11 @@ def _face_fanout(
                     continue
                 _dj7c    = (_vxj7c - _pvj7c.pad_x) * edx + (_vyj7c - _pvj7c.pad_y) * edy
                 _pcr_j7c = _pvj7c.via_drill_mm / 2.0 + ca
-                # Skip vias the axial stub cannot laterally clear — the stub at pad_lat
-                # going straight axially would violate clearance with this via.
-                if abs(_vlat_j7c - _v_lat7c) < _pcr_j7c + _shw7c + CLEARANCE - 1e-9:
-                    continue
+                if not is_radial_face:
+                    # Skip vias the axial stub cannot laterally clear — the stub at pad_lat
+                    # going straight axially would violate clearance with this via.
+                    if abs(_vlat_j7c - _v_lat7c) < _pcr_j7c + _shw7c + CLEARANCE - 1e-9:
+                        continue
                 _outers7c.append((_gap7c, _vlat_j7c, _dj7c, _pcr_j7c,
                                    _pvj7c.via_annular_mm, _pvj7c.net_name, _gj7c))
 
@@ -4402,6 +4404,35 @@ def _face_fanout(
                 continue
 
             _outers7c.sort(key=lambda x: x[0])  # nearest first
+
+            # Split into far (can be axially cleared) and close (lateral_sep < thr)
+            _outers7c_far7c = [ov for ov in _outers7c
+                               if abs(ov[1] - _v_lat7c) >= ov[3] + _shw7c + CLEARANCE - 1e-9]
+            _outers7c_cls7c = [ov for ov in _outers7c
+                               if abs(ov[1] - _v_lat7c) < ov[3] + _shw7c + CLEARANCE - 1e-9]
+            if _outers7c_cls7c and not _outers7c_far7c:
+                # Via is laterally too close to clear axially — emit 45° extension from
+                # stub tip going inward+deeper until the via's clearance boundary.
+                _near7c_c  = _outers7c_cls7c[0]
+                _vxj_c, _vyj_c = final_placed[_near7c_c[6]]
+                _pcr_c     = _near7c_c[3]
+                _dir_x45   = (-_ls7c * ldx + edx) / math.sqrt(2)
+                _dir_y45   = (-_ls7c * ldy + edy) / math.sqrt(2)
+                _dx0_c     = _vxj_c - _vx7c
+                _dy0_c     = _vyj_c - _vy7c
+                _Ac_dot    = _dx0_c * _dir_x45 + _dy0_c * _dir_y45
+                _Ac_sq     = _dx0_c**2 + _dy0_c**2
+                _thr_c     = _pcr_c + _shw7c + CLEARANCE
+                _disc_c    = _Ac_dot**2 - (_Ac_sq - _thr_c**2)
+                if _disc_c >= 0:
+                    _delta_c = _Ac_dot + math.sqrt(_disc_c)
+                    if _delta_c > 1e-6:
+                        _pv7c.stub_ext_vx = _vx7c + _delta_c * _dir_x45
+                        _pv7c.stub_ext_vy = _vy7c + _delta_c * _dir_y45
+                continue
+            if not _outers7c_far7c:
+                continue
+            _outers7c = _outers7c_far7c
 
             # Build adjacent group: nearest via + its HS partner if present
             _nearest_net7c = _outers7c[0][5]
@@ -4427,12 +4458,29 @@ def _face_fanout(
                             for _ov, _gr in zip(_group7c, _gr7c))
             _ext_d7c  = min(max(_req_d7c, _pv7c.neckdown_len_mm), FANOUT_DEPTH_CAP)
 
-            # Skip only when the outer via is strictly deeper than the current
-            # stub depth — in that case the stub can't be deepened to clear it.
-            # When _ext_d7c == _cur_d7c the stub is exactly deep enough; proceed
-            # so the lateral extension endpoint gets computed and stored.
+            # If deepening the stub is required, check the axial path is clear of any
+            # laterally close vias that lie at depths between cur and ext.  If any such
+            # via exists, the axial track extension would violate clearance — skip.
             if _ext_d7c > _cur_d7c + 1e-9:
-                continue
+                _axial_blocked7c = False
+                for _gk7c in signal_indices:
+                    if (_gk7c == _gi7c or _gk7c not in final_placed
+                            or _gk7c in keepout_set):
+                        continue
+                    _pvk7c = face_pads[_gk7c]
+                    if _pvk7c.net_name in _skip_nets or not _pvk7c.net_name:
+                        continue
+                    _vxk7c, _vyk7c = final_placed[_gk7c]
+                    _vlat_k7c = _vxk7c * ldx + _vyk7c * ldy
+                    _dk7c = ((_vxk7c - _pvk7c.pad_x) * edx
+                             + (_vyk7c - _pvk7c.pad_y) * edy)
+                    _pcr_k7c = _pvk7c.via_drill_mm / 2.0 + ca
+                    if (abs(_vlat_k7c - _v_lat7c) < _pcr_k7c + _shw7c + CLEARANCE - 1e-9
+                            and _cur_d7c + 1e-9 < _dk7c <= _ext_d7c + 1e-9):
+                        _axial_blocked7c = True
+                        break
+                if _axial_blocked7c:
+                    continue
 
             # Outermost via in group clearable at actual _ext_d7c → extension endpoint
             _clearable7c = [_ov for _ov, _gr in zip(_group7c, _gr7c)
@@ -5474,6 +5522,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _co_assignments = _face_fanout(
             _face_grp_aug, _pad_obs_early, _co_pending_set,
             _coopt_sg_clr, _co_ca, _co_edx, _co_edy,
+            is_radial_face=True,
         )
 
         # Collect bus stubs and keepout set from side-effect storage
