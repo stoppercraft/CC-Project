@@ -3267,9 +3267,9 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
     rejects via positions that would block the pad's axial routing corridor.
 
     suppressed_set — (ref, pad_num) pairs removed by _suppress_proximity_via_sharing.
-    These pads still need a short F.Cu trace to reach their shared via, but the trace
-    exits the axial column quickly, so they get a depth-limited corridor (neckdown stub
-    length) rather than the full CORRIDOR_DEPTH.
+    These pads still need a short F.Cu trace to reach their shared via.  Their corridor
+    depth is set to the pad's escape-direction half-extent so adjacent signal vias are
+    pushed past the pad copper bottom edge, preventing via-to-pad DRC violations.
     """
     if not fp or not face_grp:
         return []
@@ -3301,17 +3301,26 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
             continue  # in pending on a different face — via-bearing, not a phantom
         drill, ann = via_params(PRIORITY_OTHER)
         floor, nl, mx = neckdown_params(PRIORITY_OTHER, net)
-        # Via-shared pads route to a shared via nearby; their trace exits the axial
-        # column within the neckdown stub length.  Use nl (neckdown_length_mm) as the
-        # corridor depth so signal vias can be placed past that short exit zone.
-        is_via_shared = suppressed_set and (fp.GetReference(), num) in suppressed_set
-        # nl is the neckdown stub length (0.50mm); half of that keeps the corridor
-        # short enough that signal vias at normal depths clear the endpoint check.
-        corridor_depth = nl * 0.5 if is_via_shared else CORRIDOR_DEPTH
         pw  = pcbnew.ToMM(pad.GetSizeX())
         ph  = pcbnew.ToMM(pad.GetSizeY())
         nw  = neckdown_stub_width(floor, pw, ph, net, PRIORITY_OTHER)
         bb  = pad.GetBoundingBox()
+        is_via_shared = suppressed_set and (fp.GetReference(), num) in suppressed_set
+        if is_via_shared:
+            # Use the pad's escape-direction half-extent as corridor depth.  This
+            # ensures adjacent signal vias are forced past the pad copper bottom edge,
+            # preventing via-copper-to-pad-copper DRC clearance violations.
+            _bbL = pcbnew.ToMM(bb.GetLeft());  _bbR = pcbnew.ToMM(bb.GetRight())
+            _bbT = pcbnew.ToMM(bb.GetTop());   _bbB = pcbnew.ToMM(bb.GetBottom())
+            corridor_depth = max(
+                edx * (_bbR - px) + edy * (_bbB - py),
+                edx * (_bbR - px) + edy * (_bbT - py),
+                edx * (_bbL - px) + edy * (_bbB - py),
+                edx * (_bbL - px) + edy * (_bbT - py),
+                nl,
+            )
+        else:
+            corridor_depth = CORRIDOR_DEPTH
         corridor_pvs.append(PendingVia(
             net_name        = net,
             ref             = fp.GetReference(),
