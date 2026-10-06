@@ -3267,8 +3267,9 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
     rejects via positions that would block the pad's axial routing corridor.
 
     suppressed_set — (ref, pad_num) pairs removed by _suppress_proximity_via_sharing.
-    These pads have no F.Cu routing in the fanout zone (their via is shared with
-    another pad) so no corridor phantom is needed.
+    These pads still need a short F.Cu trace to reach their shared via, but the trace
+    exits the axial column quickly, so they get a depth-limited corridor (neckdown stub
+    length) rather than the full CORRIDOR_DEPTH.
     """
     if not fp or not face_grp:
         return []
@@ -3298,10 +3299,15 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
             continue  # already in pending (face_grp)
         if (fp.GetReference(), num) in pending_set:
             continue  # in pending on a different face — via-bearing, not a phantom
-        if suppressed_set and (fp.GetReference(), num) in suppressed_set:
-            continue  # via-shared — copper ends at pad edge, no F.Cu corridor needed
         drill, ann = via_params(PRIORITY_OTHER)
-        floor, _, mx = neckdown_params(PRIORITY_OTHER, net)
+        floor, nl, mx = neckdown_params(PRIORITY_OTHER, net)
+        # Via-shared pads route to a shared via nearby; their trace exits the axial
+        # column within the neckdown stub length.  Use nl (neckdown_length_mm) as the
+        # corridor depth so signal vias can be placed past that short exit zone.
+        is_via_shared = suppressed_set and (fp.GetReference(), num) in suppressed_set
+        # nl is the neckdown stub length (0.50mm); half of that keeps the corridor
+        # short enough that signal vias at normal depths clear the endpoint check.
+        corridor_depth = nl * 0.5 if is_via_shared else CORRIDOR_DEPTH
         pw  = pcbnew.ToMM(pad.GetSizeX())
         ph  = pcbnew.ToMM(pad.GetSizeY())
         nw  = neckdown_stub_width(floor, pw, ph, net, PRIORITY_OTHER)
@@ -3320,7 +3326,7 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
             via_drill_mm    = drill,
             via_annular_mm  = ann,
             neckdown_w_mm   = nw,
-            neckdown_len_mm = CORRIDOR_DEPTH,
+            neckdown_len_mm = corridor_depth,
             max_search_mm   = mx,
             pad_w_mm        = pw,
             pad_h_mm        = ph,
