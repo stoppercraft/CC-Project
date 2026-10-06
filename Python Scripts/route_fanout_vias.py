@@ -4355,10 +4355,10 @@ def _face_fanout(
                 break
 
         # ------------------------------------------------------------------
-        # 7c. Skip-net stub lateral extension: extend each skip-net stub past
-        #     the nearest outer signal via group (adjacent HS pair or single via)
-        #     at a depth that clears their copper, then add a lateral segment to
-        #     just past the outermost via in that group.
+        # 7c. Skip-net stub axial/diagonal extension.
+        #     Each skip-net stub is extended past signal vias near its axial
+        #     path.  Strategy: straight axial if lateral clearance is OK;
+        #     45° diagonal jog away from the nearest blocking via otherwise.
         # ------------------------------------------------------------------
         _7c_any_changed = False
         for _si7c, _gi7c in enumerate(signal_indices):
@@ -4368,8 +4368,7 @@ def _face_fanout(
             if _gi7c not in final_placed or _gi7c in keepout_set:
                 continue
 
-            # Clear any stale extension from a previous outer_pass so it does
-            # not persist as a diagonal obstacle after compaction shallows the via.
+            # Clear stale extensions from a previous outer_pass.
             if hasattr(_pv7c, 'stub_ext_vx'):
                 del _pv7c.stub_ext_vx
                 del _pv7c.stub_ext_vy
@@ -4377,16 +4376,17 @@ def _face_fanout(
                 del _pv7c.stub_ext2_vx
                 del _pv7c.stub_ext2_vy
 
-            _ls7c    = _lat_sign(_pv7c)
-            _v_lat7c = _pv7c.pad_x * ldx + _pv7c.pad_y * ldy
-            _shw7c   = _pv7c.neckdown_w_mm / 2.0
             _vx7c, _vy7c = final_placed[_gi7c]
-            _cur_d7c = (_vx7c - _pv7c.pad_x) * edx + (_vy7c - _pv7c.pad_y) * edy
-            _lo7c    = lat_offs_arr[_si7c]
+            _cur_d7c  = (_vx7c - _pv7c.pad_x) * edx + (_vy7c - _pv7c.pad_y) * edy
+            _shw7c    = _pv7c.neckdown_w_mm / 2.0
+            _v_lat7c  = _pv7c.pad_x * ldx + _pv7c.pad_y * ldy
 
-            # Collect outer signal vias (not skip-net, not keepout), sorted nearest first.
-            # Include laterally-close vias so the close/far split below can handle them.
-            _outers7c = []  # (gap, via_lat, depth, pcr, annular, net_name, gi)
+            # Collect all signal vias deeper than current stub tip and within
+            # a generous lateral band (DRC threshold + one CLEARANCE margin).
+            # The extra margin ensures vias at exactly-threshold separation are
+            # included for straight axial extension.
+            # Store absolute (x,y) for segment clearance checks.
+            _near7c = []  # (lat_dist, via_abs_x, via_abs_y, via_depth, via_pcr)
             for _gj7c in signal_indices:
                 if _gj7c == _gi7c or _gj7c not in final_placed or _gj7c in keepout_set:
                     continue
@@ -4395,287 +4395,72 @@ def _face_fanout(
                     continue
                 _vxj7c, _vyj7c = final_placed[_gj7c]
                 _vlat_j7c = _vxj7c * ldx + _vyj7c * ldy
-                _gap7c    = _ls7c * (_vlat_j7c - _v_lat7c)
-                if _gap7c <= 0:
-                    continue
-                _dj7c    = (_vxj7c - _pvj7c.pad_x) * edx + (_vyj7c - _pvj7c.pad_y) * edy
-                _pcr_j7c = _pvj7c.via_drill_mm / 2.0 + ca
-                _outers7c.append((_gap7c, _vlat_j7c, _dj7c, _pcr_j7c,
-                                   _pvj7c.via_annular_mm, _pvj7c.net_name, _gj7c))
+                _dj7c     = (_vxj7c - _pvj7c.pad_x) * edx + (_vyj7c - _pvj7c.pad_y) * edy
+                _pcr_j7c  = _pvj7c.via_drill_mm / 2.0 + ca
+                _ld_j7c   = abs(_vlat_j7c - _v_lat7c)
+                _thr_j7c  = _pcr_j7c + _shw7c + CLEARANCE
+                if _ld_j7c < _thr_j7c + CLEARANCE - 1e-9 and _dj7c > _cur_d7c + 1e-9:
+                    _near7c.append((_ld_j7c, _vxj7c, _vyj7c, _dj7c, _pcr_j7c))
 
-            if not _outers7c:
+            if not _near7c:
                 continue
 
-            _outers7c.sort(key=lambda x: x[0])  # nearest first
-
-            # Split into far (can be axially cleared) and close (lateral_sep < thr)
-            _outers7c_far7c = [ov for ov in _outers7c
-                               if abs(ov[1] - _v_lat7c) >= ov[3] + _shw7c + CLEARANCE - 1e-9]
-            _outers7c_cls7c = [ov for ov in _outers7c
-                               if abs(ov[1] - _v_lat7c) < ov[3] + _shw7c + CLEARANCE - 1e-9]
-            if _outers7c_cls7c and not _outers7c_far7c:
-                # Via is laterally too close to clear axially — use lateral-then-axial
-                # two-segment path: step inward (away from close vias) until lateral
-                # clearance is achieved, then continue deeper in the escape direction
-                # past all close vias so the stub tip is past them.
-                def _pad_axial_half7c_inner(_pv):
-                    _bb = _pv.pad_bbox
-                    return (abs(edx) * (_bb[2] - _bb[0]) + abs(edy) * (_bb[3] - _bb[1])) / 2.0
-
-                # Required lateral offset to clear all close vias from the corner
-                _offset7c = 0.0
-                for _cov in _outers7c_cls7c:
-                    _lat_dist_c = abs(_cov[1] - _v_lat7c)
-                    _needed_c = _cov[3] + _shw7c + CLEARANCE - _lat_dist_c
-                    if _needed_c > _offset7c:
-                        _offset7c = _needed_c
-                _offset7c += 1e-4  # epsilon so lateral dist > threshold
-
-                # Corner point: same depth as stub tip, offset inward (away from close vias)
-                _corn_x7c = _vx7c + (-_ls7c) * _offset7c * ldx
-                _corn_y7c = _vy7c + (-_ls7c) * _offset7c * ldy
-
-                # Required axial depth from pad to clear all close vias at the corner lateral
-                _req_d7c_cls = 0.0
-                for _cov in _outers7c_cls7c:
-                    _gr_c = max(_cov[3], _pad_axial_half7c_inner(face_pads[_cov[6]]))
-                    _rd_c = _cov[2] + _gr_c + _shw7c + CLEARANCE
-                    if _rd_c > _req_d7c_cls:
-                        _req_d7c_cls = _rd_c
-                _ext_d_cls = min(max(_req_d7c_cls, _pv7c.neckdown_len_mm), FANOUT_DEPTH_CAP)
-
-                # Cap axial depth: endpoint must clear vias laterally close to the corner.
-                _corn_lat7c = _corn_x7c * ldx + _corn_y7c * ldy
-                for _gm7c_c in signal_indices:
-                    if (_gm7c_c == _gi7c or _gm7c_c not in final_placed
-                            or _gm7c_c in keepout_set):
-                        continue
-                    _pvm7c_c = face_pads[_gm7c_c]
-                    if _pvm7c_c.net_name in _skip_nets or not _pvm7c_c.net_name:
-                        continue
-                    _vxm7c_c, _vym7c_c = final_placed[_gm7c_c]
-                    _vlat_m7c_c = _vxm7c_c * ldx + _vym7c_c * ldy
-                    _lat_corn_c = abs(_vlat_m7c_c - _corn_lat7c)
-                    _pcr_m7c_c  = _pvm7c_c.via_drill_mm / 2.0 + ca
-                    _thr_m7c_c  = _pcr_m7c_c + _shw7c + CLEARANCE
-                    if _lat_corn_c >= _thr_m7c_c - 1e-9:
-                        continue
-                    _vert_min_c = math.sqrt(max(0.0, _thr_m7c_c**2 - _lat_corn_c**2))
-                    _via_axial_c = ((_vxm7c_c - _corn_x7c) * edx
-                                    + (_vym7c_c - _corn_y7c) * edy)
-                    if _via_axial_c > _vert_min_c + 1e-9:
-                        _max_extra_c = _via_axial_c - _vert_min_c
-                        if _cur_d7c + _max_extra_c < _ext_d_cls:
-                            _ext_d_cls = _cur_d7c + _max_extra_c
-
-                if _ext_d_cls <= _cur_d7c + 1e-9:
-                    continue
-
-                # Final tip: at corner lateral position, deeper past all close vias
-                _tip_x7c = _corn_x7c + edx * (_ext_d_cls - _cur_d7c)
-                _tip_y7c = _corn_y7c + edy * (_ext_d_cls - _cur_d7c)
-
-                _pv7c.stub_ext_vx  = _corn_x7c
-                _pv7c.stub_ext_vy  = _corn_y7c
-                _pv7c.stub_ext2_vx = _tip_x7c
-                _pv7c.stub_ext2_vy = _tip_y7c
-                continue
-            if not _outers7c_far7c:
-                continue
-            _outers7c = _outers7c_far7c
-
-            # Build adjacent group: nearest via + its HS partner if present
-            _nearest_net7c = _outers7c[0][5]
-            _group7c = [_outers7c[0]]
-            if _nearest_net7c.endswith('_P') or _nearest_net7c.endswith('_N'):
-                _pnet7c = (_nearest_net7c[:-2] + '_N' if _nearest_net7c.endswith('_P')
-                           else _nearest_net7c[:-2] + '_P')
-                for _ov7c in _outers7c[1:]:
-                    if _ov7c[5] == _pnet7c:
-                        _group7c.append(_ov7c)
-                        break
-
-            # Effective obstacle radius for each group via in the escape direction:
-            # max(via_copper_r, pad_axial_half) — pads whose AABB extends farther
-            # than their via copper ring in the escape direction set the constraint.
-            # Use pad_bbox (board-coordinate AABB) so pad rotation is handled correctly.
-            def _pad_axial_half7c(_pv):
-                _bb = _pv.pad_bbox  # (left, top, right, bottom) board coords
-                return (abs(edx) * (_bb[2] - _bb[0]) + abs(edy) * (_bb[3] - _bb[1])) / 2.0
-            _gr7c = [max(_ov[3], _pad_axial_half7c(face_pads[_ov[6]]))
-                     for _ov in _group7c]
-            _req_d7c  = max(_ov[2] + _gr + _shw7c + CLEARANCE
-                            for _ov, _gr in zip(_group7c, _gr7c))
-            _ext_d7c  = min(max(_req_d7c, _pv7c.neckdown_len_mm), FANOUT_DEPTH_CAP)
-
-            # If deepening the stub is required, check the axial path is clear of any
-            # laterally close vias that lie at depths between cur and ext.  If any such
-            # via exists, the axial track extension would violate clearance — skip.
-            if _ext_d7c > _cur_d7c + 1e-9:
-                _axial_blocked7c = False
-                for _gk7c in signal_indices:
-                    if (_gk7c == _gi7c or _gk7c not in final_placed
-                            or _gk7c in keepout_set):
-                        continue
-                    _pvk7c = face_pads[_gk7c]
-                    if _pvk7c.net_name in _skip_nets or not _pvk7c.net_name:
-                        continue
-                    _vxk7c, _vyk7c = final_placed[_gk7c]
-                    _vlat_k7c = _vxk7c * ldx + _vyk7c * ldy
-                    _dk7c = ((_vxk7c - _pvk7c.pad_x) * edx
-                             + (_vyk7c - _pvk7c.pad_y) * edy)
-                    _pcr_k7c = _pvk7c.via_drill_mm / 2.0 + ca
-                    if (abs(_vlat_k7c - _v_lat7c) < _pcr_k7c + _shw7c + CLEARANCE - 1e-9
-                            and _cur_d7c + 1e-9 < _dk7c <= _ext_d7c + 1e-9):
-                        _axial_blocked7c = True
-                        break
-                if _axial_blocked7c:
-                    # Collect the blocking vias and compute required lateral
-                    # offset to move the stub inward until the axial path clears.
-                    _blk_off7c = 0.0
-                    for _gk7c_b in signal_indices:
-                        if (_gk7c_b == _gi7c or _gk7c_b not in final_placed
-                                or _gk7c_b in keepout_set):
-                            continue
-                        _pvk7c_b = face_pads[_gk7c_b]
-                        if _pvk7c_b.net_name in _skip_nets or not _pvk7c_b.net_name:
-                            continue
-                        _vxk7c_b, _vyk7c_b = final_placed[_gk7c_b]
-                        _vlat_k7c_b = _vxk7c_b * ldx + _vyk7c_b * ldy
-                        _dk7c_b = ((_vxk7c_b - _pvk7c_b.pad_x) * edx
-                                   + (_vyk7c_b - _pvk7c_b.pad_y) * edy)
-                        _pcr_k7c_b = _pvk7c_b.via_drill_mm / 2.0 + ca
-                        _lat_dist_b = abs(_vlat_k7c_b - _v_lat7c)
-                        if (_lat_dist_b < _pcr_k7c_b + _shw7c + CLEARANCE - 1e-9
-                                and _cur_d7c + 1e-9 < _dk7c_b <= _ext_d7c + 1e-9):
-                            _needed_b = _pcr_k7c_b + _shw7c + CLEARANCE - _lat_dist_b
-                            if _needed_b > _blk_off7c:
-                                _blk_off7c = _needed_b
-                    if _blk_off7c < 1e-9:
-                        continue
-                    _blk_off7c += 1e-4
-                    _corn_x7c_b = _vx7c + (-_ls7c) * _blk_off7c * ldx
-                    _corn_y7c_b = _vy7c + (-_ls7c) * _blk_off7c * ldy
-                    _corn_lat7c_b = _corn_x7c_b * ldx + _corn_y7c_b * ldy
-
-                    # Validate lateral segment and cap axial depth.
-                    # For each signal via, check two things:
-                    #   (a) the lateral segment from stub_only to corner clears it
-                    #   (b) the axial segment from corner to tip clears it
-                    _ext_d7c_cap = _ext_d7c
-                    _lateral_blocked_b = False
-                    for _gm7c in signal_indices:
-                        if (_gm7c == _gi7c or _gm7c not in final_placed
-                                or _gm7c in keepout_set):
-                            continue
-                        _pvm7c = face_pads[_gm7c]
-                        if _pvm7c.net_name in _skip_nets or not _pvm7c.net_name:
-                            continue
-                        _vxm7c, _vym7c = final_placed[_gm7c]
-                        _vlat_m7c = _vxm7c * ldx + _vym7c * ldy
-                        _pcr_m7c  = _pvm7c.via_drill_mm / 2.0 + ca
-                        _thr_m7c  = _pcr_m7c + _shw7c + CLEARANCE
-
-                        # (a) Lateral segment check: horizontal segment at _vy7c from
-                        #     _vx7c to _corn_x7c_b.  Via is close if its axial offset
-                        #     from _vy7c is within the clearance sphere AND its lateral
-                        #     position lies within the segment's lateral range.
-                        _lat_axial_m = abs((_vxm7c - _vx7c) * edx
-                                           + (_vym7c - _vy7c) * edy)  # axial dist from lateral segment
-                        if _lat_axial_m < _thr_m7c - 1e-9:
-                            _seg_lat_lo = min(_vx7c * ldx + _vy7c * ldy,
-                                              _corn_lat7c_b)
-                            _seg_lat_hi = max(_vx7c * ldx + _vy7c * ldy,
-                                              _corn_lat7c_b)
-                            if _seg_lat_lo - 1e-9 <= _vlat_m7c <= _seg_lat_hi + 1e-9:
-                                _lateral_blocked_b = True
-                                break
-
-                        # (b) Axial segment endpoint cap: via laterally close at corner.
-                        _lat_corn_m = abs(_vlat_m7c - _corn_lat7c_b)
-                        if _lat_corn_m >= _thr_m7c - 1e-9:
-                            continue
-                        _vert_min = math.sqrt(max(0.0, _thr_m7c**2 - _lat_corn_m**2))
-                        _via_axial_m = ((_vxm7c - _corn_x7c_b) * edx
-                                        + (_vym7c - _corn_y7c_b) * edy)
-                        if _via_axial_m <= _vert_min + 1e-9:
-                            # Corner is already within clearance zone of this via.
-                            _lateral_blocked_b = True
-                            break
-                        # Cap depth so endpoint stays _vert_min before the via.
-                        _max_extra = _via_axial_m - _vert_min
-                        if _cur_d7c + _max_extra < _ext_d7c_cap:
-                            _ext_d7c_cap = _cur_d7c + _max_extra
-
-                    if _lateral_blocked_b or _ext_d7c_cap <= _cur_d7c + 1e-9:
-                        continue
-
-                    _tip_x7c_b  = _corn_x7c_b + edx * (_ext_d7c_cap - _cur_d7c)
-                    _tip_y7c_b  = _corn_y7c_b + edy * (_ext_d7c_cap - _cur_d7c)
-                    _pv7c.stub_ext_vx  = _corn_x7c_b
-                    _pv7c.stub_ext_vy  = _corn_y7c_b
-                    _pv7c.stub_ext2_vx = _tip_x7c_b
-                    _pv7c.stub_ext2_vy = _tip_y7c_b
-                    continue
-
-            # Outermost via in group clearable at actual _ext_d7c → extension endpoint
-            _clearable7c = [_ov for _ov, _gr in zip(_group7c, _gr7c)
-                            if _ext_d7c - _ov[2] - _gr - _shw7c >= CLEARANCE - 1e-9]
-            if not _clearable7c:
-                continue
-            _outmost7c  = max(_clearable7c, key=lambda x: x[0])
-            _ext_lat7c  = _outmost7c[1] + _ls7c * _outmost7c[4]
-
-            # Clip extension: if any signal via in the lateral sweep path cannot be
-            # cleared vertically at _ext_d7c, stop before the nearest such via.
-            _blocked_lat7c = None
-            for _gj7c_sw in signal_indices:
-                if (_gj7c_sw == _gi7c or _gj7c_sw not in final_placed
-                        or _gj7c_sw in keepout_set):
-                    continue
-                _pvj_sw = face_pads[_gj7c_sw]
-                if _pvj_sw.net_name in _skip_nets or not _pvj_sw.net_name:
-                    continue
-                _vxj_sw, _vyj_sw = final_placed[_gj7c_sw]
-                _vlat_sw = _vxj_sw * ldx + _vyj_sw * ldy
-                _dj_sw   = ((_vxj_sw - _pvj_sw.pad_x) * edx
-                            + (_vyj_sw - _pvj_sw.pad_y) * edy)
-                _pcr_sw  = _pvj_sw.via_drill_mm / 2.0 + ca
-                if _ls7c * (_vlat_sw - _v_lat7c) < 1e-9:
-                    continue
-                if _ls7c * (_ext_lat7c - _vlat_sw) < -1e-9:
-                    continue
-                if abs(_ext_d7c - _dj_sw) - _pcr_sw - _shw7c >= CLEARANCE - 1e-9:
-                    continue
-                _clip = _vlat_sw - _ls7c * (_pcr_sw + _shw7c + CLEARANCE)
-                if _blocked_lat7c is None or _ls7c * (_blocked_lat7c - _clip) > 1e-9:
-                    _blocked_lat7c = _clip
-            if _blocked_lat7c is not None:
-                if _ls7c * (_blocked_lat7c - _v_lat7c) < 1e-9:
-                    continue
-                _ext_lat7c = _blocked_lat7c
-
-            # Skip if clipping prevented reaching the outermost clearable via
-            if _ls7c * (_ext_lat7c - _outmost7c[1]) < -1e-9:
+            # Target depth: past the far copper edge of all near vias.
+            _tgt_d7c = min(
+                max(_dj + _pj + _shw7c + CLEARANCE for _, _, _, _dj, _pj in _near7c),
+                FANOUT_DEPTH_CAP)
+            if _tgt_d7c <= _cur_d7c + 1e-9:
                 continue
 
-            # Only extend if endpoint is actually further out than current stub tip
-            _stub_lat7c = _v_lat7c + _ls7c * _lo7c
-            if _ls7c * (_ext_lat7c - _stub_lat7c) <= 1e-6:
-                continue
+            # Segment clearance helper: minimum center-to-center distance from
+            # segment (sx,sy)→(ex,ey) to a point via.  Returns True if all
+            # near vias are sufficiently clear of the proposed segment.
+            def _seg_clears_7c(sx, sy, ex, ey):
+                dxs = ex - sx; dys = ey - sy
+                len2 = dxs*dxs + dys*dys
+                for _ld_v, _vx_v, _vy_v, _dv, _pv in _near7c:
+                    _nthr_v = _pv + _shw7c + CLEARANCE
+                    if len2 < 1e-12:
+                        d = math.hypot(sx - _vx_v, sy - _vy_v)
+                    else:
+                        t = (((_vx_v - sx)*dxs + (_vy_v - sy)*dys) / len2)
+                        t = max(0.0, min(1.0, t))
+                        d = math.hypot(sx + t*dxs - _vx_v, sy + t*dys - _vy_v)
+                    if d < _nthr_v - 1e-9:
+                        return False
+                return True
 
-            # Update final_placed if depth changed (deepen or shallow to _req_d7c)
-            if abs(_ext_d7c - _cur_d7c) > 1e-9:
-                final_placed[_gi7c] = (
-                    _pv7c.pad_x + _ls7c * _lo7c * ldx + edx * _ext_d7c,
-                    _pv7c.pad_y + _ls7c * _lo7c * ldy + edy * _ext_d7c,
-                )
-                _7c_any_changed = True
+            # Check if any near via strictly blocks the straight axial path.
+            _blk7c = [v for v in _near7c
+                      if v[0] < v[4] + _shw7c + CLEARANCE - 1e-9]
 
-            # Store lateral extension endpoint
-            _dlat7c = _ext_lat7c - _v_lat7c
-            _pv7c.stub_ext_vx = _pv7c.pad_x + _dlat7c * ldx + edx * _ext_d7c
-            _pv7c.stub_ext_vy = _pv7c.pad_y + _dlat7c * ldy + edy * _ext_d7c
+            if not _blk7c:
+                # All near vias are laterally clear — try straight axial extension.
+                _ext_x7c = _vx7c
+                _ext_y7c = _vy7c + edy * (_tgt_d7c - _cur_d7c)
+                if not _seg_clears_7c(_vx7c, _vy7c, _ext_x7c, _ext_y7c):
+                    continue
+                _pv7c.stub_ext_vx = _ext_x7c
+                _pv7c.stub_ext_vy = _ext_y7c
+            else:
+                # Nearest blocking via is too close — try 45° diagonal jog away.
+                _nrst7c = min(_blk7c, key=lambda x: x[0])
+                _nld7c, _nvx7c, _nvy7c, _nvd7c, _nvp7c = _nrst7c
+                _nthr7c = _nvp7c + _shw7c + CLEARANCE
+                # Jog away: if via is to the right (larger lat), jog left (sign=-1).
+                _nvl7c = _nvx7c * ldx + _nvy7c * ldy
+                _jog_sign7c = 1 if _nvl7c < _v_lat7c else -1
+                _jog_mag7c  = _nthr7c - _nld7c + 1e-4
+                # 45° diagonal: lateral and axial components both equal jog_mag.
+                _ext_x7c = (_vx7c + _jog_sign7c * _jog_mag7c * ldx
+                            + _jog_mag7c * edx)
+                _ext_y7c = (_vy7c + _jog_sign7c * _jog_mag7c * ldy
+                            + _jog_mag7c * edy)
+                # Only apply if entire diagonal path clears all nearby vias.
+                if not _seg_clears_7c(_vx7c, _vy7c, _ext_x7c, _ext_y7c):
+                    continue
+                _pv7c.stub_ext_vx = _ext_x7c
+                _pv7c.stub_ext_vy = _ext_y7c
 
         if not _7c_any_changed:
             break
