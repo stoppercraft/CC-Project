@@ -3941,6 +3941,32 @@ def _face_fanout(
                     if lat_C <= 1e-9:
                         break
 
+                # Strategy D: try inward offsets (negative lat_off — opposite of outward).
+                # A via blocked on its outward side may clear that neighbor by stepping
+                # inward (toward face center). Scan depths at each inward step, same as
+                # Strategy A does at the current lat_off.
+                for _lsn in range(1, 21):
+                    lat_D = -_lsn * STEP_MM
+                    df_D  = max(v.neckdown_len_mm, _own_depth_floor(lat_D),
+                                _partner_depth_1p)
+                    if math.hypot(abs(lat_D), df_D) >= best_cost - 1e-9:
+                        break
+                    depth_D = df_D
+                    while True:
+                        _cost_D = math.hypot(abs(lat_D), depth_D)
+                        if _cost_D >= best_cost - 1e-9:
+                            break
+                        if depth_D > FANOUT_DEPTH_CAP + 1e-9:
+                            break
+                        vx_D = v.pad_x + ls * lat_D * ldx
+                        vy_D = v.pad_y + ls * lat_D * ldy + edy * depth_D
+                        if _check(v, vx_D, vy_D, other_placed) is None:
+                            if _cost_D < best_cost:
+                                best_cost, best_vx, best_vy = _cost_D, vx_D, vy_D
+                                lat_offs_arr[si] = lat_D
+                            break  # found minimum depth at this lat_D; continue outer loop
+                        depth_D += DEPTH_STEP
+
                 if best_cost < cur_cost - 1e-9:
                     final_placed[gi] = (best_vx, best_vy)
                     _improved = True
