@@ -4359,6 +4359,13 @@ def _face_fanout(
                     _axial_blocked7c = True
                     break
             if not _axial_blocked7c:
+                # Axial path is clear — zero out any compaction lateral offset so
+                # _route_45deg_stub produces a straight axial segment with no diagonal.
+                if abs(_lo7c) > 1e-9:
+                    final_placed[_gi7c] = (
+                        _pv7c.pad_x + edx * _cur_d7c,
+                        _pv7c.pad_y + edy * _cur_d7c,
+                    )
                 continue  # straight axial is clear — let compacted depth stand
 
             _outers7c.sort(key=lambda x: x[0])  # nearest first
