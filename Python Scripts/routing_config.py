@@ -228,6 +228,7 @@ CLEARANCE_AUDIT = {
     "type_gap_ic_mm":        0.150,     # minimum gap when either component is an IC
     "type_gap_connector_mm": 0.500,     # minimum gap when either component is a connector
     "type_gap_default_mm":   0.100,     # fallback for unclassified component types
+    "via_share_proximity_mm":   5.5,    # max pad-edge distance for same-net via sharing / direct-route detection
     "via_keepout_exclude_refs": [
         "C_TX1N1", "C_TX1P1", "C_TX2N1", "C_TX2P1",
                                         # DP/HDMI AC coupling caps — sandwiched between SOM1 and

@@ -2040,14 +2040,43 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
                         return _pad_edge_dist(sec, pri) < _threshold
                 return True  # same-component or non-radial: chain-suppress
 
-            secondaries = [pv for pv in cluster if pv is not primary
-                           and _should_suppress(pv, primary)]
-            for sec in secondaries:
-                to_suppress.add(id(sec))
+            _both_ic = False
+            if len(cluster) == 2 and fp_by_ref is not None:
+                # Remove both pads only when both are on multi-pin IC packages
+                # (≥5 pads each) AND at least one is a radial fanout IC (QFN/QFP).
+                # This handles IC signal pairs that connect directly on-layer
+                # (e.g. QFN pad ↔ nearby SOIC pad on the same signal net) while
+                # preserving via placement for passive-to-IC pairs (bypass caps,
+                # pull-ups, TVS diodes) where the IC may still need a layer transition.
+                _pad_counts = []
+                _has_radial = False
+                for pv in cluster:
+                    _fp = fp_by_ref.get(pv.ref)
+                    if _fp is not None:
+                        _pad_counts.append(sum(1 for _ in _fp.Pads()))
+                        if _is_radial_fanout_fp(_fp):
+                            _has_radial = True
+                    else:
+                        _pad_counts.append(0)
+                _both_ic = all(c >= 5 for c in _pad_counts) and _has_radial
 
-            sec_names = ", ".join(f"{pv.ref}/{pv.pad_num}" for pv in secondaries)
-            print(f"  [share] {primary.ref}/{primary.pad_num} "
-                  f"({primary.net_name}): via shared — suppressed {sec_names}")
+            if _both_ic:
+                # Exactly two IC pads on the same net/layer directly within threshold:
+                # no via needed at either — the router connects them on-layer.
+                for pv in cluster:
+                    to_suppress.add(id(pv))
+                names = ", ".join(f"{pv.ref}/{pv.pad_num}" for pv in cluster)
+                print(f"  [direct-route] {names} ({cluster[0].net_name}): "
+                      f"2-IC-pad cluster — same-layer direct connection, no via needed")
+            else:
+                secondaries = [pv for pv in cluster if pv is not primary
+                               and _should_suppress(pv, primary)]
+                for sec in secondaries:
+                    to_suppress.add(id(sec))
+
+                sec_names = ", ".join(f"{pv.ref}/{pv.pad_num}" for pv in secondaries)
+                print(f"  [share] {primary.ref}/{primary.pad_num} "
+                      f"({primary.net_name}): via shared — suppressed {sec_names}")
 
     return [pv for pv in pending if id(pv) not in to_suppress]
 
@@ -3147,7 +3176,21 @@ def _face_needs_coopt(face_pads: list, sg_clr: float) -> bool:
         if gap < min_gap:
             min_gap = gap
     min_trace_total = min(v.neckdown_w_mm / 2.0 for v in face_pads) + sg_clr
-    return min_gap < min_trace_total
+    if min_gap < min_trace_total:
+        return True
+    # Stub-to-via clearance check: in a staggered arrangement the stub from
+    # pad j passes laterally at distance=pitch from pad i's via.  If pitch <
+    # stub_half_w + clearance + via_copper_r, straight-axial stubs cannot
+    # satisfy the stub-to-via DRC requirement regardless of neckdown length.
+    for k in range(len(order) - 1):
+        i, j = order[k], order[k + 1]
+        pitch = abs(coords[j] - coords[i])
+        stub_hw = min(face_pads[i].neckdown_w_mm, face_pads[j].neckdown_w_mm) / 2.0
+        via_r = max(face_pads[i].via_drill_mm / 2.0 + face_pads[i].via_annular_mm,
+                    face_pads[j].via_drill_mm / 2.0 + face_pads[j].via_annular_mm)
+        if pitch < stub_hw + sg_clr + via_r:
+            return True
+    return False
 
 
 def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
@@ -3731,8 +3774,8 @@ def _face_fanout(
             depth      = max(v.neckdown_len_mm, _pah + via_copper_r + CLEARANCE)
             depth_ceil = min(v.max_search_mm, FANOUT_DEPTH_CAP)
             while depth <= depth_ceil + 1e-9:
-                vx  = v.pad_x + ls * lat_off * ldx
-                vy  = v.pad_y + ls * lat_off * ldy + edy * depth
+                vx  = v.pad_x + edx * depth + ls * lat_off * ldx
+                vy  = v.pad_y + edy * depth + ls * lat_off * ldy
                 blk = _check(v, vx, vy, placed)
                 if blk is None:
                     stub_segs = _cluster_segs(v, vx, vy)
