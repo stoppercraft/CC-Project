@@ -3903,13 +3903,6 @@ def _face_fanout(
                         break
                     depth_A += DEPTH_STEP
 
-                if v.net_name in _skip_nets:
-                    # skip-net: stub only, no via emitted — depth reduction only, no lateral shift
-                    if best_cost < cur_cost - 1e-9:
-                        final_placed[gi] = (best_vx, best_vy)
-                        _improved = True
-                    continue
-
                 # Strategy B: push lateral offset outward at minimum own-pad depth
                 for _lsn in range(1, 31):
                     lat_B = lat_off + _lsn * STEP_MM
@@ -4251,13 +4244,6 @@ def _face_fanout(
                             best_cost, best_vx, best_vy = c, vx_A, vy_A
                         break
                     depth_A += DEPTH_STEP
-
-                if v.net_name in _skip_nets:
-                    # skip-net: stub only, no via emitted — depth reduction only, no lateral shift
-                    if best_cost < cur_cost - 1e-9:
-                        final_placed[gi] = (best_vx, best_vy)
-                        _improved = True
-                    continue
 
                 # Strategy B: push lateral offset outward at minimum own-pad depth
                 for _lsn in range(1, 31):
