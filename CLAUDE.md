@@ -1,5 +1,19 @@
 # Project Instructions — CC Project Folder
 
+## Agent Tool Calls — Mandatory Context Injection
+
+Before every Agent tool call, execute these two steps:
+
+**Step 1 — Read memory index.**
+Call the Read tool on `C:\Users\johnp\.claude\projects\E--Claude-Projects-CC-Project-Folder\memory\MEMORY.md`. Identify all entries relevant to the subagent's task and read those memory files.
+
+**Step 2 — Include AGENT_RULES.md verbatim in the subagent prompt.**
+Read `E:\Claude Projects\CC Project Folder\AGENT_RULES.md` and paste its full contents into the subagent prompt. Then append the relevant memory entries from Step 1.
+
+A subagent prompt that does not include AGENT_RULES.md content is a protocol violation.
+
+---
+
 ## --apply Workflow — EXECUTE ALL THREE STEPS EVERY TIME, IN ORDER, WITHOUT EXCEPTION
 
 ### CRITICAL BEHAVIOR RULES — VIOLATION OF ANY OF THESE IS A FAILURE
