@@ -3447,14 +3447,9 @@ def _face_fanout(
         and i not in bus_pad_set
         and face_pads[i].net_name  # skip no-net pads
     ]
-    # Cluster representatives first so their via positions and stubs are in
-    # `placed` before adjacent signal pads are evaluated.  Within each group
-    # the original outside-in (descending lateral distance) order is kept.
     signal_indices.sort(
-        key=lambda i: (
-            0 if face_pads[i].cluster_real_pads else 1,
-            -abs(face_pads[i].pad_x * ldx + face_pads[i].pad_y * ldy - face_center),
-        ),
+        key=lambda i: abs(face_pads[i].pad_x * ldx + face_pads[i].pad_y * ldy - face_center),
+        reverse=True,
     )
     global_to_si = {gi: si for si, gi in enumerate(signal_indices)}
 
@@ -3903,13 +3898,6 @@ def _face_fanout(
                         break
                     depth_A += DEPTH_STEP
 
-                if v.net_name in _skip_nets:
-                    # skip-net: stub only, no via emitted — depth reduction only, no lateral shift
-                    if best_cost < cur_cost - 1e-9:
-                        final_placed[gi] = (best_vx, best_vy)
-                        _improved = True
-                    continue
-
                 # Strategy B: push lateral offset outward at minimum own-pad depth
                 for _lsn in range(1, 31):
                     lat_B = lat_off + _lsn * STEP_MM
@@ -3952,32 +3940,6 @@ def _face_fanout(
                         depth_C += DEPTH_STEP
                     if lat_C <= 1e-9:
                         break
-
-                # Strategy D: try inward offsets (negative lat_off — opposite of outward).
-                # A via blocked on its outward side may clear that neighbor by stepping
-                # inward (toward face center). Scan depths at each inward step, same as
-                # Strategy A does at the current lat_off.
-                for _lsn in range(1, 21):
-                    lat_D = -_lsn * STEP_MM
-                    df_D  = max(v.neckdown_len_mm, _own_depth_floor(lat_D),
-                                _partner_depth_1p)
-                    if math.hypot(abs(lat_D), df_D) >= best_cost - 1e-9:
-                        break
-                    depth_D = df_D
-                    while True:
-                        _cost_D = math.hypot(abs(lat_D), depth_D)
-                        if _cost_D >= best_cost - 1e-9:
-                            break
-                        if depth_D > FANOUT_DEPTH_CAP + 1e-9:
-                            break
-                        vx_D = v.pad_x + ls * lat_D * ldx
-                        vy_D = v.pad_y + ls * lat_D * ldy + edy * depth_D
-                        if _check(v, vx_D, vy_D, other_placed) is None:
-                            if _cost_D < best_cost:
-                                best_cost, best_vx, best_vy = _cost_D, vx_D, vy_D
-                                lat_offs_arr[si] = lat_D
-                            break  # found minimum depth at this lat_D; continue outer loop
-                        depth_D += DEPTH_STEP
 
                 if best_cost < cur_cost - 1e-9:
                     final_placed[gi] = (best_vx, best_vy)
@@ -4251,13 +4213,6 @@ def _face_fanout(
                             best_cost, best_vx, best_vy = c, vx_A, vy_A
                         break
                     depth_A += DEPTH_STEP
-
-                if v.net_name in _skip_nets:
-                    # skip-net: stub only, no via emitted — depth reduction only, no lateral shift
-                    if best_cost < cur_cost - 1e-9:
-                        final_placed[gi] = (best_vx, best_vy)
-                        _improved = True
-                    continue
 
                 # Strategy B: push lateral offset outward at minimum own-pad depth
                 for _lsn in range(1, 31):
