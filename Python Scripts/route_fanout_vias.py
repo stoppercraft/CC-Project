@@ -5253,6 +5253,90 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
     pending = [pv for pv in pending if (pv.ref, pv.pad_num) not in _direct_route_set]
 
     # ------------------------------------------------------------------
+    # 1c4. HS direct-route filter
+    # ------------------------------------------------------------------
+    # HS pads whose nearest same-net same-layer pad (on any other component)
+    # is within via_share_proximity_mm can connect directly on-layer — no
+    # via needed at either end.  This handles cases like a QFN HS TX pad
+    # facing a nearby AC coupling cap: the route stays on one copper layer.
+    #
+    # Differential-pair constraint: both _P and _N partners must qualify
+    # independently before either is removed, preventing asymmetric stub
+    # geometry for a diff pair.  Partner matching uses _P↔_N net suffix
+    # swap.  If no named partner is found in pending, the pad is removed
+    # independently (lone HS pads are not common but should still work).
+    _hs_threshold = cfg.CLEARANCE_AUDIT.get("via_share_proximity_mm", 5.0)
+
+    # Build per-net pad lookup from all board footprints.
+    _board_pad_by_net: dict = {}
+    for _bfp in board.GetFootprints():
+        _bfref = _bfp.GetReference()
+        for _bp in _bfp.Pads():
+            _bnet = _bp.GetNetname()
+            if not _bnet or _bnet.startswith('unconnected'):
+                continue
+            _bbb = _bp.GetBoundingBox()
+            _board_pad_by_net.setdefault(_bnet, []).append({
+                'ref':   _bfref,
+                'layer': _bp.GetLayer(),
+                'cx':    pcbnew.ToMM(_bp.GetPosition().x),
+                'cy':    pcbnew.ToMM(_bp.GetPosition().y),
+                'bbox':  (pcbnew.ToMM(_bbb.GetLeft()),  pcbnew.ToMM(_bbb.GetTop()),
+                          pcbnew.ToMM(_bbb.GetRight()), pcbnew.ToMM(_bbb.GetBottom())),
+            })
+
+    def _hs_edge_dist(pv: PendingVia, bp: dict) -> float:
+        if pv.pad_bbox is None:
+            return math.hypot(pv.pad_x - bp['cx'], pv.pad_y - bp['cy'])
+        al, at, ar, ab_ = pv.pad_bbox
+        bl, bt, br, bb_ = bp['bbox']
+        return math.hypot(max(0.0, max(al - br, bl - ar)),
+                          max(0.0, max(at - bb_, bt - ab_)))
+
+    def _hs_partner_net(net: str) -> str:
+        if net.endswith('_P'):
+            return net[:-2] + '_N'
+        if net.endswith('_N'):
+            return net[:-2] + '_P'
+        return ''
+
+    def _hs_nearest_dist(pv: PendingVia) -> float:
+        """Min edge distance to any same-net same-layer pad on a different component."""
+        others = [bp for bp in _board_pad_by_net.get(pv.net_name, [])
+                  if bp['ref'] != pv.ref and bp['layer'] == pv.pad_layer_id]
+        if not others:
+            return float('inf')
+        return min(_hs_edge_dist(pv, bp) for bp in others)
+
+    _hs_pv_list = [pv for pv in pending if pv.priority == PRIORITY_HS]
+    _hs_by_ref_net = {(pv.ref, pv.net_name): pv for pv in _hs_pv_list}
+    _hs_direct_ids: set = set()
+
+    for _hpv in _hs_pv_list:
+        if id(_hpv) in _hs_direct_ids:
+            continue
+        if _hs_nearest_dist(_hpv) >= _hs_threshold:
+            continue
+
+        # Pad qualifies. Check P/N partner.
+        _partner_net = _hs_partner_net(_hpv.net_name)
+        _partner = _hs_by_ref_net.get((_hpv.ref, _partner_net)) if _partner_net else None
+
+        if _partner is not None and id(_partner) not in _hs_direct_ids:
+            if _hs_nearest_dist(_partner) < _hs_threshold:
+                _hs_direct_ids.add(id(_hpv))
+                _hs_direct_ids.add(id(_partner))
+        else:
+            # No named partner in pending — remove independently.
+            _hs_direct_ids.add(id(_hpv))
+
+    _hs_dr = [pv for pv in pending if id(pv) in _hs_direct_ids]
+    for _hpv in _hs_dr:
+        print(f"  [hs-direct-route] {_hpv.ref}/{_hpv.pad_num} ({_hpv.net_name}): "
+              f"nearest same-net pad within {_hs_threshold:.1f}mm — on-layer direct connection")
+    pending = [pv for pv in pending if id(pv) not in _hs_direct_ids]
+
+    # ------------------------------------------------------------------
     # 1d. Adjacent same-net pad clustering
     # ------------------------------------------------------------------
     # Connector pads on the same net that are side-by-side (e.g. two +5V

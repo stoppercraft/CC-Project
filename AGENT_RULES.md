@@ -3,9 +3,9 @@
 
 ---
 
-## --apply Workflow — EXECUTE ALL FOUR STEPS IN ORDER, NO EXCEPTIONS
+## Route and Verify — EXECUTE ALL FOUR STEPS IN ORDER, NO EXCEPTIONS
 
-When `--apply` is said:
+When the user says "Route and Verify" or asks to route the full board:
 
 **Step 1 — Clear board**
 ```
@@ -14,7 +14,7 @@ When `--apply` is said:
 
 **Step 2 — Run script once, full output captured**
 ```
-"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_fanout_vias.py" --pcb "E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Frameline_Compute_V2.kicad_pcb" --apply 2>&1
+"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_fanout_vias.py" --apply 2>&1
 ```
 Run ONCE. Never re-run to filter output.
 
@@ -35,7 +35,7 @@ Never present results without completing all four steps.
 
 ### CRITICAL BEHAVIOR RULES
 1. DO NOT ask the user to do anything. Every step is Claude's responsibility.
-2. DO NOT skip Step 1 (clear). No exceptions, including dry runs.
+2. DO NOT skip Step 1 (clear). No exceptions.
 3. DO NOT run Step 2 twice.
 4. DO NOT present results without Steps 3 AND 4 complete.
 5. DO NOT narrate steps. Execute silently, report when done.
@@ -86,17 +86,16 @@ Before proposing any fix, ask: "Would this work on a completely different PCB wi
 
 - **Locked components:** KiCad-locked footprints must NEVER be moved or rotated by any script. No overrides, no exceptions.
 - **Never run scripts without explicit user approval.** "Revert" means revert only.
-- **Never run --apply scripts twice.** Pipe output in one command; never re-run to filter.
-- **Always clear board before any routing script**, dry-run or --apply, no exceptions.
-- **Always run DRC after --apply.** Never present results without confirming 0 violations.
-- **Board inspection after --apply is mandatory.** DRC alone is insufficient.
+- **Never run the Route and Verify script twice.** Pipe output in one command; never re-run to filter.
+- **Always clear board before any routing script**, no exceptions.
+- **Always run DRC after writing to board.** Never present results without confirming 0 violations.
+- **Board inspection after writing to board is mandatory.** DRC alone is insufficient.
 - **Never state facts about code without reading it.** Always use Read tool on the actual source. Code is truth; context files can be stale.
 - **Never save backup copies** of the PCB to the backups dir. Live file is the baseline.
 - **Never run commands with runaway/destructive potential** (e.g., `find /`, `rm -rf` broad paths). Flag and propose safe alternative instead.
-- **Debug script does not replace --apply workflow.** `debug_fanout.py` is algorithm verification only. Never tell user to reload KiCad after a debug script run — run --apply workflow first.
-- **Debug vs --apply workflows are separate.** Never switch from debug to --apply without explicit instruction. Code change during debug → test with debug script, not --apply.
+- **Debug script does not replace Route and Verify.** `debug_fanout.py` is algorithm verification only. Never tell user to reload KiCad after a debug script run — run Route and Verify first.
+- **Debug workflow and Route and Verify are separate.** Never switch from debug to Route and Verify without explicit instruction. Code change during debug → test with debug script, not Route and Verify.
 - **Never declare a problem geometrically/algorithmically impossible.** Find the upstream fix instead.
-- **Every task with execution work must be delegated to a subagent.** Never execute directly in the orchestrator.
 - **Never describe what code does from memory.** Always read the actual source first.
 
 ---
