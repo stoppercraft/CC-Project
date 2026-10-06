@@ -43,7 +43,7 @@ If this command fails, diagnose and fix it. Do not proceed to Step 2 until the b
 **Step 2 — Run the routing script with --apply (once, full output captured)**
 
 ```
-"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_fanout_vias.py" --pcb "E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Frameline_Compute_V2.kicad_pcb" --apply 2>&1
+"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_fanout_vias.py" --apply 2>&1
 ```
 
 Run this command exactly once. Capture and retain the full output. Do not re-run it.
