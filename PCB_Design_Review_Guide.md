@@ -430,6 +430,14 @@ evidence, and recommended action if FAIL.
   the complementary net exists and both are assigned to the same net class. MAJOR if
   one leg is missing.
 
+- **HS_PAIRS coverage** — For every connected `_P`/`_N` net pair (net name does not start
+  with `unconnected-(`) that is not in `FANOUT_VIA_SKIP_NETS`: verify the pair appears in
+  `HS_PAIRS` in `routing_config.py`, or is documented in a comment there with explicit
+  rationale for exclusion. MAJOR per uncovered pair — an omitted pair will be routed at
+  signal trace width instead of impedance-controlled width, and `route_highspeed.py` will
+  skip it entirely. Use the completeness check script from the PRE-ROUTING GATE in
+  `PCB_Design_Guide_Generic.md` to enumerate any missing pairs programmatically.
+
 - **Switching converter application circuit completeness** — For each switching converter:
   verify bootstrap capacitor (if required by datasheet), feedback network, compensation
   network (if external), and soft-start component (if present in datasheet) are all

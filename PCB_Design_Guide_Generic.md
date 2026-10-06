@@ -4118,6 +4118,36 @@ produce incorrect clearance behavior and the DRC results will be meaningless.
 - [ ] Board outline is final — no further minimization will occur after routing starts
 - [ ] CONNECTOR_PROTECTION_TABLE re-verified: no connectors added or changed since PRE-LAYOUT GATE without a Phase 0b + Phase 3 re-check
 - [ ] All protection components (ESD clamps, CM chokes, polyfuses) present in PCB as placed footprints — verify via footprint count matches schematic BOM
+- [ ] **HS_PAIRS completeness verified** — run the check below; every connected `_P`/`_N` net pair must appear in `HS_PAIRS` or be explicitly excluded with rationale
+
+**HS_PAIRS completeness check (required before Phase 10):**
+
+Load the board and collect every net name ending in `_P` or `_N` that is actually connected (net name does not start with `unconnected-(`) and is not in `FANOUT_VIA_SKIP_NETS`. Every such pair must appear in `HS_PAIRS` in `routing_config.py`, or be documented in a comment in `routing_config.py` explaining why it is excluded (e.g. intentionally unrouted, routed by other means). Any pair not accounted for is a STOP — add it to `HS_PAIRS` before proceeding.
+
+```python
+import sys; sys.path.insert(0, "C:/Program Files/KiCad/10.0/bin/Lib/site-packages")
+import pcbnew
+sys.path.insert(0, "[SCRIPTS_DIR]")
+import routing_config as cfg
+
+board = pcbnew.LoadBoard("[PCB_FILE]")
+all_nets = {str(n) for n in board.GetNetInfo().NetsByName().keys() if str(n)}
+connected = {n for n in all_nets if not n.startswith("unconnected-(")}
+skip = set(cfg.FANOUT_VIA_SKIP_NETS)
+
+p_nets = {n for n in connected if n.endswith("_P")} - skip
+n_nets = {n for n in connected if n.endswith("_N")} - skip
+hs_nets = {net for p, n, _l, _s in cfg.HS_PAIRS.values() for net in (p, n)}
+
+missing_p = sorted(p_nets - hs_nets)
+missing_n = sorted(n_nets - hs_nets)
+if missing_p or missing_n:
+    print("NOT IN HS_PAIRS — add or document exclusion:")
+    for n in missing_p + missing_n:
+        print(f"  {n}")
+else:
+    print("HS_PAIRS completeness: PASS")
+```
 
 Do not start Phase 10 if any item is unchecked. Unfilled zones before routing is the
 equivalent of routing on a bare board with no ground planes — impedance control,

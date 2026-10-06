@@ -118,10 +118,15 @@ HS_PAIRS = {
     "DP_TX1":    ("DP_TX1_P",    "DP_TX1_N",    "In2.Cu", 0.127),
     "DP_TX2":    ("DP_TX2_P",    "DP_TX2_N",    "In2.Cu", 0.127),
     "DP_AUX":    ("DP_AUX_P",    "DP_AUX_N",    "In2.Cu", 0.127),
-    # MIPI1: CM5 SOM2 → J_DSI1 — In2.Cu buried stripline, 100Ω diff (D2/D3 lanes NC)
+    # MIPI1: CM5 SOM2 → J_DSI1 — In2.Cu buried stripline, 100Ω diff (all 4 data lanes connected)
     "MIPI1_CLK": ("MIPI1_C_P",   "MIPI1_C_N",   "In2.Cu", 0.127),
     "MIPI1_D0":  ("MIPI1_D0_P",  "MIPI1_D0_N",  "In2.Cu", 0.127),
     "MIPI1_D1":  ("MIPI1_D1_P",  "MIPI1_D1_N",  "In2.Cu", 0.127),
+    "MIPI1_D2":  ("MIPI1_D2_P",  "MIPI1_D2_N",  "In2.Cu", 0.127),
+    "MIPI1_D3":  ("MIPI1_D3_P",  "MIPI1_D3_N",  "In2.Cu", 0.127),
+    # DP RX inputs: J_USB_OUT1 → LT6711A (U3) — In2.Cu buried stripline, 100Ω diff
+    "DP_RX1":    ("DP_RX1_P",    "DP_RX1_N",    "In2.Cu", 0.127),
+    "DP_RX2":    ("DP_RX2_P",    "DP_RX2_N",    "In2.Cu", 0.127),
     # USB 2.0: J_USB_IN1 → D_USB1 → CM5 SOM2 — F.Cu, 90Ω diff
     "USB2":      ("USB_P",       "USB_N",        "F.Cu",   0.500),
 }
@@ -132,10 +137,11 @@ HS_NETS = sorted({net for p, n, _l, _s in HS_PAIRS.values() for net in (p, n)})
 # Inter-lane spread groups for verify_highspeed.py
 # (pair_name_list, max_spread_mm)
 LANE_GROUPS = {
-    "HDMI0 lanes (limit 0.50mm)":        (["HDMI0_CLK", "HDMI0_TX0", "HDMI0_TX1", "HDMI0_TX2"], 0.50),
-    "DP TX source lanes (limit 0.45mm)":  (["LT_TX1",    "LT_TX2",    "LT_AUX"],                  0.45),
-    "DP TX conn lanes (limit 0.45mm)":    (["DP_TX1",    "DP_TX2",    "DP_AUX"],                   0.45),
-    "MIPI1 active lanes (limit 0.50mm)":  (["MIPI1_CLK", "MIPI1_D0",  "MIPI1_D1"],                0.50),
+    "HDMI0 lanes (limit 0.50mm)":        (["HDMI0_CLK", "HDMI0_TX0", "HDMI0_TX1", "HDMI0_TX2"],                   0.50),
+    "DP TX source lanes (limit 0.45mm)":  (["LT_TX1",    "LT_TX2",    "LT_AUX"],                                   0.45),
+    "DP TX conn lanes (limit 0.45mm)":    (["DP_TX1",    "DP_TX2",    "DP_AUX"],                                    0.45),
+    "DP RX lanes (limit 0.45mm)":         (["DP_RX1",    "DP_RX2"],                                                 0.45),
+    "MIPI1 lanes (limit 0.50mm)":         (["MIPI1_CLK", "MIPI1_D0",  "MIPI1_D1", "MIPI1_D2", "MIPI1_D3"],        0.50),
 }
 
 # Routing widths and gap per diff pair — used by route_highspeed.py
@@ -157,6 +163,11 @@ HS_ROUTE_WIDTHS = {
     "MIPI1_CLK": (0.127, 0.10),
     "MIPI1_D0":  (0.127, 0.10),
     "MIPI1_D1":  (0.127, 0.10),
+    "MIPI1_D2":  (0.127, 0.10),
+    "MIPI1_D3":  (0.127, 0.10),
+    # DP RX inputs — 100Ω diff, fine-pitch side at U3
+    "DP_RX1":    (0.127, 0.10),
+    "DP_RX2":    (0.127, 0.10),
     # USB 2.0 — F.Cu microstrip, 90Ω diff
     "USB2":      (0.20, 0.15),
 }
