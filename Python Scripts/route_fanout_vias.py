@@ -3324,7 +3324,6 @@ def _face_fanout(
     edy: float,
     step_mm: float = 0.050,
     max_iter: int = 200,
-    is_radial_face: bool = False,
 ) -> list:
     """Co-optimized multi-pass outside-in fanout for a single dense IC face.
 
@@ -3523,11 +3522,6 @@ def _face_fanout(
         via_copper_r = v.via_drill_mm / 2.0 + ca
         stub_hw      = v.neckdown_w_mm / 2.0
         chk_r        = via_copper_r + CLEARANCE
-        # Skip-net pads emit a stub tip, not a via.  Use stub_hw as the effective
-        # copper radius at (vx, vy) for sections 3/4/4b; skip section 2 entirely
-        # (sections 5b/5c already check stub-tip vs via/stub with correct thresholds).
-        _v_skip  = v.net_name in _skip_nets
-        _eff_r   = stub_hw if _v_skip else via_copper_r
 
         # 1. via vs pad obstacles
         for obs in pad_obs_list:
@@ -3544,21 +3538,20 @@ def _face_fanout(
             if d < thr:
                 return (f"{obs.ref}/{obs.net_name}", d, thr, "via-vs-pad", None)
 
-        # 2. via vs placed vias — only for pads that emit a real via
-        if not _v_skip:
-            for j, pc in enumerate(placed):
-                d   = math.hypot(vx - pc['vx'], vy - pc['vy'])
-                thr = via_copper_r + pc['r'] + CLEARANCE
-                if d < thr:
-                    return (f"via[{pc['pad_num']}]", d, thr, "via-vs-via", j)
+        # 2. via vs placed vias
+        for j, pc in enumerate(placed):
+            d   = math.hypot(vx - pc['vx'], vy - pc['vy'])
+            thr = via_copper_r + pc['r'] + CLEARANCE
+            if d < thr:
+                return (f"via[{pc['pad_num']}]", d, thr, "via-vs-via", j)
 
-        # 3. via (or stub tip) vs placed stub segments (different net only)
+        # 3. via vs placed stub segments (different net only)
         for j, pc in enumerate(placed):
             if pc['net'] == v.net_name:
                 continue
             for x1s, y1s, x2s, y2s in pc['segs']:
                 d   = _dist_to_segment(vx, vy, x1s, y1s, x2s, y2s)
-                thr = _eff_r + pc['stub_hw'] + CLEARANCE
+                thr = via_copper_r + pc['stub_hw'] + CLEARANCE
                 if d < thr:
                     return (f"stub[{pc['pad_num']}]", d, thr, "via-vs-stub", j)
 
@@ -3568,7 +3561,7 @@ def _face_fanout(
                 continue
             d   = _dist_to_segment(vx, vy,
                                    bobs['x1'], bobs['y1'], bobs['x2'], bobs['y2'])
-            thr = _eff_r + bobs['hw'] + CLEARANCE
+            thr = via_copper_r + bobs['hw'] + CLEARANCE
             if d < thr:
                 return (f"bus/{bobs['net']}", d, thr, "via-vs-bus", None)
 
@@ -3577,7 +3570,7 @@ def _face_fanout(
             if _snet == v.net_name:
                 continue
             _d   = _dist_to_segment(vx, vy, _x1s, _y1s, _x2s, _y2s)
-            _thr = _eff_r + _shw + CLEARANCE
+            _thr = via_copper_r + _shw + CLEARANCE
             if _d < _thr:
                 return ("stub_only", _d, _thr, "via-vs-stub-only", None)
 
@@ -3746,7 +3739,7 @@ def _face_fanout(
                     placed.append({
                         'vx':      vx,
                         'vy':      vy,
-                        'r':       0.0 if v.net_name in _skip_nets else via_copper_r,
+                        'r':       via_copper_r,
                         'stub_hw': v.neckdown_w_mm / 2.0,
                         'segs':    stub_segs,
                         'pad_i':   global_i,
@@ -3911,12 +3904,10 @@ def _face_fanout(
                     depth_A += DEPTH_STEP
 
                 if v.net_name in _skip_nets:
-                    # skip-net: on radial faces stubs must stay deep (past signal via row);
-                    # on non-radial faces allow depth reduction so they don't block signal compaction.
-                    if not is_radial_face:
-                        if best_cost < cur_cost - 1e-9:
-                            final_placed[gi] = (best_vx, best_vy)
-                            _improved = True
+                    # skip-net: stub only, no via emitted — depth reduction only, no lateral shift
+                    if best_cost < cur_cost - 1e-9:
+                        final_placed[gi] = (best_vx, best_vy)
+                        _improved = True
                     continue
 
                 # Strategy B: push lateral offset outward at minimum own-pad depth
@@ -4058,23 +4049,15 @@ def _face_fanout(
             cur_lat_sep = abs(via_lat_i - via_lat_j)
             min_lat_sep = pcr_i + pcr_j + CLEARANCE
 
-            # Pad lateral positions — used for outer-via selection and jog-crossing cap.
-            # Via positions may be geometrically inverted (an inner pad's via pushed
-            # past the outer pad's column by compaction), so always use pad positions
-            # when deciding which side is "outer".
-            _pad_lat_i  = vi.pad_x * ldx + vi.pad_y * ldy
-            _pad_lat_j  = vj.pad_x * ldx + vj.pad_y * ldy
-            _dist_pad_i = abs(_pad_lat_i - face_center)
-            _dist_pad_j = abs(_pad_lat_j - face_center)
-
             # Working lateral offsets — may be increased for the outer via if the
             # pair's current lateral separation is less than the via-to-via minimum.
             lat_i_w, lat_j_w = lat_i, lat_j
             if cur_lat_sep < min_lat_sep - 1e-9:
                 extra = min_lat_sep - cur_lat_sep
-                # Push the outer via (further from face_center) outward, determined
-                # by pad position not via position.
-                if _dist_pad_i >= _dist_pad_j:
+                # Push the outer via (further from face_center) outward
+                dist_i = abs(via_lat_i - face_center)
+                dist_j = abs(via_lat_j - face_center)
+                if dist_i >= dist_j:
                     lat_i_w = lat_i + extra
                 else:
                     lat_j_w = lat_j + extra
@@ -4084,8 +4067,8 @@ def _face_fanout(
             # via is depth-independent (= hypot(delta_lat, axial_offset)), so a
             # depth scan can never resolve it.  Compute the minimum lat needed to
             # clear, and bump the outer via's lat_w before computing d_floor.
-            _stub_lat_i  = _pad_lat_i
-            _stub_lat_j  = _pad_lat_j
+            _stub_lat_i  = vi.pad_x * ldx + vi.pad_y * ldy
+            _stub_lat_j  = vj.pad_x * ldx + vj.pad_y * ldy
             _dpad_ax_ij  = (vj.pad_x - vi.pad_x)*edx + (vj.pad_y - vi.pad_y)*edy
             # vi stub axial endpoint vs vj trial via
             _hax_ij = _dpad_ax_ij + lat_i_w
@@ -4103,34 +4086,6 @@ def _face_fanout(
                 _thr_ji  = vj.neckdown_w_mm / 2.0 + pcr_i + CLEARANCE
                 if _dlat_ji < _thr_ji and _hax_ji**2 + _dlat_ji**2 < _thr_ji**2 - 1e-9:
                     lat_j_w = max(lat_j_w, math.sqrt(_thr_ji**2 - _dlat_ji**2) + _dpad_ax_ij + 1e-6)
-
-            # Jog-crossing cap: if the inner via's lateral position overshoots the
-            # outer pad's axial column, the 45° jog sweeps through the outer pad's
-            # stub at every depth — a depth scan can never resolve it.  Cap the
-            # inner via's lat so its jog stops clear of the outer column.
-            # Only cap when the outer column lies in the jog's travel direction.
-            if _dist_pad_i < _dist_pad_j:
-                # i is inner, j is outer
-                if ls_i * (_pad_lat_j - _pad_lat_i) > 0:
-                    _nw_clr_7b = vi.neckdown_w_mm / 2.0 + CLEARANCE
-                    _lat_cap_7b = max(0.0, abs(_pad_lat_j - _pad_lat_i) - _nw_clr_7b - 1e-6)
-                    if lat_i_w > _lat_cap_7b + 1e-9:
-                        lat_i_w = _lat_cap_7b
-                        _via_i_c = _pad_lat_i + ls_i * lat_i_w
-                        _via_j_c = _pad_lat_j + ls_j * lat_j_w
-                        if abs(_via_i_c - _via_j_c) < min_lat_sep - 1e-9:
-                            lat_j_w += min_lat_sep - abs(_via_i_c - _via_j_c)
-            else:
-                # j is inner, i is outer
-                if ls_j * (_pad_lat_i - _pad_lat_j) > 0:
-                    _nw_clr_7b = vj.neckdown_w_mm / 2.0 + CLEARANCE
-                    _lat_cap_7b = max(0.0, abs(_pad_lat_i - _pad_lat_j) - _nw_clr_7b - 1e-6)
-                    if lat_j_w > _lat_cap_7b + 1e-9:
-                        lat_j_w = _lat_cap_7b
-                        _via_i_c = _pad_lat_i + ls_i * lat_i_w
-                        _via_j_c = _pad_lat_j + ls_j * lat_j_w
-                        if abs(_via_i_c - _via_j_c) < min_lat_sep - 1e-9:
-                            lat_i_w += min_lat_sep - abs(_via_i_c - _via_j_c)
 
             d_floor_i = max(vi.neckdown_len_mm, _pair_depth_floor(vi, ls_i, lat_i_w))
             d_floor_j = max(vj.neckdown_len_mm, _pair_depth_floor(vj, ls_j, lat_j_w))
@@ -4298,12 +4253,10 @@ def _face_fanout(
                     depth_A += DEPTH_STEP
 
                 if v.net_name in _skip_nets:
-                    # skip-net: on radial faces stubs must stay deep (past signal via row);
-                    # on non-radial faces allow depth reduction so they don't block signal compaction.
-                    if not is_radial_face:
-                        if best_cost < cur_cost - 1e-9:
-                            final_placed[gi] = (best_vx, best_vy)
-                            _improved = True
+                    # skip-net: stub only, no via emitted — depth reduction only, no lateral shift
+                    if best_cost < cur_cost - 1e-9:
+                        final_placed[gi] = (best_vx, best_vy)
+                        _improved = True
                     continue
 
                 # Strategy B: push lateral offset outward at minimum own-pad depth
@@ -4355,10 +4308,10 @@ def _face_fanout(
                 break
 
         # ------------------------------------------------------------------
-        # 7c. Skip-net stub axial/diagonal extension.
-        #     Each skip-net stub is extended past signal vias near its axial
-        #     path.  Strategy: straight axial if lateral clearance is OK;
-        #     45° diagonal jog away from the nearest blocking via otherwise.
+        # 7c. Skip-net stub lateral extension: extend each skip-net stub past
+        #     the nearest outer signal via group (adjacent HS pair or single via)
+        #     at a depth that clears their copper, then add a lateral segment to
+        #     just past the outermost via in that group.
         # ------------------------------------------------------------------
         _7c_any_changed = False
         for _si7c, _gi7c in enumerate(signal_indices):
@@ -4368,25 +4321,15 @@ def _face_fanout(
             if _gi7c not in final_placed or _gi7c in keepout_set:
                 continue
 
-            # Clear stale extensions from a previous outer_pass.
-            if hasattr(_pv7c, 'stub_ext_vx'):
-                del _pv7c.stub_ext_vx
-                del _pv7c.stub_ext_vy
-            if hasattr(_pv7c, 'stub_ext2_vx'):
-                del _pv7c.stub_ext2_vx
-                del _pv7c.stub_ext2_vy
-
+            _ls7c    = _lat_sign(_pv7c)
+            _v_lat7c = _pv7c.pad_x * ldx + _pv7c.pad_y * ldy
+            _shw7c   = _pv7c.neckdown_w_mm / 2.0
             _vx7c, _vy7c = final_placed[_gi7c]
-            _cur_d7c  = (_vx7c - _pv7c.pad_x) * edx + (_vy7c - _pv7c.pad_y) * edy
-            _shw7c    = _pv7c.neckdown_w_mm / 2.0
-            _v_lat7c  = _pv7c.pad_x * ldx + _pv7c.pad_y * ldy
+            _cur_d7c = (_vx7c - _pv7c.pad_x) * edx + (_vy7c - _pv7c.pad_y) * edy
+            _lo7c    = lat_offs_arr[_si7c]
 
-            # Collect all signal vias deeper than current stub tip and within
-            # a generous lateral band (DRC threshold + one CLEARANCE margin).
-            # The extra margin ensures vias at exactly-threshold separation are
-            # included for straight axial extension.
-            # Store absolute (x,y) for segment clearance checks.
-            _near7c = []  # (lat_dist, via_abs_x, via_abs_y, via_depth, via_pcr)
+            # Collect outer signal vias (not skip-net, not keepout), sorted nearest first
+            _outers7c = []  # (gap, via_lat, depth, pcr, annular, net_name, gi)
             for _gj7c in signal_indices:
                 if _gj7c == _gi7c or _gj7c not in final_placed or _gj7c in keepout_set:
                     continue
@@ -4395,72 +4338,110 @@ def _face_fanout(
                     continue
                 _vxj7c, _vyj7c = final_placed[_gj7c]
                 _vlat_j7c = _vxj7c * ldx + _vyj7c * ldy
-                _dj7c     = (_vxj7c - _pvj7c.pad_x) * edx + (_vyj7c - _pvj7c.pad_y) * edy
-                _pcr_j7c  = _pvj7c.via_drill_mm / 2.0 + ca
-                _ld_j7c   = abs(_vlat_j7c - _v_lat7c)
-                _thr_j7c  = _pcr_j7c + _shw7c + CLEARANCE
-                if _ld_j7c < _thr_j7c + CLEARANCE - 1e-9 and _dj7c > _cur_d7c + 1e-9:
-                    _near7c.append((_ld_j7c, _vxj7c, _vyj7c, _dj7c, _pcr_j7c))
+                _gap7c    = _ls7c * (_vlat_j7c - _v_lat7c)
+                if _gap7c <= 0:
+                    continue
+                _dj7c    = (_vxj7c - _pvj7c.pad_x) * edx + (_vyj7c - _pvj7c.pad_y) * edy
+                _pcr_j7c = _pvj7c.via_drill_mm / 2.0 + ca
+                # Skip vias the axial stub cannot laterally clear — the stub at pad_lat
+                # going straight axially would violate clearance with this via.
+                if abs(_vlat_j7c - _v_lat7c) < _pcr_j7c + _shw7c + CLEARANCE - 1e-9:
+                    continue
+                _outers7c.append((_gap7c, _vlat_j7c, _dj7c, _pcr_j7c,
+                                   _pvj7c.via_annular_mm, _pvj7c.net_name, _gj7c))
 
-            if not _near7c:
+            if not _outers7c:
                 continue
 
-            # Target depth: past the far copper edge of all near vias.
-            _tgt_d7c = min(
-                max(_dj + _pj + _shw7c + CLEARANCE for _, _, _, _dj, _pj in _near7c),
-                FANOUT_DEPTH_CAP)
-            if _tgt_d7c <= _cur_d7c + 1e-9:
+            _outers7c.sort(key=lambda x: x[0])  # nearest first
+
+            # Build adjacent group: nearest via + its HS partner if present
+            _nearest_net7c = _outers7c[0][5]
+            _group7c = [_outers7c[0]]
+            if _nearest_net7c.endswith('_P') or _nearest_net7c.endswith('_N'):
+                _pnet7c = (_nearest_net7c[:-2] + '_N' if _nearest_net7c.endswith('_P')
+                           else _nearest_net7c[:-2] + '_P')
+                for _ov7c in _outers7c[1:]:
+                    if _ov7c[5] == _pnet7c:
+                        _group7c.append(_ov7c)
+                        break
+
+            # Effective obstacle radius for each group via in the escape direction:
+            # max(via_copper_r, pad_axial_half) — pads whose AABB extends farther
+            # than their via copper ring in the escape direction set the constraint.
+            # Use pad_bbox (board-coordinate AABB) so pad rotation is handled correctly.
+            def _pad_axial_half7c(_pv):
+                _bb = _pv.pad_bbox  # (left, top, right, bottom) board coords
+                return (abs(edx) * (_bb[2] - _bb[0]) + abs(edy) * (_bb[3] - _bb[1])) / 2.0
+            _gr7c = [max(_ov[3], _pad_axial_half7c(face_pads[_ov[6]]))
+                     for _ov in _group7c]
+            _req_d7c  = max(_ov[2] + _gr + _shw7c + CLEARANCE
+                            for _ov, _gr in zip(_group7c, _gr7c))
+            _ext_d7c  = min(max(_req_d7c, _pv7c.neckdown_len_mm), FANOUT_DEPTH_CAP)
+
+            # Only extend when shallowing: if the outer via is deeper than the
+            # stub, the stub already clears it axially and no extension is needed.
+            if _ext_d7c >= _cur_d7c - 1e-9:
                 continue
 
-            # Segment clearance helper: minimum center-to-center distance from
-            # segment (sx,sy)→(ex,ey) to a point via.  Returns True if all
-            # near vias are sufficiently clear of the proposed segment.
-            def _seg_clears_7c(sx, sy, ex, ey):
-                dxs = ex - sx; dys = ey - sy
-                len2 = dxs*dxs + dys*dys
-                for _ld_v, _vx_v, _vy_v, _dv, _pv in _near7c:
-                    _nthr_v = _pv + _shw7c + CLEARANCE
-                    if len2 < 1e-12:
-                        d = math.hypot(sx - _vx_v, sy - _vy_v)
-                    else:
-                        t = (((_vx_v - sx)*dxs + (_vy_v - sy)*dys) / len2)
-                        t = max(0.0, min(1.0, t))
-                        d = math.hypot(sx + t*dxs - _vx_v, sy + t*dys - _vy_v)
-                    if d < _nthr_v - 1e-9:
-                        return False
-                return True
+            # Outermost via in group clearable at actual _ext_d7c → extension endpoint
+            _clearable7c = [_ov for _ov, _gr in zip(_group7c, _gr7c)
+                            if _ext_d7c - _ov[2] - _gr - _shw7c >= CLEARANCE - 1e-9]
+            if not _clearable7c:
+                continue
+            _outmost7c  = max(_clearable7c, key=lambda x: x[0])
+            _ext_lat7c  = _outmost7c[1] + _ls7c * _outmost7c[4]
 
-            # Check if any near via strictly blocks the straight axial path.
-            _blk7c = [v for v in _near7c
-                      if v[0] < v[4] + _shw7c + CLEARANCE - 1e-9]
+            # Clip extension: if any signal via in the lateral sweep path cannot be
+            # cleared vertically at _ext_d7c, stop before the nearest such via.
+            _blocked_lat7c = None
+            for _gj7c_sw in signal_indices:
+                if (_gj7c_sw == _gi7c or _gj7c_sw not in final_placed
+                        or _gj7c_sw in keepout_set):
+                    continue
+                _pvj_sw = face_pads[_gj7c_sw]
+                if _pvj_sw.net_name in _skip_nets or not _pvj_sw.net_name:
+                    continue
+                _vxj_sw, _vyj_sw = final_placed[_gj7c_sw]
+                _vlat_sw = _vxj_sw * ldx + _vyj_sw * ldy
+                _dj_sw   = ((_vxj_sw - _pvj_sw.pad_x) * edx
+                            + (_vyj_sw - _pvj_sw.pad_y) * edy)
+                _pcr_sw  = _pvj_sw.via_drill_mm / 2.0 + ca
+                if _ls7c * (_vlat_sw - _v_lat7c) < 1e-9:
+                    continue
+                if _ls7c * (_ext_lat7c - _vlat_sw) < -1e-9:
+                    continue
+                if abs(_ext_d7c - _dj_sw) - _pcr_sw - _shw7c >= CLEARANCE - 1e-9:
+                    continue
+                _clip = _vlat_sw - _ls7c * (_pcr_sw + _shw7c + CLEARANCE)
+                if _blocked_lat7c is None or _ls7c * (_blocked_lat7c - _clip) > 1e-9:
+                    _blocked_lat7c = _clip
+            if _blocked_lat7c is not None:
+                if _ls7c * (_blocked_lat7c - _v_lat7c) < 1e-9:
+                    continue
+                _ext_lat7c = _blocked_lat7c
 
-            if not _blk7c:
-                # All near vias are laterally clear — try straight axial extension.
-                _ext_x7c = _vx7c
-                _ext_y7c = _vy7c + edy * (_tgt_d7c - _cur_d7c)
-                if not _seg_clears_7c(_vx7c, _vy7c, _ext_x7c, _ext_y7c):
-                    continue
-                _pv7c.stub_ext_vx = _ext_x7c
-                _pv7c.stub_ext_vy = _ext_y7c
-            else:
-                # Nearest blocking via is too close — try 45° diagonal jog away.
-                _nrst7c = min(_blk7c, key=lambda x: x[0])
-                _nld7c, _nvx7c, _nvy7c, _nvd7c, _nvp7c = _nrst7c
-                _nthr7c = _nvp7c + _shw7c + CLEARANCE
-                # Jog away: if via is to the right (larger lat), jog left (sign=-1).
-                _nvl7c = _nvx7c * ldx + _nvy7c * ldy
-                _jog_sign7c = 1 if _nvl7c < _v_lat7c else -1
-                _jog_mag7c  = _nthr7c - _nld7c + 1e-4
-                # 45° diagonal: lateral and axial components both equal jog_mag.
-                _ext_x7c = (_vx7c + _jog_sign7c * _jog_mag7c * ldx
-                            + _jog_mag7c * edx)
-                _ext_y7c = (_vy7c + _jog_sign7c * _jog_mag7c * ldy
-                            + _jog_mag7c * edy)
-                # Only apply if entire diagonal path clears all nearby vias.
-                if not _seg_clears_7c(_vx7c, _vy7c, _ext_x7c, _ext_y7c):
-                    continue
-                _pv7c.stub_ext_vx = _ext_x7c
-                _pv7c.stub_ext_vy = _ext_y7c
+            # Skip if clipping prevented reaching the outermost clearable via
+            if _ls7c * (_ext_lat7c - _outmost7c[1]) < -1e-9:
+                continue
+
+            # Only extend if endpoint is actually further out than current stub tip
+            _stub_lat7c = _v_lat7c + _ls7c * _lo7c
+            if _ls7c * (_ext_lat7c - _stub_lat7c) <= 1e-6:
+                continue
+
+            # Update final_placed if depth changed (deepen or shallow to _req_d7c)
+            if abs(_ext_d7c - _cur_d7c) > 1e-9:
+                final_placed[_gi7c] = (
+                    _pv7c.pad_x + _ls7c * _lo7c * ldx + edx * _ext_d7c,
+                    _pv7c.pad_y + _ls7c * _lo7c * ldy + edy * _ext_d7c,
+                )
+                _7c_any_changed = True
+
+            # Store lateral extension endpoint
+            _dlat7c = _ext_lat7c - _v_lat7c
+            _pv7c.stub_ext_vx = _pv7c.pad_x + _dlat7c * ldx + edx * _ext_d7c
+            _pv7c.stub_ext_vy = _pv7c.pad_y + _dlat7c * ldy + edy * _ext_d7c
 
         if not _7c_any_changed:
             break
@@ -5443,7 +5424,6 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _co_assignments = _face_fanout(
             _face_grp_aug, _pad_obs_early, _co_pending_set,
             _coopt_sg_clr, _co_ca, _co_edx, _co_edy,
-            is_radial_face=True,
         )
 
         # Collect bus stubs and keepout set from side-effect storage
@@ -6322,17 +6302,6 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                 _et.SetLayer(_so_pv.pad_layer_id)
                 _et.SetNet(_so_net_obj)
                 board.Add(_et)
-        if hasattr(_so_pv, 'stub_ext2_vx'):
-            _ex1, _ey1 = _so_pv.stub_ext_vx,  _so_pv.stub_ext_vy
-            _ex2, _ey2 = _so_pv.stub_ext2_vx, _so_pv.stub_ext2_vy
-            if math.hypot(_ex2 - _ex1, _ey2 - _ey1) >= 1e-6:
-                _et2 = pcbnew.PCB_TRACK(board)
-                _et2.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(_ex1), pcbnew.FromMM(_ey1)))
-                _et2.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(_ex2), pcbnew.FromMM(_ey2)))
-                _et2.SetWidth(pcbnew.FromMM(_so_pv.neckdown_w_mm))
-                _et2.SetLayer(_so_pv.pad_layer_id)
-                _et2.SetNet(_so_net_obj)
-                board.Add(_et2)
         _so_emit_count += 1
     if _so_emit_count:
         print(f"Emitted {_so_emit_count} co-opt stub-only trace(s).")
