@@ -18,6 +18,17 @@ A subagent prompt that does not include AGENT_RULES.md content is a protocol vio
 
 **Trigger:** Only the exact phrase "Route and Verify" from the user starts this workflow. No other phrasing ("run the script", "apply it", "run route_fanout_vias.py on the board", etc.) triggers it.
 
+---
+
+## "Run route_fanout_vias.py on the entire board"
+
+When the user says this (or equivalent phrasing like "run the script on the board"), execute exactly two steps and nothing more:
+
+1. Clear all unlocked tracks and vias (Step 1 command above)
+2. Run the script with --apply (Step 2 command above)
+
+Do NOT run DRC. Do NOT inspect the board. Do NOT add any steps beyond what was asked. This is a literal instruction, not the Route and Verify workflow.
+
 ### CRITICAL BEHAVIOR RULES — VIOLATION OF ANY OF THESE IS A FAILURE
 
 1. **DO NOT ask the user to do anything.** The user saying "Route and Verify" is the only input required. Every step from that point is Claude's responsibility. Asking the user to clear the board, run DRC, confirm anything, or do any other step is WRONG.
