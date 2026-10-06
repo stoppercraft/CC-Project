@@ -3257,13 +3257,18 @@ def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
 
 
 def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
-                        pending_set: set, skip_nets: set) -> list:
+                        pending_set: set, skip_nets: set,
+                        suppressed_set: set = None) -> list:
     """Build PendingVia corridor phantoms for face pads not in pending and not skip-net.
 
     These pads are absent from _face_fanout's face_pads but need on-layer routing
     through the fanout zone (e.g. HS pads removed by direct-route filter).  Each
     phantom enters _stub_only_segs with neckdown_len_mm = CORRIDOR_DEPTH so _check()
     rejects via positions that would block the pad's axial routing corridor.
+
+    suppressed_set — (ref, pad_num) pairs removed by _suppress_proximity_via_sharing.
+    These pads have no F.Cu routing in the fanout zone (their via is shared with
+    another pad) so no corridor phantom is needed.
     """
     if not fp or not face_grp:
         return []
@@ -3293,6 +3298,8 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
             continue  # already in pending (face_grp)
         if (fp.GetReference(), num) in pending_set:
             continue  # in pending on a different face — via-bearing, not a phantom
+        if suppressed_set and (fp.GetReference(), num) in suppressed_set:
+            continue  # via-shared — copper ends at pad edge, no F.Cu corridor needed
         drill, ann = via_params(PRIORITY_OTHER)
         floor, _, mx = neckdown_params(PRIORITY_OTHER, net)
         pw  = pcbnew.ToMM(pad.GetSizeX())
@@ -5452,7 +5459,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _fp_ref = _fp.GetReference()
         for _pad in _fp.Pads():
             _pad_obs_early.append(_pad_obstacle(_pad, clearance, _fp_ref))
+    _pre_share = {(pv.ref, pv.pad_num) for pv in pending}
     pending = _suppress_proximity_via_sharing(pending, clearance, _pad_obs_early, _fp_by_ref)
+    _share_suppressed = _pre_share - {(pv.ref, pv.pad_num) for pv in pending}
 
     if _debug_return_pending:
         return pending, _pad_obs_early, _fp_by_ref, clearance, skip_nets
@@ -5698,7 +5707,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         # _stub_only_segs that blocks signal vias from their routing corridor.
         _co_corridor_pvs = _build_corridor_pvs(
             _fp_by_ref.get(_co_ref), _face_grp_co, _co_edx, _co_edy,
-            _co_pending_set, skip_nets,
+            _co_pending_set, skip_nets, _share_suppressed,
         )
 
         _face_grp_aug = _face_grp_co + _co_skip_pvs + _co_corridor_pvs
