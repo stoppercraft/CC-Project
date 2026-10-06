@@ -3256,6 +3256,75 @@ def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
     return skip_pvs
 
 
+def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
+                        pending_set: set, skip_nets: set) -> list:
+    """Build PendingVia corridor phantoms for face pads not in pending and not skip-net.
+
+    These pads are absent from _face_fanout's face_pads but need on-layer routing
+    through the fanout zone (e.g. HS pads removed by direct-route filter).  Each
+    phantom enters _stub_only_segs with neckdown_len_mm = CORRIDOR_DEPTH so _check()
+    rejects via positions that would block the pad's axial routing corridor.
+    """
+    if not fp or not face_grp:
+        return []
+    tgt_layer  = face_grp[0].target_layer_id
+    face_layer = face_grp[0].pad_layer_id
+    face_axial = (sum(v.pad_x * edx + v.pad_y * edy for v in face_grp)
+                  / len(face_grp))
+    existing_nums = {pv.pad_num for pv in face_grp}
+    CORRIDOR_DEPTH = 3.5  # mm — must match FANOUT_DEPTH_CAP inside _face_fanout
+    corridor_pvs: list = []
+    for pad in fp.Pads():
+        if _is_pth(pad):
+            continue
+        if pad.GetLayer() != face_layer:
+            continue  # only pads on the same copper layer need F.Cu routing corridors
+        net = pad.GetNetname()
+        if not net or net.startswith("unconnected"):
+            continue
+        if net in skip_nets:
+            continue  # skip-nets are handled by _build_skip_net_pvs
+        px  = pcbnew.ToMM(pad.GetPosition().x)
+        py  = pcbnew.ToMM(pad.GetPosition().y)
+        if abs(px * edx + py * edy - face_axial) > 1.0:
+            continue  # different face
+        num = pad.GetNumber()
+        if num in existing_nums:
+            continue  # already in pending (face_grp)
+        if (fp.GetReference(), num) in pending_set:
+            continue  # in pending on a different face — via-bearing, not a phantom
+        drill, ann = via_params(PRIORITY_OTHER)
+        floor, _, mx = neckdown_params(PRIORITY_OTHER, net)
+        pw  = pcbnew.ToMM(pad.GetSizeX())
+        ph  = pcbnew.ToMM(pad.GetSizeY())
+        nw  = neckdown_stub_width(floor, pw, ph, net, PRIORITY_OTHER)
+        bb  = pad.GetBoundingBox()
+        corridor_pvs.append(PendingVia(
+            net_name        = net,
+            ref             = fp.GetReference(),
+            pad_num         = num,
+            pad_x           = px,
+            pad_y           = py,
+            pad_layer_id    = face_layer,
+            target_layer_id = tgt_layer,
+            escape_dx       = edx,
+            escape_dy       = edy,
+            priority        = PRIORITY_OTHER,
+            via_drill_mm    = drill,
+            via_annular_mm  = ann,
+            neckdown_w_mm   = nw,
+            neckdown_len_mm = CORRIDOR_DEPTH,
+            max_search_mm   = mx,
+            pad_w_mm        = pw,
+            pad_h_mm        = ph,
+            pad_bbox        = (pcbnew.ToMM(bb.GetLeft()),
+                               pcbnew.ToMM(bb.GetTop()),
+                               pcbnew.ToMM(bb.GetRight()),
+                               pcbnew.ToMM(bb.GetBottom())),
+        ))
+    return corridor_pvs
+
+
 def _find_tight_subgroups(face_pads: list, sg_clr: float) -> list:
     """Find contiguous tight-pitch sub-groups within a face, expanded by one boundary pad.
 
@@ -3524,10 +3593,21 @@ def _face_fanout(
             bus_esc = v0.pad_y + edy * bus_depth
             xs      = [face_pads[i].pad_x for i in indices]
             bx_min, bx_max = min(xs), max(xs)
-            bus_obstacles.append({'x1': bx_min, 'y1': bus_esc,
-                                   'x2': bx_max, 'y2': bus_esc,
-                                   'hw': bus_hw, 'net': bnet})
-            bus_stubs_to_write.append((bx_min, bus_esc, bx_max, bus_esc, nw, bnet))
+            # Skip horizontal bus connector if a corridor phantom sits between the
+            # bus endpoints — its axial routing corridor would be shorted by the track.
+            _bus_ns_blocked = any(
+                k not in bus_pad_set
+                and (face_pads[k].ref, face_pads[k].pad_num) not in pending_set
+                and face_pads[k].net_name
+                and face_pads[k].net_name not in _skip_nets
+                and bx_min + 1e-6 < face_pads[k].pad_x < bx_max - 1e-6
+                for k in range(n)
+            )
+            if not _bus_ns_blocked:
+                bus_obstacles.append({'x1': bx_min, 'y1': bus_esc,
+                                       'x2': bx_max, 'y2': bus_esc,
+                                       'hw': bus_hw, 'net': bnet})
+                bus_stubs_to_write.append((bx_min, bus_esc, bx_max, bus_esc, nw, bnet))
             for i in indices:
                 px_i = face_pads[i].pad_x
                 py_i = face_pads[i].pad_y
@@ -3544,10 +3624,21 @@ def _face_fanout(
             bus_esc = v0.pad_x + edx * bus_depth
             ys      = [face_pads[i].pad_y for i in indices]
             by_min, by_max = min(ys), max(ys)
-            bus_obstacles.append({'x1': bus_esc, 'y1': by_min,
-                                   'x2': bus_esc, 'y2': by_max,
-                                   'hw': bus_hw, 'net': bnet})
-            bus_stubs_to_write.append((bus_esc, by_min, bus_esc, by_max, nw, bnet))
+            # Skip horizontal bus connector if a corridor phantom sits between the
+            # bus endpoints — its axial routing corridor would be shorted by the track.
+            _bus_ew_blocked = any(
+                k not in bus_pad_set
+                and (face_pads[k].ref, face_pads[k].pad_num) not in pending_set
+                and face_pads[k].net_name
+                and face_pads[k].net_name not in _skip_nets
+                and by_min + 1e-6 < face_pads[k].pad_y < by_max - 1e-6
+                for k in range(n)
+            )
+            if not _bus_ew_blocked:
+                bus_obstacles.append({'x1': bus_esc, 'y1': by_min,
+                                       'x2': bus_esc, 'y2': by_max,
+                                       'hw': bus_hw, 'net': bnet})
+                bus_stubs_to_write.append((bus_esc, by_min, bus_esc, by_max, nw, bnet))
             for i in indices:
                 px_i = face_pads[i].pad_x
                 py_i = face_pads[i].pad_y
@@ -5600,15 +5691,24 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _co_skip_pvs = _build_skip_net_pvs(
             _fp_by_ref.get(_co_ref), _face_grp_co, _co_edx, _co_edy, skip_nets
         )
+        # Augment with corridor phantoms: face pads not in pending and not skip-net
+        # that need on-layer routing through the fanout zone.  NOT added to
+        # _co_pending_set — they must stay out of signal_indices.  Their
+        # neckdown_len_mm = CORRIDOR_DEPTH registers a full-depth segment in
+        # _stub_only_segs that blocks signal vias from their routing corridor.
+        _co_corridor_pvs = _build_corridor_pvs(
+            _fp_by_ref.get(_co_ref), _face_grp_co, _co_edx, _co_edy,
+            _co_pending_set, skip_nets,
+        )
 
-        _face_grp_aug = _face_grp_co + _co_skip_pvs
+        _face_grp_aug = _face_grp_co + _co_skip_pvs + _co_corridor_pvs
         # Add skip-net pvs to pending_set so _face_fanout includes them in
         # signal_indices and sets stub_only_vx/vy on them.
         _co_pending_set.update((_pv.ref, _pv.pad_num) for _pv in _co_skip_pvs)
 
         print(f"  [face-fanout] {_co_ref} face ({_co_edx:.0f},{_co_edy:.0f}): "
               f"{len(_face_grp_co)} signal + {len(_co_skip_pvs)} skip-net pads"
-              f" → co-optimized multi-pass")
+              f" + {len(_co_corridor_pvs)} corridor phantoms → co-optimized multi-pass")
 
         # Sort augmented face group outside-in before passing to _face_fanout
         _co_ldx, _co_ldy = -_co_edy, _co_edx
