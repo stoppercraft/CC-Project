@@ -5158,6 +5158,58 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
     pending = [pv for pv in pending if not _stub_hits_skipped(pv)]
 
     # ------------------------------------------------------------------
+    # 1c3. Skip-pad-gap direct-route filter
+    # ------------------------------------------------------------------
+    # Alignment groups with skip_pad_gap=True declare that member components
+    # connect directly to the anchor IC with a same-layer trace — no layer
+    # transition via is needed at either end.  Remove both the member's
+    # anchor-facing pad and the anchor's corresponding pad from pending so
+    # the router handles the connection without script-placed vias.
+    _direct_route_set: set = set()
+    for _ag in getattr(cfg, 'ALIGNMENT_GROUPS', []):
+        if not _ag.get('skip_pad_gap'):
+            continue
+        _anchor_ref = _ag.get('anchor_ref')
+        _members    = _ag.get('members', [])
+        if not _anchor_ref or not _members:
+            continue
+        _anchor_fp = _fp_by_ref.get(_anchor_ref)
+        if _anchor_fp is None:
+            continue
+        _anchor_cx = pcbnew.ToMM(_anchor_fp.GetBoundingBox().GetCenter().x)
+        _anchor_cy = pcbnew.ToMM(_anchor_fp.GetBoundingBox().GetCenter().y)
+        for _mem_ref in _members:
+            _mem_fp = _fp_by_ref.get(_mem_ref)
+            if _mem_fp is None:
+                continue
+            # Pad on the member closest to the anchor center = the connecting pad
+            _best_pad = min(
+                _mem_fp.Pads(),
+                key=lambda p: math.hypot(
+                    pcbnew.ToMM(p.GetPosition().x) - _anchor_cx,
+                    pcbnew.ToMM(p.GetPosition().y) - _anchor_cy,
+                ),
+                default=None,
+            )
+            if _best_pad is None:
+                continue
+            _mem_net = _best_pad.GetNetname()
+            if not _mem_net or _mem_net.startswith('unconnected'):
+                continue
+            _direct_route_set.add((_mem_ref, _best_pad.GetNumber()))
+            # Anchor pad(s) on the same net
+            for _ap in _anchor_fp.Pads():
+                if _ap.GetNetname() == _mem_net:
+                    _direct_route_set.add((_anchor_ref, _ap.GetNumber()))
+
+    _dr_removed = [pv for pv in pending if (pv.ref, pv.pad_num) in _direct_route_set]
+    if _dr_removed:
+        for pv in _dr_removed:
+            print(f"  [direct-route] {pv.ref}/{pv.pad_num} ({pv.net_name}): "
+                  f"skip_pad_gap group — same-layer direct connection, no via needed")
+    pending = [pv for pv in pending if (pv.ref, pv.pad_num) not in _direct_route_set]
+
+    # ------------------------------------------------------------------
     # 1d. Adjacent same-net pad clustering
     # ------------------------------------------------------------------
     # Connector pads on the same net that are side-by-side (e.g. two +5V
