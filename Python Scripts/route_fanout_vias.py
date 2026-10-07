@@ -2984,26 +2984,14 @@ def run_passes(pending: List[PendingVia],
                     f"{vb.ref}/{vb.pad_num} ({vb.net_name})"
                 )
                 if va.ref == vb.ref:
-                    # Same-component crossing — usually caused by the cross-fix
-                    # applying a corner_lat_offset that reverses the corner order
-                    # for adjacent pads (pad pitch too small for the required swap).
-                    # Fix: revert the offsets so corners stay in natural order, and
-                    # push both vias axially deeper so route_highspeed.py can handle
-                    # the inter-component lateral topology at a safe standoff distance.
-                    _va_lo = va.corner_lat_offset_mm
-                    _vb_lo = vb.corner_lat_offset_mm
-                    if abs(_va_lo) > 1e-4 or abs(_vb_lo) > 1e-4:
-                        _extra = max(abs(_va_lo), abs(_vb_lo))
-                        for _cv in (va, vb):
-                            _cv.corner_lat_offset_mm = 0.0
-                            _cv.neckdown_len_mm += _extra
-                            _cv.via_x, _cv.via_y = _via_corner(_cv)
-                        moved += 2
-                        log.append("    → corner offsets reverted; vias pushed deeper")
-                    else:
-                        va.warning = "stub crossing detected — geometry fix needed in _place_group"
-                        vb.warning = va.warning
-                        log.append("    → WARNING (same-component — manual geometry fix needed)")
+                    # Same-component crossing: warn only.
+                    # If the root cause is cross-fix interference on a face-fanout
+                    # endpoint, the face-fanout guard below prevents it from arising.
+                    # Any remaining same-component crossing needs a geometry fix in
+                    # _place_group, not a post-hoc via displacement here.
+                    va.warning = "stub crossing detected — geometry fix needed in _place_group"
+                    vb.warning = va.warning
+                    log.append("    → WARNING (same-component — manual geometry fix needed)")
                     continue
                 mover  = va if va.priority > vb.priority else vb
                 anchor = vb if mover is va else va
@@ -5677,6 +5665,24 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                   f"— {len(_xintermed)} intermediate pad(s) between P/N "
                   f"(non-adjacent pair; straight escape avoids stub conflict)")
             continue
+
+        # Face-fanout guard: if the correction endpoint is on a face that will
+        # be co-optimized by _face_fanout, skip the cross-fix here.  Face-fanout
+        # assigns via positions with proper lateral separation using its own
+        # outside-in multi-pass algorithm; a corner_lat_offset applied before that
+        # step corrupts the stub corners and causes phantom crossings and via shorts.
+        _xsw_fp = _fp_by_ref.get(_xsw_ref)
+        if _xsw_fp and _is_radial_fanout_fp(_xsw_fp):
+            _xsw_face_grp = [_pv for _pv in pending
+                              if _pv.ref == _xsw_ref
+                              and abs(_pv.escape_dx - _xsw_p.escape_dx) < 1e-6
+                              and abs(_pv.escape_dy - _xsw_p.escape_dy) < 1e-6
+                              and not _pv.implicit_keepout
+                              and not _pv.via_in_pad]
+            if _face_needs_coopt(_xsw_face_grp, _ca["via_clearance_mm"]):
+                print(f"  [cross-fix] {_xpair}: SKIP at {_xsw_ref} "
+                      f"— face-fanout will handle lateral ordering on this face")
+                continue
 
         _xsw_p.corner_lat_offset_mm += _xoffset
         _xsw_n.corner_lat_offset_mm -= _xoffset
