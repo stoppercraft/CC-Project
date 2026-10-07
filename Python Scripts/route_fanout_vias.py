@@ -3268,13 +3268,13 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
 
     These pads are absent from _face_fanout's face_pads but need on-layer routing
     through the fanout zone (e.g. HS pads removed by direct-route filter).  Each
-    phantom enters _stub_only_segs with neckdown_len_mm = CORRIDOR_DEPTH so _check()
-    rejects via positions that would block the pad's axial routing corridor.
+    phantom enters _stub_only_segs so _check() rejects via positions that would block
+    the pad's axial routing corridor.
 
-    suppressed_set — (ref, pad_num) pairs removed by _suppress_proximity_via_sharing.
-    These pads still need a short F.Cu trace to reach their shared via.  Their corridor
-    depth is set to the pad's escape-direction half-extent so adjacent signal vias are
-    pushed past the pad copper bottom edge, preventing via-to-pad DRC violations.
+    Each phantom's depth equals the pad's own neckdown length (nl), protecting only
+    the immediate exit stub zone.  Signal vias escape past the phantom endpoint by
+    going deeper (depth > nl), so they land further from the IC rather than being
+    deflected sideways when a corridor phantom is nearby.
     """
     if not fp or not face_grp:
         return []
@@ -3283,7 +3283,6 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
     face_axial = (sum(v.pad_x * edx + v.pad_y * edy for v in face_grp)
                   / len(face_grp))
     existing_nums = {pv.pad_num for pv in face_grp}
-    CORRIDOR_DEPTH = 3.5  # mm — must match FANOUT_DEPTH_CAP inside _face_fanout
     corridor_pvs: list = []
     for pad in fp.Pads():
         if _is_pth(pad):
@@ -3310,14 +3309,10 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
         ph  = pcbnew.ToMM(pad.GetSizeY())
         nw  = neckdown_stub_width(floor, pw, ph, net, PRIORITY_OTHER)
         bb  = pad.GetBoundingBox()
-        # All corridor phantoms — including suppressed via-shared pads — use the
-        # full CORRIDOR_DEPTH.  Via-copper-to-pad-copper clearance is handled by
-        # _check() step 1 (via vs pad obstacles); the stub's only job is to mark
-        # the axial routing corridor so face-fanout cannot place signal vias that
-        # block the pad's escape path.  A short depth (~0.5mm) left that corridor
-        # unprotected past the pad copper, allowing signal vias to land right next
-        # to the suppressed pad at fanout depth and block it from routing.
-        corridor_depth = CORRIDOR_DEPTH
+        # Corridor depth = pad's neckdown length: protects the immediate exit stub
+        # zone only.  Signal vias escape past the phantom endpoint by going deeper,
+        # landing further from the IC instead of being deflected sideways.
+        corridor_depth = nl
         corridor_pvs.append(PendingVia(
             net_name        = net,
             ref             = fp.GetReference(),
