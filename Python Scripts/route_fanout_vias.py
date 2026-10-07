@@ -2984,10 +2984,26 @@ def run_passes(pending: List[PendingVia],
                     f"{vb.ref}/{vb.pad_num} ({vb.net_name})"
                 )
                 if va.ref == vb.ref:
-                    # Same-component: warn only — stagger would oscillate.
-                    va.warning = "stub crossing detected — geometry fix needed in _place_group"
-                    vb.warning = va.warning
-                    log.append("    → WARNING (same-component — manual geometry fix needed)")
+                    # Same-component crossing — usually caused by the cross-fix
+                    # applying a corner_lat_offset that reverses the corner order
+                    # for adjacent pads (pad pitch too small for the required swap).
+                    # Fix: revert the offsets so corners stay in natural order, and
+                    # push both vias axially deeper so route_highspeed.py can handle
+                    # the inter-component lateral topology at a safe standoff distance.
+                    _va_lo = va.corner_lat_offset_mm
+                    _vb_lo = vb.corner_lat_offset_mm
+                    if abs(_va_lo) > 1e-4 or abs(_vb_lo) > 1e-4:
+                        _extra = max(abs(_va_lo), abs(_vb_lo))
+                        for _cv in (va, vb):
+                            _cv.corner_lat_offset_mm = 0.0
+                            _cv.neckdown_len_mm += _extra
+                            _cv.via_x, _cv.via_y = _via_corner(_cv)
+                        moved += 2
+                        log.append("    → corner offsets reverted; vias pushed deeper")
+                    else:
+                        va.warning = "stub crossing detected — geometry fix needed in _place_group"
+                        vb.warning = va.warning
+                        log.append("    → WARNING (same-component — manual geometry fix needed)")
                     continue
                 mover  = va if va.priority > vb.priority else vb
                 anchor = vb if mover is va else va
