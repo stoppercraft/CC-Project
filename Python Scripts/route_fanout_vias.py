@@ -3309,10 +3309,11 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
         ph  = pcbnew.ToMM(pad.GetSizeY())
         nw  = neckdown_stub_width(floor, pw, ph, net, PRIORITY_OTHER)
         bb  = pad.GetBoundingBox()
-        # Corridor depth = pad's neckdown length: protects the immediate exit stub
-        # zone only.  Signal vias escape past the phantom endpoint by going deeper,
-        # landing further from the IC instead of being deflected sideways.
-        corridor_depth = nl
+        # Corridor depth = neckdown length + 0.125mm.  The additive margin shifts the
+        # phantom endpoint so the pair-equalization depth scan (7b) finds the minimum
+        # shared depth at nl + via_copper_r + CLEARANCE (≈1.125mm at 0.400mm pad
+        # pitch), matching the target via depth for tight-pitch HS faces.
+        corridor_depth = nl + 0.125
         corridor_pvs.append(PendingVia(
             net_name        = net,
             ref             = fp.GetReference(),
