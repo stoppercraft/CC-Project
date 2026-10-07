@@ -3308,12 +3308,19 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
         pw  = pcbnew.ToMM(pad.GetSizeX())
         ph  = pcbnew.ToMM(pad.GetSizeY())
         nw  = neckdown_stub_width(floor, pw, ph, net, PRIORITY_OTHER)
-        bb  = pad.GetBoundingBox()
-        # Corridor depth = neckdown length + 0.125mm.  The additive margin shifts the
-        # phantom endpoint so the pair-equalization depth scan (7b) finds the minimum
-        # shared depth at nl + via_copper_r + CLEARANCE (≈1.125mm at 0.400mm pad
-        # pitch), matching the target via depth for tight-pitch HS faces.
-        corridor_depth = nl + 0.125
+        bb   = pad.GetBoundingBox()
+        bb_l = pcbnew.ToMM(bb.GetLeft())
+        bb_t = pcbnew.ToMM(bb.GetTop())
+        bb_r = pcbnew.ToMM(bb.GetRight())
+        bb_b = pcbnew.ToMM(bb.GetBottom())
+        if   edy > 0:  _c_pah = bb_b - py
+        elif edy < 0:  _c_pah = py   - bb_t
+        elif edx < 0:  _c_pah = px   - bb_l
+        else:          _c_pah = bb_r  - px
+        # Corridor depth = pad half-extent in escape direction + via copper radius.
+        # This marks the immediate exit zone; signal vias escape past the phantom
+        # endpoint by going deeper rather than deflecting sideways.
+        corridor_depth = _c_pah + drill / 2.0 + ann
         corridor_pvs.append(PendingVia(
             net_name        = net,
             ref             = fp.GetReference(),
@@ -3332,10 +3339,7 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
             max_search_mm   = mx,
             pad_w_mm        = pw,
             pad_h_mm        = ph,
-            pad_bbox        = (pcbnew.ToMM(bb.GetLeft()),
-                               pcbnew.ToMM(bb.GetTop()),
-                               pcbnew.ToMM(bb.GetRight()),
-                               pcbnew.ToMM(bb.GetBottom())),
+            pad_bbox        = (bb_l, bb_t, bb_r, bb_b),
         ))
     return corridor_pvs
 
