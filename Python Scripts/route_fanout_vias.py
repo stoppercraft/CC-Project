@@ -3039,6 +3039,7 @@ def _make_via(board, via: PendingVia, net) -> pcbnew.PCB_VIA:
     v.SetWidth(pcbnew.FromMM(via.via_drill_mm + 2.0 * via.via_annular_mm))
     v.SetLayerPair(via.pad_layer_id, via.target_layer_id)
     v.SetNet(net)
+    v.thisown = False  # board.Add() transfers C++ ownership; prevent SWIG destructor warning
     return v
 
 
@@ -6560,6 +6561,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                 _sw_v.SetWidth(pcbnew.FromMM(_sw_drill + 2.0 * _sw_annular))
                 _sw_v.SetLayerPair(_lid, _sw_tgt_layer)
                 _sw_v.SetNet(_net_obj)
+                _sw_v.thisown = False
                 board.Add(_sw_v)
                 _sw_emit_count += 1
         if _sw_emit_count:
