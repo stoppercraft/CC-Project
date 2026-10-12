@@ -62,31 +62,30 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-**Working baseline: commit `3b4162b` — --apply confirmed clean 2026-10-06.**
-**Script HEAD: commit `9afe94d` — corridor phantom depth fix, debug verified.**
-# Updated 2026-10-06 (session 27).
-
-134 vias, 0 clearance violations at baseline. Script has corridor phantom fix not yet applied.
+**Last --apply: commit `7769f8f` — 2026-10-11 — 115 vias, crystal nets skip-only.**
+**DRC and board inspection NOT run after this apply.**
+# Updated 2026-10-11 (session 29).
 
 ### What to do next
 
-1. **Route and Verify** — apply corridor phantom fix (9afe94d), run DRC, inspect board.
-   Expected: U3 south face DP_RX2_P at (152.850, 121.720) instead of old (153.700, 121.995).
-   No new DRC violations expected.
-2. After clean --apply: fix compaction phantom clearance for skip-net pads (r=0 → full extension radius)
-3. Rewrite section 7c (axial + 45° diagonal — code-level plan in memory/project_u3_section7c_state.md)
-4. Run Route and Verify after section 7c verified in debug
+1. **Route and Verify** — run DRC and board inspection on current 115-via board.
+2. Investigate U2 fanout: `[face-fanout] U2 face (0,-1): 0 placed, 5 bus-stub segments` —
+   run debug_fanout.py with TARGET_REFS=['U2'] to verify U2 pad handling is correct.
+3. Fix compaction phantom clearance for skip-net pads (r=0 → full extension radius)
+4. Rewrite section 7c (axial + 45° diagonal — code-level plan in memory/project_u3_section7c_state.md)
+5. Run Route and Verify after section 7c verified in debug
 
 Script execution order: route_fanout_vias.py → route_critical.py → route_highspeed.py
 
 ---
 
-## Phase 10 Routing Status (2026-10-06, commit 3b4162b)
+## Phase 10 Routing Status (2026-10-11, commit 7769f8f)
 
-**route_fanout_vias.py**: 0 clearance violations. Working baseline confirmed.
-- 134 vias total (8 VIPPO + 126 side-exit), 5 implicit keepouts (escape=0)
-- 0 clearance violations after zone fill ✓
-- DRC total 617: silk (398), via_dangling (126), track_width (68), thermals/annular (17), track_dangling (7), solder_mask (1) — all pre-existing or expected
+**route_fanout_vias.py**: --apply run, DRC and board inspection pending.
+- 115 vias total (8 VIPPO + 107 side-exit), 2 implicit keepouts (escape=0)
+- Crystal nets LT_XTAL_IN / LT_XTAL_OUT now in FANOUT_VIA_SKIP_NETS — stub-only, no vias
+- U3 west face: 2 signal + 6 skip-net pads (pads 18/19 now skip-net)
+- U2 face (0,-1): 0 placed vias, 5 bus-stub segments — needs investigation
 - Section 7c skip-net stub extension not firing (order-of-operations issue, see IMMEDIATE NEXT ACTION)
 
 **Fix applied this session (session 25):**
