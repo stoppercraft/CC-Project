@@ -198,6 +198,8 @@ FANOUT_VIA_SKIP_NETS = [
     "GND",
     "LT_1V2",
     "LT_3V3",
+    "LT_XTAL_IN",   # crystal oscillator stub — no via, stay on F.Cu
+    "LT_XTAL_OUT",  # crystal oscillator stub — no via, stay on F.Cu
 ]
 
 # ── Routing layer priority ────────────────────────────────────────────────────
