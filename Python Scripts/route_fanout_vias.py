@@ -118,8 +118,12 @@ class StubSeg:
 # Per-net-pair clearance rules
 # ---------------------------------------------------------------------------
 
-# HV nets requiring 1.0 mm clearance from everything else.
-_HV_NETS = frozenset({'PWR_IN_RAW', 'PWR_IN_FUSED', 'USBC_VBUS_RAW', 'USBC_VBUS', 'VMAIN'})
+# HV nets requiring extra clearance — configurable via routing_config.HV_NETS.
+# Falls back to a conservative default if the project does not set HV_NETS.
+_HV_NETS = frozenset(getattr(cfg, 'HV_NETS',
+                             {'PWR_IN_RAW', 'PWR_IN_FUSED', 'USBC_VBUS_RAW',
+                              'USBC_VBUS', 'VMAIN'}))
+_HV_CLEARANCE_MM = float(getattr(cfg, 'HV_CLEARANCE_MM', 1.0))
 
 # Tight-pitch connector refs with reduced default clearance.
 _TIGHT_PITCH_REFS: Dict[str, float] = {'SOM1': 0.08, 'SOM2': 0.08, 'J_DSI1': 0.10}
@@ -140,7 +144,7 @@ def _pair_clearance(net_a: str, netclass_a: str, ref_a: str,
       5. Default → 0.15 mm
     """
     if net_a in _HV_NETS or net_b in _HV_NETS:
-        return 1.0
+        return _HV_CLEARANCE_MM
     if netclass_a == 'HighSpeed' or netclass_b == 'HighSpeed':
         return 0.254  # 3W rule for high-speed signals
     cl = 0.15

@@ -200,7 +200,23 @@ FANOUT_VIA_SKIP_NETS = [
     "LT_3V3",
     "LT_XTAL_IN",   # crystal oscillator stub — no via, stay on F.Cu
     "LT_XTAL_OUT",  # crystal oscillator stub — no via, stay on F.Cu
+    "STUSB_1V2",    # STUSB4500 internal 1.2V LDO bypass: U2/21 + C_STUSB_1V2 — F.Cu only, no via needed
+    "STUSB_2V7",    # STUSB4500 internal 2.7V ref bypass: U2/23 + C_STUSB_2V7 — F.Cu only, no via needed
 ]
+
+# ── High-voltage nets requiring extra fanout clearance ────────────────────────
+# Nets listed here use HV_CLEARANCE_MM instead of the standard 0.15 mm clearance
+# for via placement and stub trace checks.
+# Include only nets that genuinely require extra isolation.
+# VMAIN and PWR_IN_* can reach 11–34 V DC (LEMO power input) — extra margin is
+# appropriate for dense routing near the switching node.
+# USBC_VBUS / USBC_VBUS_RAW are 5–20 V USB-C PD — IPC-2221 conductor spacing
+# for conductors under 30 V (uncoated) is only 0.13 mm minimum; standard 0.15 mm
+# clearance is compliant and sufficient.  Including them caused VIPPO for
+# C_STUSB_VSYS1, C_STUSB_1V2, C_STUSB_2V7 (USBC_VBUS pads are immediately
+# adjacent to these bypass-cap stubs with < 0.5 mm physical gap).
+HV_NETS = {'PWR_IN_RAW', 'PWR_IN_FUSED', 'VMAIN'}
+HV_CLEARANCE_MM = 1.0
 
 # ── Routing layer priority ────────────────────────────────────────────────────
 # Ordered list of routable copper layers, most-preferred first.
