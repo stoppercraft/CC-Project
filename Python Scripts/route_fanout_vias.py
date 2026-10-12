@@ -1817,11 +1817,13 @@ def _cluster_adjacent_pads(pending: List["PendingVia"],
             primary.pad_x = centroid_perp * pdx + orig_along * edx
             primary.pad_y = centroid_perp * pdy + orig_along * edy
 
-            # After centroid move pad_bbox still refers to the primary's original
-            # pad position, not the centroid.  Clearing it forces _own_depth_floor
-            # in _face_fanout to use the pad's axial half-extent formula, which
-            # always requires the via to clear the pad row regardless of lateral offset.
-            primary.pad_bbox = None
+            # Keep pad_bbox so _face_fanout and _stagger_vias can compute the
+            # correct axial depth floor from the bbox.  The centroid move only
+            # shifts the lateral coordinate; the axial half-extent (pad_y vs
+            # bbox top/bottom, or pad_x vs bbox left/right) is unchanged.
+            # Clearing pad_bbox was intended to force the formula-based fallback,
+            # but that formula uses pad_h_mm/2 which is wrong for rotated pads
+            # (e.g. STUSB4500 CC pads: local h=0.250mm but axial extent=0.412mm).
 
             # Extend neckdown length enough to clear the widest lateral offset.
             primary.neckdown_len_mm = max(primary.neckdown_len_mm, max_lat + 0.1)
