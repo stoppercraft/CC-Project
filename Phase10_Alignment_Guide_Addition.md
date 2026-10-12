@@ -590,15 +590,205 @@ Run `[SCRIPTS_DIR]/route_fanout_vias.py`. This script places layer-transition vi
 
 **Purpose:** Pre-placing all fanout vias in one dedicated pass produces more reliable, inspectable via locations than computing via placement inline during trace routing. After this script runs, routing scripts only need to connect via-to-via with traces — they do not need to solve via placement.
 
-**Config field used:** `routing_config.py::ROUTING_LAYER_PRIORITY` — ordered list of routable signal layers, most-preferred first. Nets declared in `HS_PAIRS` use their declared layer. All other nets use the priority list to determine which layer their fanout via should target.
+**Step 0.75a — Add fanout config to routing_config.py.**
+
+Add the following block to `routing_config.py` after `CLEARANCE_AUDIT` and before `SWITCHING_LOOPS`.
+
+```python
+# ── Fanout via placement — for route_fanout_vias.py ──────────────────────────
+FANOUT_VIA_SKIP_NETS = [
+    "GND",       # GND nets — via is shared at ground plane; no per-pad via needed
+    # Add crystal oscillator nets here — see Crystal Oscillator Rules below
+    # Add any power rail net whose fanout via is placed by another script
+]
+
+FANOUT_VIA_PARAMS = {
+    "via_drill_mm":            0.30,   # via drill diameter
+    "via_annular_ring_mm":     0.15,   # copper annular ring width
+    "via_clearance_mm":        0.15,   # copper-to-copper clearance (must match DRC setting)
+    "hs_via_drill_mm":         0.25,   # drill for HS differential pair vias
+    "hs_via_annular_ring_mm":  0.15,   # annular ring for HS vias
+    "fanout_depth_cap_mm":     3.5,    # maximum axial via offset from IC pad center
+}
+
+# Ordered list of routable signal layers, most-preferred first.
+# Nets declared in HS_PAIRS use their declared layer.
+# All other non-skip-net pads target the first layer in this list.
+ROUTING_LAYER_PRIORITY = ["B.Cu", "F.Cu"]
+```
+
+---
+
+**Crystal oscillator rules — required for any board with a crystal oscillator:**
+
+Crystal oscillator nets must be added to `FANOUT_VIA_SKIP_NETS`. Never place a via on a crystal
+oscillator net.
+
+| Rule | Reason |
+|---|---|
+| Add all crystal oscillator nets to `FANOUT_VIA_SKIP_NETS` | A via adds parasitic capacitance and inductance that shifts oscillation frequency and can prevent startup |
+| Crystal traces route on a single layer — the layer where the crystal and IC crystal pads are placed (typically F.Cu) | Via transitions break the single-reference-plane transmission-line model; even one via is enough to detune a fast crystal |
+| Keep crystal traces short — match the `max_dist_mm = 12` proximity rule from Phase 2 | Stray capacitance scales with trace length; 12 mm is the upper limit for a valid oscillator layout |
+| Do not add crystal nets to HS_PAIRS | Crystal traces are not differential pairs; they have separate routing rules and must not enter the HS via co-optimization path |
+
+**How to identify crystal oscillator nets:**
+
+1. In the schematic, find the crystal component (reference designator Y or X prefix).
+2. Read the two nets connected to the crystal pads. These are the oscillator stub nets —
+   they connect from the crystal body to the IC's XTAL_IN and XTAL_OUT (or equivalent) pins.
+3. Also check any load capacitors connected between the crystal pins and GND. If the load cap
+   connects to a crystal pin net (step 2), that net is already covered. The GND side of the
+   load cap is already in `FANOUT_VIA_SKIP_NETS` via the `"GND"` entry.
+4. Add all nets identified in step 2 to `FANOUT_VIA_SKIP_NETS`.
+
+Example — crystal Y1 with nets `LT_XTAL_IN` and `LT_XTAL_OUT`:
+
+```python
+FANOUT_VIA_SKIP_NETS = [
+    "GND",
+    "LT_XTAL_IN",    # crystal stub net — IC XTAL_IN pin to crystal pad 1
+    "LT_XTAL_OUT",   # crystal stub net — IC XTAL_OUT pin to crystal pad 2
+]
+```
+
+Net names are project-specific and must match KiCad net names exactly (case-sensitive). Verify
+them from the schematic or enumerate from the PCB with:
+
+```python
+import sys; sys.path.insert(0, cfg.KICAD_SITE_PKGS)
+import pcbnew
+board = pcbnew.LoadBoard(cfg.PCB_FILE)
+nets = sorted(n.GetNetname() for n in board.GetNets())
+```
+
+---
+
+**Additional candidates for FANOUT_VIA_SKIP_NETS:**
+
+| Net type | Add to skip list? | Reason |
+|---|---|---|
+| Crystal oscillator nets | **Yes** | No via ever — see rules above |
+| GND | **Yes** | Shared via at ground plane; per-pad via is redundant |
+| Bulk power rail (e.g. LT_1V2, LT_3V3) | Yes, if a shared power via is placed by another script | Avoids double via on the power rail at a single pad |
+| High-speed differential pair nets | **No** — declare in `HS_PAIRS` instead | HS pair vias are co-optimized with trace routing in `route_highspeed.py` |
+| Regular signal nets | No | These need a fanout via to reach the routing layer |
+
+---
+
+**Step 0.75b — Run the dry run and iterate.**
 
 ```
 cd [SCRIPTS_DIR]
 python route_fanout_vias.py            # dry run — report only, no changes written
-python route_fanout_vias.py --apply    # place vias and save PCB
+python route_fanout_vias.py --apply    # place vias and escape stubs, save PCB
 ```
 
-*Full procedure, stop conditions, and iteration loop to be documented once script is complete.*
+After `--apply`, run DRC and inspect the board before proceeding:
+
+```
+kicad-cli pcb drc --output [REPORTS_DIR]/drc_fanout.json --format json [PCB_FILE]
+```
+
+Parse `drc_fanout.json` and report violation counts grouped by type. Zone fill artifacts
+(violations against zone copper that disappear after a zone refill) are not a stop condition.
+Non-zone copper-to-copper violations are.
+
+**Board inspection — required after every --apply:**
+
+DRC does not catch logical errors. After every `--apply`, run a Python verification pass:
+
+1. Every escape trace starts at the intended pad (not in free space).
+2. Every escape trace ends dangling (not on a wrong-net pad or via — that would be a short DRC might miss).
+3. No pad has both a placed via AND an escape trace.
+4. Via and track counts match what the script reported emitting.
+
+Inspect with:
+
+```python
+import sys; sys.path.insert(0, cfg.KICAD_SITE_PKGS)
+import pcbnew
+board = pcbnew.LoadBoard(cfg.PCB_FILE)
+tracks = list(board.GetTracks())
+vias   = [t for t in tracks if t.GetClass() == "PCB_VIA"]
+traces = [t for t in tracks if t.GetClass() == "PCB_TRACK"]
+print(f"Vias: {len(vias)}  Traces: {len(traces)}")
+```
+
+**Dry run output — what to look for:**
+
+| Output section | What to look for |
+|---|---|
+| Pad summary | Rows with `skip-net` — confirm all crystal/GND nets are in the skip list |
+| Via placement report | Any pad reporting `BLOCKED` — via could not be placed without clearance violation |
+| Compaction report | `MAX_ROUNDS reached` — compaction did not converge; may need component position adjustment |
+| Skip-net stub report | Stubs emitted for skip-net pads — verify crystal net pads show stub-only, no via |
+| DRC result | Non-zone violations only — zone fill artifacts are not a stop condition |
+
+**Iteration loop:** Repeat until all stop conditions are met.
+
+1. Run `python route_fanout_vias.py` (dry run).
+2. Read the full output. Identify problems.
+3. Diagnose root cause:
+   - **BLOCKED via**: a pad's via cannot be placed without a clearance violation. First check
+     whether the pad is a crystal oscillator pad that was not added to `FANOUT_VIA_SKIP_NETS`.
+     If it is, add it. If not, investigate whether the component needs more clearance (return to
+     Part 0) or whether the blocking neighbor is a zone artifact.
+   - **Skip-net pad receiving a via**: a net that should be skip-only is missing from
+     `FANOUT_VIA_SKIP_NETS`. Add it.
+   - **Crystal net pad receiving a via**: crystal oscillator net is missing from
+     `FANOUT_VIA_SKIP_NETS`. Add it. Verify in dry run that the pad now shows stub-only before
+     running `--apply`.
+   - **DRC clearance violation (non-zone)**: a placed via is too close to a neighbor. Check
+     whether the via belongs to a net that should be in `FANOUT_VIA_SKIP_NETS`. If not, the
+     component needs more clearance — return to Part 0.
+4. Make the smallest targeted change that fixes the root cause.
+   - Config changes (skip nets, via sizing, layer priority): `routing_config.py`
+   - Algorithm changes only if the analysis logic itself is wrong: `route_fanout_vias.py`
+5. Return to step 1.
+6. When the dry run is clean, run `python route_fanout_vias.py --apply`.
+7. Run DRC, parse results, and run the board inspection pass. If violations found, diagnose
+   and fix, then return to step 1.
+
+**Stop conditions — all must be true simultaneously:**
+
+| Condition | What it means |
+|---|---|
+| Zero BLOCKED vias | Every non-skip-net pad received a placed via |
+| Zero non-zone DRC violations | No copper-to-copper clearance violations |
+| All crystal nets stub-only | No via placed on any net in `FANOUT_VIA_SKIP_NETS` |
+| Board inspection PASS | Escape traces start at pads, end dangling, no pad has both via + trace |
+| Via count matches script report | Via count in PCB equals the count the script reported emitting |
+
+**Generalization rule — enforced at every step:**
+
+Before writing or modifying any line of `route_fanout_vias.py`, ask: "Would this change work
+correctly on a completely different PCB with different component references, different net names,
+and a different board topology?" If the answer is no, the change belongs in `routing_config.py`,
+not in the script. This applies to:
+- Crystal net names (`"LT_XTAL_IN"`, `"XTAL_OUT"`, etc.) — list in `FANOUT_VIA_SKIP_NETS`
+- Any net that should be skip-only on this board — list in `FANOUT_VIA_SKIP_NETS`
+- Via sizing parameters — list in `FANOUT_VIA_PARAMS`
+- Any hardcoded reference to a specific component or net inside `route_fanout_vias.py`
+
+**KiCad API rules (enforced in any script edits):**
+
+- `fp.IsLocked()` — `route_fanout_vias.py` does not move footprints. Skip any locked footprint.
+- Layer IDs: resolve at runtime with `board.GetLayerID("F.Cu")` — never numeric IDs.
+- `board.Remove(item)` — never call; causes SIGSEGV in standalone scripts.
+- `board.Save(cfg.PCB_FILE)` — called only in `--apply` mode.
+- `pcbnew.PCB_VIA` objects: set `via.thisown = False` before adding to board to avoid memory leak warning.
+
+**Script reference:**
+
+| Script | Phase | CONFIG fields to set in routing_config.py |
+|---|---|---|
+| `route_fanout_vias.py` | 10 Part 0.75 | `PCB_FILE`, `KICAD_SITE_PKGS`, `FANOUT_VIA_SKIP_NETS`, `FANOUT_VIA_PARAMS`, `ROUTING_LAYER_PRIORITY`, `HS_PAIRS` |
+| `debug_fanout.py` | 10 Part 0.75 | Same fields; target-refs filter for single-component dry-run verification |
+
+**Outputs:** Vias and escape stub traces written to `[PCB_FILE]`. Snapshot recommended before
+proceeding to Part A.
+
+**Loop exit criteria:** All five stop conditions met, DRC clean (non-zone), board inspection PASS.
 
 ---
 
