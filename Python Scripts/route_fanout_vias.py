@@ -4798,14 +4798,11 @@ def _stagger_vias(pending: List[PendingVia], ca: dict, clearance: float) -> None
                 _pad_half_esc = (abs(_edx_sg) * _pv_sg.pad_w_mm
                                  + abs(_edy_sg) * _pv_sg.pad_h_mm) / 2.0
 
-            if _pv_sg.cluster_real_pads:
-                # Cluster via: herringbone stubs, no external trace threads between
-                # pad edge and via — skip the trace-passage margin.
-                _nl_sg = max(_pv_sg.neckdown_len_mm,
-                             _pad_half_esc + _sg_clr + _vpd_sg / 2.0)
-            else:
-                _nl_sg = max(_pv_sg.neckdown_len_mm,
-                             _pad_half_esc + _sg_clr + _sig_trace_w + _sg_clr + _vpd_sg / 2.0)
+            # Minimum neckdown: pad axial half + clearance + via copper radius.
+            # No trace-passage margin — stagger only handles via-to-via clearance;
+            # trace routing clearances are enforced by the router, not here.
+            _nl_sg = max(_pv_sg.neckdown_len_mm,
+                         _pad_half_esc + _sg_clr + _vpd_sg / 2.0)
 
             for _nb_pad_lat, _nb_nl, _nb_vpd, _nb_pv in _placed_sg:
                 _nb_lat = _nb_pad_lat + _nb_pv.corner_lat_offset_mm
