@@ -3198,6 +3198,64 @@ def _face_needs_coopt(face_pads: list, sg_clr: float) -> bool:
     return False
 
 
+def _fp_face_needs_coopt(fp, edx: float, edy: float, sg_clr: float,
+                         rep_pvs: list) -> bool:
+    """True if physical pad pitch on this footprint face triggers co-optimization.
+
+    Queries footprint geometry directly, independent of which pads are in pending.
+    Solves the case where some face pads are absent from pending (direct-routes,
+    shared-via pads, etc.) causing the pending-only pitch check to undercount.
+    rep_pvs: representative PendingVia objects from this face, used for routing
+             parameters (neckdown_w, via_drill, via_annular) only.
+    """
+    if not fp or not rep_pvs:
+        return False
+    coords: list = []
+    halves: list = []
+    for pad in fp.Pads():
+        if _is_pth(pad):
+            continue
+        net = pad.GetNetname()
+        if not net or net.startswith("unconnected"):
+            continue
+        ped, pey = _radial_escape_direction(fp, pad)
+        if abs(ped - edx) > 0.01 or abs(pey - edy) > 0.01:
+            continue
+        px = pcbnew.ToMM(pad.GetPosition().x)
+        py = pcbnew.ToMM(pad.GetPosition().y)
+        sx = pcbnew.ToMM(pad.GetSizeX()) / 2.0
+        sy = pcbnew.ToMM(pad.GetSizeY()) / 2.0
+        angle_rad = math.radians(pad.GetOrientation().AsDegrees())
+        c_a, s_a = math.cos(angle_rad), math.sin(angle_rad)
+        corners_y = [py + sx*s_a + sy*c_a, py - sx*s_a + sy*c_a,
+                     py - sx*s_a - sy*c_a, py + sx*s_a - sy*c_a]
+        corners_x = [px + sx*c_a - sy*s_a, px - sx*c_a - sy*s_a,
+                     px - sx*c_a + sy*s_a, px + sx*c_a + sy*s_a]
+        top, bot = min(corners_y), max(corners_y)
+        if abs(edy) > abs(edx):  # N/S face — along face = X
+            coords.append(px)
+            halves.append((bot - top) / 2.0)  # axial (Y) half-extent
+        else:  # E/W face — along face = Y
+            coords.append(py)
+            halves.append((bot - top) / 2.0)  # along-face (Y) half-extent
+    if len(coords) < 2:
+        return False
+    order = sorted(range(len(coords)), key=lambda i: coords[i])
+    min_nw = min(v.neckdown_w_mm for v in rep_pvs)
+    min_trace_total = min_nw / 2.0 + sg_clr
+    via_r = max(v.via_drill_mm / 2.0 + v.via_annular_mm for v in rep_pvs)
+    stub_hw = min_nw / 2.0
+    for k in range(len(order) - 1):
+        i, j = order[k], order[k + 1]
+        pitch = abs(coords[j] - coords[i])
+        gap = pitch - max(halves[i], halves[j])
+        if gap < min_trace_total:
+            return True
+        if pitch < stub_hw + sg_clr + via_r:
+            return True
+    return False
+
+
 def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
                         skip_nets: set) -> list:
     """Build PendingVia objects for skip-net pads on a face.
@@ -4047,7 +4105,7 @@ def _face_fanout(
                 depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off),
                               _partner_depth_1p)
                 while depth_A < cur_axial - 1e-9:
-                    vx_A = v.pad_x + ls * lat_off * ldx
+                    vx_A = v.pad_x + ls * lat_off * ldx + edx * depth_A
                     vy_A = v.pad_y + ls * lat_off * ldy + edy * depth_A
                     if _check(v, vx_A, vy_A, other_placed) is None:
                         c = math.hypot(lat_off, depth_A)
@@ -4060,7 +4118,7 @@ def _face_fanout(
                 for _lsn in range(1, 31):
                     lat_B = lat_off + _lsn * STEP_MM
                     df    = max(_own_depth_floor(lat_B), _partner_depth_1p)
-                    vx_B  = v.pad_x + ls * lat_B * ldx
+                    vx_B  = v.pad_x + ls * lat_B * ldx + edx * df
                     vy_B  = v.pad_y + ls * lat_B * ldy + edy * df
                     if _check(v, vx_B, vy_B, other_placed) is None:
                         c = math.hypot(lat_B, df)
@@ -4087,7 +4145,7 @@ def _face_fanout(
                             break
                         if depth_C > cur_axial + 1e-9:
                             break
-                        vx_C = v.pad_x + ls * lat_C * ldx
+                        vx_C = v.pad_x + ls * lat_C * ldx + edx * depth_C
                         vy_C = v.pad_y + ls * lat_C * ldy + edy * depth_C
                         if _check(v, vx_C, vy_C, other_placed) is None:
                             c = math.hypot(lat_C, depth_C)
@@ -4116,7 +4174,7 @@ def _face_fanout(
                             break
                         if depth_D > FANOUT_DEPTH_CAP + 1e-9:
                             break
-                        vx_D = v.pad_x + ls * lat_D * ldx
+                        vx_D = v.pad_x + ls * lat_D * ldx + edx * depth_D
                         vy_D = v.pad_y + ls * lat_D * ldy + edy * depth_D
                         if _check(v, vx_D, vy_D, other_placed) is None:
                             if _cost_D < best_cost:
@@ -4389,7 +4447,7 @@ def _face_fanout(
                 depth_A = max(v.neckdown_len_mm, _own_depth_floor(lat_off),
                               _partner_depth_2p)
                 while depth_A < cur_axial - 1e-9:
-                    vx_A = v.pad_x + ls * lat_off * ldx
+                    vx_A = v.pad_x + ls * lat_off * ldx + edx * depth_A
                     vy_A = v.pad_y + ls * lat_off * ldy + edy * depth_A
                     if _check(v, vx_A, vy_A, other_placed) is None:
                         c = math.hypot(lat_off, depth_A)
@@ -4402,7 +4460,7 @@ def _face_fanout(
                 for _lsn in range(1, 31):
                     lat_B = lat_off + _lsn * STEP_MM
                     df    = max(_own_depth_floor(lat_B), _partner_depth_2p)
-                    vx_B  = v.pad_x + ls * lat_B * ldx
+                    vx_B  = v.pad_x + ls * lat_B * ldx + edx * df
                     vy_B  = v.pad_y + ls * lat_B * ldy + edy * df
                     if _check(v, vx_B, vy_B, other_placed) is None:
                         c = math.hypot(lat_B, df)
@@ -4427,7 +4485,7 @@ def _face_fanout(
                             break
                         if depth_C > cur_axial + 1e-9:
                             break
-                        vx_C = v.pad_x + ls * lat_C * ldx
+                        vx_C = v.pad_x + ls * lat_C * ldx + edx * depth_C
                         vy_C = v.pad_y + ls * lat_C * ldy + edy * depth_C
                         if _check(v, vx_C, vy_C, other_placed) is None:
                             c = math.hypot(lat_C, depth_C)
@@ -5714,7 +5772,10 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _co_ref  = _fkey_co[0]
         _co_edx  = _fkey_co[1]
         _co_edy  = _fkey_co[2]
-        if not _face_needs_coopt(_face_grp_co, _coopt_sg_clr):
+        if (not _face_needs_coopt(_face_grp_co, _coopt_sg_clr)
+                and not _fp_face_needs_coopt(
+                    _fp_by_ref.get(_co_ref), _co_edx, _co_edy,
+                    _coopt_sg_clr, _face_grp_co)):
             continue
 
         # Build pending_set for this call: pads in pending that get a via, PLUS
