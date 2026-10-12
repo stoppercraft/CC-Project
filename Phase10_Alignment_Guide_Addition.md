@@ -592,7 +592,10 @@ Run `[SCRIPTS_DIR]/route_fanout_vias.py`. This script places layer-transition vi
 
 **Step 0.75a — Add fanout config to routing_config.py.**
 
-Add the following block to `routing_config.py` after `CLEARANCE_AUDIT` and before `SWITCHING_LOOPS`.
+Add the following entries to `routing_config.py`. `FANOUT_VIA_SKIP_NETS` and
+`ROUTING_LAYER_PRIORITY` are the two fields specific to `route_fanout_vias.py`. All via
+sizing parameters (`via_drill_mm`, `via_clearance_mm`, etc.) are read from `CLEARANCE_AUDIT`,
+which was already populated in Step 0.5a — no separate fanout via params block is needed.
 
 ```python
 # ── Fanout via placement — for route_fanout_vias.py ──────────────────────────
@@ -602,20 +605,15 @@ FANOUT_VIA_SKIP_NETS = [
     # Add any power rail net whose fanout via is placed by another script
 ]
 
-FANOUT_VIA_PARAMS = {
-    "via_drill_mm":            0.30,   # via drill diameter
-    "via_annular_ring_mm":     0.15,   # copper annular ring width
-    "via_clearance_mm":        0.15,   # copper-to-copper clearance (must match DRC setting)
-    "hs_via_drill_mm":         0.25,   # drill for HS differential pair vias
-    "hs_via_annular_ring_mm":  0.15,   # annular ring for HS vias
-    "fanout_depth_cap_mm":     3.5,    # maximum axial via offset from IC pad center
-}
-
 # Ordered list of routable signal layers, most-preferred first.
 # Nets declared in HS_PAIRS use their declared layer.
 # All other non-skip-net pads target the first layer in this list.
 ROUTING_LAYER_PRIORITY = ["B.Cu", "F.Cu"]
 ```
+
+Via sizing (`via_drill_mm`, `via_annular_ring_mm`, `via_clearance_mm`, `hs_via_drill_mm`,
+`hs_via_annular_ring_mm`) is read from `CLEARANCE_AUDIT` — verify those values are set
+correctly in `CLEARANCE_AUDIT` before running the fanout script.
 
 ---
 
@@ -782,7 +780,7 @@ not in the script. This applies to:
 
 | Script | Phase | CONFIG fields to set in routing_config.py |
 |---|---|---|
-| `route_fanout_vias.py` | 10 Part 0.75 | `PCB_FILE`, `KICAD_SITE_PKGS`, `FANOUT_VIA_SKIP_NETS`, `FANOUT_VIA_PARAMS`, `ROUTING_LAYER_PRIORITY`, `HS_PAIRS` |
+| `route_fanout_vias.py` | 10 Part 0.75 | `PCB_FILE`, `KICAD_SITE_PKGS`, `FANOUT_VIA_SKIP_NETS`, `ROUTING_LAYER_PRIORITY`, `HS_PAIRS`, `CLEARANCE_AUDIT` (via sizing) |
 | `debug_fanout.py` | 10 Part 0.75 | Same fields; target-refs filter for single-component dry-run verification |
 
 **Outputs:** Vias and escape stub traces written to `[PCB_FILE]`. Snapshot recommended before
