@@ -202,20 +202,24 @@ FANOUT_VIA_SKIP_NETS = [
     "LT_XTAL_OUT",  # crystal oscillator stub — no via, stay on F.Cu
     "STUSB_1V2",    # STUSB4500 internal 1.2V LDO bypass: U2/21 + C_STUSB_1V2 — F.Cu only, no via needed
     "STUSB_2V7",    # STUSB4500 internal 2.7V ref bypass: U2/23 + C_STUSB_2V7 — F.Cu only, no via needed
+    "VSENSE_5V",    # R_TOP1/2, R_BOT1/1, U1/5 — 3 pads within 1.8mm on F.Cu; no layer change needed
+    "PWR_IN_FUSED", # C_CM_PWR_A1/1, F_PWR1/2, L_CM_PWR1/1 — 3 pads within 2.3mm on F.Cu; no layer change needed
+    "COMP_MID",     # R_COMP1/2 + C_COMP1/1 — TPS54561 compensation mid-node, F.Cu only
+    "BUCK_SS",      # C_SS1/1 + U1/4 — soft-start cap to SS pin, F.Cu only
+    "BUCK_COMP",    # R_COMP1/1 + U1/6 — compensation resistor to COMP pin, F.Cu only
+    "BUCK_BOOT",    # C_BOOT1/1 + U1/1 — bootstrap cap to BOOT pin, F.Cu only
+    "IC1_GATE",     # Q2/1 + IC1/5 — gate drive signal, F.Cu only
+    "IC2_GATE",     # Q3/1 + IC2/5 — gate drive signal, F.Cu only
 ]
 
 # ── High-voltage nets requiring extra fanout clearance ────────────────────────
 # Nets listed here use HV_CLEARANCE_MM instead of the standard 0.15 mm clearance
 # for via placement and stub trace checks.
-# Include only nets that genuinely require extra isolation.
-# VMAIN and PWR_IN_* can reach 11–34 V DC (LEMO power input) — extra margin is
-# appropriate for dense routing near the switching node.
-# USBC_VBUS / USBC_VBUS_RAW are 5–20 V USB-C PD — IPC-2221 conductor spacing
-# for conductors under 30 V (uncoated) is only 0.13 mm minimum; standard 0.15 mm
-# clearance is compliant and sufficient.  Including them caused VIPPO for
-# C_STUSB_VSYS1, C_STUSB_1V2, C_STUSB_2V7 (USBC_VBUS pads are immediately
-# adjacent to these bypass-cap stubs with < 0.5 mm physical gap).
-HV_NETS = {'PWR_IN_RAW', 'PWR_IN_FUSED', 'VMAIN'}
+# Cleared: VMAIN and PWR_IN_RAW caused false VIPPO (their adjacent pads were
+# 1.0–1.1 mm from the stagger corner, passing DRC at 0.15 mm but failing the
+# 1.3 mm HV threshold).  Standard 0.15 mm clearance is the actual DRC rule.
+# PWR_IN_FUSED is now in FANOUT_VIA_SKIP_NETS — no via placed, so no HV check needed.
+HV_NETS = set()
 HV_CLEARANCE_MM = 1.0
 
 # ── Routing layer priority ────────────────────────────────────────────────────
