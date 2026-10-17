@@ -191,27 +191,21 @@ LAYER_SCHEME = {
 
 # ── Fanout via skip nets ──────────────────────────────────────────────────────
 # Nets listed here are excluded from fanout via generation entirely.
-# Use for fill-connected nets (GND, power planes) that are stitched by copper
-# pours rather than per-pad vias. Works on any project — list whatever
-# fill-connected net names should be skipped.
+# Nets that must never receive fanout vias regardless of topology.
+# Local single-layer nets are handled automatically by the auto-skip pre-pass
+# (Section 0b in route_fanout_vias.py) — do NOT duplicate them here.
+# Only list nets that would fail the auto-skip criteria: fill-connected power
+# planes (GND), nets whose pads span multiple layers by design, or nets that
+# cross the board far enough that the proximity check would not catch them.
 FANOUT_VIA_SKIP_NETS = [
     "GND",
     "LT_1V2",
     "LT_3V3",
     "LT_XTAL_IN",   # crystal oscillator stub — no via, stay on F.Cu
     "LT_XTAL_OUT",  # crystal oscillator stub — no via, stay on F.Cu
-    "STUSB_1V2",    # STUSB4500 internal 1.2V LDO bypass: U2/21 + C_STUSB_1V2 — F.Cu only, no via needed
-    "STUSB_2V7",    # STUSB4500 internal 2.7V ref bypass: U2/23 + C_STUSB_2V7 — F.Cu only, no via needed
-    "VSENSE_5V",    # R_TOP1/2, R_BOT1/1, U1/5 — 3 pads within 1.8mm on F.Cu; no layer change needed
-    "PWR_IN_FUSED", # C_CM_PWR_A1/1, F_PWR1/2, L_CM_PWR1/1 — 3 pads within 2.3mm on F.Cu; no layer change needed
-    "COMP_MID",     # R_COMP1/2 + C_COMP1/1 — TPS54561 compensation mid-node, F.Cu only
-    "BUCK_SS",      # C_SS1/1 + U1/4 — soft-start cap to SS pin, F.Cu only
-    "BUCK_COMP",    # R_COMP1/1 + U1/6 — compensation resistor to COMP pin, F.Cu only
-    "BUCK_BOOT",    # C_BOOT1/1 + U1/1 — bootstrap cap to BOOT pin, F.Cu only
-    "IC1_GATE",     # Q2/1 + IC1/5 — gate drive signal, F.Cu only
-    "IC2_GATE",     # Q3/1 + IC2/5 — gate drive signal, F.Cu only
-    "PWR_IN",       # L_CM_PWR1/2, Q2/2, C_CM_PWR_B1/1, IC1/1 — all F.Cu; no layer transition needed
-    "PWR_IN_RAW",   # J_PWR_IN1/1, F_PWR1/1, D_TVS/2 — all F.Cu; no layer transition needed
+    "STUSB_1V2",    # STUSB4500 internal 1.2V LDO bypass — F.Cu only
+    "STUSB_2V7",    # STUSB4500 internal 2.7V ref bypass — F.Cu only
+    "BUCK_BOOT",    # bootstrap net in SWITCHING_LOOPS — excluded from auto-skip, but F.Cu-only bypass cap, no via needed
 ]
 
 # ── High-voltage nets requiring extra fanout clearance ────────────────────────
