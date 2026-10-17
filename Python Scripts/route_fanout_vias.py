@@ -2163,6 +2163,8 @@ def _place_group(group: List[PendingVia],
 
     def is_valid_pos(via: PendingVia, vx: float, vy: float,
                      placed: List[PendingVia]) -> bool:
+        _dbg = (via.ref == "R_TSCL1" and via.pad_num == "2"
+                and 151.0 < vy < 155.0)
         r = _via_r(via, clearance)
         # Exclude via's own pad from the circular obstacle check — the stub
         # trace connects them so no DRC clearance is required.  A separate
@@ -2175,22 +2177,46 @@ def _place_group(group: List[PendingVia],
                               via_copper=_via_copper,
                               via_net=via.net_name, via_netclass=via.netclass,
                               via_ref=via.ref):
+            if _dbg and 151.85 < vy < 153.5:
+                for _o in all_obs:
+                    if (_o.ref == via.ref and abs(_o.cx - via.pad_x) < 1e-3
+                            and abs(_o.cy - via.pad_y) < 1e-3):
+                        continue
+                    if via.net_name and _o.net_name and _o.net_name == via.net_name:
+                        continue
+                    _cl2 = _pair_clearance(via.net_name, via.netclass, via.ref,
+                                           _o.net_name, _o.netclass, _o.ref)
+                    _chk2 = _via_copper + _cl2
+                    if _o.bbox is not None:
+                        _d2 = _dist_point_to_bbox(vx, vy, _o.bbox)
+                        if _d2 < _chk2:
+                            print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) F1 BLOCKER pad {_o.ref}/{getattr(_o,'pad_num','?')} net={_o.net_name} d={_d2:.4f} need>={_chk2:.4f}")
+                    else:
+                        _dist2 = math.hypot(vx - _o.cx, vy - _o.cy)
+                        _need2 = _chk2 + _o.r
+                        if _dist2 < _need2:
+                            print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) F1 BLOCKER via ({_o.cx:.3f},{_o.cy:.3f}) net={_o.net_name} r={_o.r:.3f} dist={_dist2:.4f} need>={_need2:.4f}")
+            if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F1 _clear_of_obs")
             return False
         # Via copper (drill + annular) must not overlap source pad copper.
         # No DRC gap needed (same net), but physical overlap = via-in-pad.
         if via.pad_bbox is not None:
             if _dist_point_to_bbox(vx, vy, via.pad_bbox) < (
                     via.via_drill_mm / 2.0 + via.via_annular_mm):
+                if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F2 pad_bbox")
                 return False
         if not ig_circles_ok(vx, vy, r, placed):
+            if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F3 ig_circles")
             return False
         # Board edge clearance for via copper.
         if edge_segs and not _clears_edges(
                 vx, vy, r + _BOARD_EDGE_CLEARANCE, edge_segs):
+            if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F3b edge")
             return False
         all_stubs = ext_stubs + _ig_stubs(placed)
         if not _clear_of_stub_segs(vx, vy, r, all_stubs, via.ref, via.pad_num,
                                     excl_net=via.net_name, clearance=clearance):
+            if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F4 stub_segs")
             return False
         via.via_x, via.via_y = vx, vy
         # Use the actual 45° stub waypoint — _via_corner gives the old
@@ -2198,7 +2224,9 @@ def _place_group(group: List[PendingVia],
         _segs45 = _route_45deg_stub(via.pad_x, via.pad_y, vx, vy,
                                      via.escape_dx, via.escape_dy)
         cx, cy = (_segs45[0][2], _segs45[0][3]) if _segs45 else (vx, vy)
+        if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) segs={len(_segs45)} cx={cx:.3f} cy={cy:.3f} nw={via.neckdown_w_mm:.3f}")
         if not _stub_clear(via, cx, cy, pad_obs, clearance, all_stubs, edge_segs):
+            if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F5 _stub_clear")
             return False
         # Check BOTH stub segments against in-group placed via circles.
         # _stub_clear checks stub segments vs pad obstacles and stub segments,
@@ -2220,14 +2248,21 @@ def _place_group(group: List[PendingVia],
             _ocl = clearance
             other_copper = other.via_drill_mm / 2.0 + other.via_annular_mm
             threshold = stub_hw_bare + _ocl + other_copper
-            # pad→waypoint leg vs placed via circle
-            _d1 = _dist_to_segment(other.via_x, other.via_y,
-                                 via.pad_x, via.pad_y, cx, cy)
-            if _d1 < threshold:
-                return False
+            # Pre-stagger guard: a placed via that is currently within threshold
+            # distance of the source pad is at a pre-stagger position — stagger
+            # will move it away.  Skip leg-1 for such vias; leg-2 still applies.
+            _other_pad_dist = math.hypot(other.via_x - via.pad_x,
+                                          other.via_y - via.pad_y)
+            if _other_pad_dist >= threshold:
+                # pad→waypoint leg vs placed via circle
+                if _dist_to_segment(other.via_x, other.via_y,
+                                     via.pad_x, via.pad_y, cx, cy) < threshold:
+                    if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F6 other={other.ref}/{other.pad_num} net={other.net_name} via=({other.via_x:.3f},{other.via_y:.3f}) thr={threshold:.3f} pad_dist={_other_pad_dist:.3f}")
+                    return False
             # waypoint→via leg vs placed via circle (only when stub is bent)
             if bent and _dist_to_segment(other.via_x, other.via_y,
                                           cx, cy, vx, vy) < threshold:
+                if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F6b-bent other={other.ref}/{other.pad_num}")
                 return False
         # Cross-group via circles: all_obs entries with bbox=None are via circles
         # (other_obs constructed from pending vias).  obs.r = copper_r + clearance,
@@ -2241,12 +2276,21 @@ def _place_group(group: List[PendingVia],
             if via.net_name and obs.net_name and obs.net_name == via.net_name:
                 continue
             threshold = stub_hw_bare + obs.r
-            if _dist_to_segment(obs.cx, obs.cy,
-                                 via.pad_x, via.pad_y, cx, cy) < threshold:
-                return False
+            # If a pending via circle is already within clearance of the source
+            # pad, any stub leg from that pad will always trigger this check —
+            # the circle is at a pre-stagger position that stagger will resolve.
+            # Skip leg-1 for such circles; leg-2 (corner→via) still applies.
+            _obs_pad_dist = math.hypot(obs.cx - via.pad_x, obs.cy - via.pad_y)
+            if _obs_pad_dist >= threshold:
+                if _dist_to_segment(obs.cx, obs.cy,
+                                     via.pad_x, via.pad_y, cx, cy) < threshold:
+                    if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F7 obs=({obs.cx:.3f},{obs.cy:.3f}) net={obs.net_name} r={obs.r:.3f} thr={threshold:.3f} pad_dist={_obs_pad_dist:.3f}")
+                    return False
             if bent and _dist_to_segment(obs.cx, obs.cy,
                                           cx, cy, vx, vy) < threshold:
+                if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F7b-bent obs=({obs.cx:.3f},{obs.cy:.3f})")
                 return False
+        if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) PASS all checks")
         return True
 
     def is_valid_pos_no_stubs(via: PendingVia, vx: float, vy: float,
@@ -2433,6 +2477,39 @@ def _place_group(group: List[PendingVia],
                     if found_clean:
                         break
 
+            # 1b'. Axial-offset + perpendicular search for single-pad faces.
+            #     For each axial offset in both forward (escape) and backward
+            #     (anti-escape) directions, try lateral exits from that point.
+            #     Forward pass handles: neighbors at pad y block exits from depth 0,
+            #     but exits from a slightly deeper y clear; or a sub-fanout via near
+            #     the stagger corner blocks all L-shapes from the corner.
+            #     Backward pass handles: the forward direction is entirely walled off
+            #     (e.g. a row of sub-fanout vias), but a backward-diagonal exit NW/NE
+            #     clears all obstacles.
+            #     Outer loop uses 5× step to keep the search tractable.
+            if not found_clean and allow_alt and not prefer_perp and not multi_pad_face:
+                _S_STEP = STEP_MM * 5  # 0.25mm axial step for outer loop
+                for _ax_sign in (1, -1):   # forward then backward (anti-axial)
+                    _south_s = 0.0
+                    while _south_s <= via.max_search_mm and not found_clean:
+                        _int_x = via.pad_x + edx * _ax_sign * _south_s
+                        _int_y = via.pad_y + edy * _ax_sign * _south_s
+                        for pdx, pdy in [(perp_dx_v, perp_dy_v), (-perp_dx_v, -perp_dy_v)]:
+                            ext = STEP_MM
+                            while ext <= via.max_search_mm:
+                                vx = _int_x + pdx * ext
+                                vy = _int_y + pdy * ext
+                                if is_valid_pos(via, vx, vy, placed):
+                                    _clean_place(vx, vy)
+                                    found_clean = True
+                                    break
+                                ext += STEP_MM
+                            if found_clean:
+                                break
+                        _south_s += _S_STEP
+                    if found_clean:
+                        break
+
             # 1c. Same-perp pads: primary axis as last resort if alt-direction
             #     found nothing (e.g., obstacles block all perpendicular exits).
             if not found_clean and prefer_perp:
@@ -2518,6 +2595,73 @@ def _place_group(group: List[PendingVia],
                         _clean_place(vx, vy)
                         found_clean = True
                         break
+                    if found_clean:
+                        break
+
+            # 1d'. Pad-level lateral + anti-axial fallback for multi-pad-face pads.
+            #      Steps 1 and 1d search from the neckdown corner, which can be
+            #      within clearance of an obstacle row (e.g. a sub-fanout via row
+            #      0.537mm south when 0.900mm is required).  Starting from the
+            #      pad's own level (axial offset 0) moves far enough away from the
+            #      row that the perpendicular clearance check succeeds.
+            if not found_clean and multi_pad_face:
+                if via.ref == 'R_TSCL1' and via.pad_num == '2':
+                    print(f"  DBG 1dp ENTER R_TSCL1/2 pad=({via.pad_x:.3f},{via.pad_y:.3f}) neckdown={via.neckdown_len_mm:.3f} placed_n={len(placed)}")
+                _perp_dx_v2, _perp_dy_v2 = -edy, edx
+                _S2_STEP = STEP_MM * 5  # 0.25mm axial step
+                for _ax_sign2 in (1, -1):
+                    _ax_s2 = 0.0
+                    while _ax_s2 <= via.max_search_mm and not found_clean:
+                        _int_x2 = via.pad_x + edx * _ax_sign2 * _ax_s2
+                        _int_y2 = via.pad_y + edy * _ax_sign2 * _ax_s2
+                        for pdx2, pdy2 in [(_perp_dx_v2, _perp_dy_v2),
+                                            (-_perp_dx_v2, -_perp_dy_v2)]:
+                            ext2 = STEP_MM
+                            while ext2 <= via.max_search_mm:
+                                vx = _int_x2 + pdx2 * ext2
+                                vy = _int_y2 + pdy2 * ext2
+                                if not is_valid_pos(via, vx, vy, placed):
+                                    ext2 += STEP_MM
+                                    continue
+                                _segs_2 = _route_45deg_stub(
+                                    via.pad_x, via.pad_y, vx, vy,
+                                    via.escape_dx, via.escape_dy)
+                                cx_2, cy_2 = ((_segs_2[0][2], _segs_2[0][3])
+                                               if len(_segs_2) > 1 else (vx, vy))
+                                _hb2 = via.neckdown_w_mm / 2.0
+                                ok_2 = True
+                                for _o2 in pad_obs:
+                                    if _o2.ref != via.ref:
+                                        continue
+                                    if (abs(_o2.cx - via.pad_x) < 1e-3
+                                            and abs(_o2.cy - via.pad_y) < 1e-3):
+                                        continue
+                                    if (via.net_name and _o2.net_name
+                                            and _o2.net_name == via.net_name):
+                                        continue
+                                    _cl2 = _pair_clearance(
+                                        via.net_name, via.netclass, via.ref,
+                                        _o2.net_name, _o2.netclass, _o2.ref)
+                                    if _o2.bbox is not None:
+                                        if _seg_bbox_dist(cx_2, cy_2, vx, vy,
+                                                          _o2.bbox) < _hb2 + _cl2:
+                                            ok_2 = False
+                                            break
+                                    else:
+                                        if _dist_to_segment(
+                                                _o2.cx, _o2.cy,
+                                                cx_2, cy_2, vx, vy) < _hb2 + _cl2 + _o2.r:
+                                            ok_2 = False
+                                            break
+                                if not ok_2:
+                                    ext2 += STEP_MM
+                                    continue
+                                _clean_place(vx, vy)
+                                found_clean = True
+                                break
+                            if found_clean:
+                                break
+                        _ax_s2 += _S2_STEP
                     if found_clean:
                         break
 
@@ -4845,6 +4989,75 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
 
     hs_map = _hs_net_layer_map()
     sw_map = _sw_net_layer_map()
+
+    # ------------------------------------------------------------------
+    # 0b. Auto-skip pre-pass: detect local single-layer nets
+    # ------------------------------------------------------------------
+    # Scan every SMD pad on the board.  For each net where:
+    #   1. all SMD pads share a single copper layer, AND
+    #   2. all pads form a single connected component under
+    #      via_share_proximity_mm (centroid distance), AND
+    #   3. the net is not in hs_map (HS — managed by route_highspeed.py), AND
+    #   4. the net is not in sw_map (switching loop — managed by route_critical.py)
+    # → add to skip_nets.  These nets route entirely on their native layer;
+    # no layer-transition via is needed.  Complements the static FANOUT_VIA_SKIP_NETS
+    # list in routing_config.py, which handles explicit overrides (crystal nets, etc.).
+
+    _auto_threshold = cfg.CLEARANCE_AUDIT.get("via_share_proximity_mm", 5.0)
+
+    # Build net → [(layer_id, x_mm, y_mm)] from SMD pads only.
+    _auto_net_pads: Dict[str, list] = {}
+    for _afp in board.GetFootprints():
+        for _ap in _afp.Pads():
+            if _is_pth(_ap):
+                continue
+            _anet = _ap.GetNetname()
+            if not _anet or _anet.startswith("unconnected"):
+                continue
+            _auto_net_pads.setdefault(_anet, []).append((
+                _ap.GetLayer(),
+                pcbnew.ToMM(_ap.GetPosition().x),
+                pcbnew.ToMM(_ap.GetPosition().y),
+            ))
+
+    _auto_skipped: list = []
+    for _anet, _apads in _auto_net_pads.items():
+        if _anet in skip_nets:
+            continue
+        if _anet in hs_map or _anet in sw_map:
+            continue
+        if len(_apads) < 2:
+            continue
+        # All pads must be on the same layer.
+        if len(set(p[0] for p in _apads)) != 1:
+            continue
+        # All pads must form a single connected component within the threshold.
+        _n = len(_apads)
+        _adj: list = [[] for _ in range(_n)]
+        for _ai in range(_n):
+            for _aj in range(_ai + 1, _n):
+                if math.hypot(_apads[_ai][1] - _apads[_aj][1],
+                              _apads[_ai][2] - _apads[_aj][2]) <= _auto_threshold:
+                    _adj[_ai].append(_aj)
+                    _adj[_aj].append(_ai)
+        _visited = [False] * _n
+        _queue = [0]
+        _visited[0] = True
+        while _queue:
+            _cur = _queue.pop(0)
+            for _nb in _adj[_cur]:
+                if not _visited[_nb]:
+                    _visited[_nb] = True
+                    _queue.append(_nb)
+        if all(_visited):
+            skip_nets.add(_anet)
+            _auto_skipped.append(_anet)
+
+    if _auto_skipped:
+        print(f"  [auto-skip] {len(_auto_skipped)} net(s) detected as local single-layer "
+              f"(all pads same layer, within {_auto_threshold:.1f}mm):")
+        for _asn in sorted(_auto_skipped):
+            print(f"    {_asn}")
 
     # ------------------------------------------------------------------
     # 1. Collect pads that need layer-transition vias
