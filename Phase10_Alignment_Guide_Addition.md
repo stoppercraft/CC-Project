@@ -673,6 +673,82 @@ nets = sorted(n.GetNetname() for n in board.GetNets())
 
 ---
 
+**Step 0.75a-ii — Audit FANOUT_VIA_SKIP_NETS candidates.**
+
+The table above describes net categories. This step finds the actual nets in your project that belong in each category. Run it once when first populating `FANOUT_VIA_SKIP_NETS`, and re-run after any schematic change that adds or removes nets.
+
+The snippet prints every net where all pads share a single copper layer, along with the maximum pad-to-pad distance and the component list. Every net in the output is a candidate for `FANOUT_VIA_SKIP_NETS` — a net confined to one layer never needs a layer-transition via.
+
+```python
+import sys, math
+sys.path.insert(0, r"[KICAD_SITE_PKGS]")
+import pcbnew
+from collections import defaultdict
+
+board = pcbnew.LoadBoard(r"[PCB_FILE]")
+
+net_pads = defaultdict(list)
+for fp in board.GetFootprints():
+    for pad in fp.Pads():
+        net = pad.GetNetname()
+        if not net or net.startswith("unconnected-"):
+            continue
+        net_pads[net].append({
+            "ref":   fp.GetReference(),
+            "pad":   pad.GetNumber(),
+            "layer": pad.GetLayerName(),
+            "x":     pad.GetX() / 1e6,
+            "y":     pad.GetY() / 1e6,
+        })
+
+print("Nets where all pads are on a single copper layer:")
+print()
+for net, pads in sorted(net_pads.items()):
+    layers = set(p["layer"] for p in pads)
+    if len(layers) != 1:
+        continue      # pads span multiple layers — needs a via
+    if len(pads) < 2:
+        continue      # single-pad net — nothing to connect
+    max_dist = max(
+        math.hypot(a["x"] - b["x"], a["y"] - b["y"])
+        for i, a in enumerate(pads) for b in pads[i + 1:]
+    )
+    pad_desc = ", ".join(f"{p['ref']}/{p['pad']}" for p in pads)
+    print(f"  {net}  layer={list(layers)[0]}  max_dist={max_dist:.2f}mm")
+    print(f"    pads: {pad_desc}")
+```
+
+**Decision criteria — answer both questions for each net in the output before adding it:**
+
+1. *Is this net entirely single-layer by design?* Open the schematic and confirm the net never needs to reach another copper layer — it connects components all placed on the same board face, with no pour connection or intentional via on another layer. If yes, proceed to question 2.
+
+2. *Does another script in the pipeline own via placement for this net?* Check `routing_config.py`:
+   - In `SWITCHING_LOOPS` — any net named there receives vias from `route_critical.py`.
+   - In `HS_PAIRS` — any net there receives vias from `route_highspeed.py`. **Never add an HS net to `FANOUT_VIA_SKIP_NETS`; declare it in `HS_PAIRS` instead.**
+   - If the net appears in neither, `route_fanout_vias.py` is the only script that would place a via for it. If no via is needed (question 1 is yes), add it to `FANOUT_VIA_SKIP_NETS`.
+
+If both questions resolve to "add it," add the net name verbatim (case-sensitive, matching KiCad exactly) to `FANOUT_VIA_SKIP_NETS` in `routing_config.py`.
+
+**Common reasons a net in the output should NOT be added:**
+
+| Situation | Why to skip it |
+|---|---|
+| Net is in `HS_PAIRS` | HS vias are co-optimized with trace routing in `route_highspeed.py` |
+| Net is in `SWITCHING_LOOPS` | `route_critical.py` places the switching loop vias |
+| All pads are on one layer now, but placement is not final | Wait until Part 0.5 is complete; a component move may change the answer |
+| Net connects a power pad to a pour on another layer | The pour connection requires a via — it is single-layer in the footprint view but not by design intent |
+
+**Auto-skip detection (informational):**
+
+`route_fanout_vias.py` includes a runtime pre-pass that automatically skips nets where all pads share a single copper layer and the maximum pad-to-pad distance is within a proximity threshold. This catches many of the same candidates at runtime. However, auto-skip is a safety net — not a substitute for this audit:
+
+- Auto-skipped nets do not appear in `FANOUT_VIA_SKIP_NETS`. Future maintainers cannot tell from the config file alone why a net received no via.
+- A net whose pads are spaced beyond the proximity threshold will not be auto-skipped. If that net was not identified by this audit and not added to `FANOUT_VIA_SKIP_NETS`, it will receive an unexpected via on `--apply`.
+
+Run this audit explicitly, add every confirmed candidate to `FANOUT_VIA_SKIP_NETS`, then proceed to Step 0.75b.
+
+---
+
 **Step 0.75b — Run the dry run and iterate.**
 
 ```
