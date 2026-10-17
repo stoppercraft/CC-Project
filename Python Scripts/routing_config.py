@@ -210,6 +210,8 @@ FANOUT_VIA_SKIP_NETS = [
     "BUCK_BOOT",    # C_BOOT1/1 + U1/1 — bootstrap cap to BOOT pin, F.Cu only
     "IC1_GATE",     # Q2/1 + IC1/5 — gate drive signal, F.Cu only
     "IC2_GATE",     # Q3/1 + IC2/5 — gate drive signal, F.Cu only
+    "PWR_IN",       # L_CM_PWR1/2, Q2/2, C_CM_PWR_B1/1, IC1/1 — all F.Cu; no layer transition needed
+    "PWR_IN_RAW",   # J_PWR_IN1/1, F_PWR1/1, D_TVS/2 — all F.Cu; no layer transition needed
 ]
 
 # ── High-voltage nets requiring extra fanout clearance ────────────────────────
