@@ -397,7 +397,8 @@ def place_pad_via(ref, px, py, pad_layer, net_name, route_layer_id,
 
 def find_neckdown_exit(px, py, dest_x, dest_y, net_name,
                         full_w, neck_w, neck_max, layer_id):
-    hw = full_w / 2.0
+    hw  = full_w / 2.0
+    nhw = (neck_w or full_w) / 2.0
     dx_raw = dest_x - px;  dy_raw = dest_y - py
     if abs(dx_raw) >= abs(dy_raw):
         ux, uy = (1.0 if dx_raw >= 0 else -1.0), 0.0
@@ -409,11 +410,19 @@ def find_neckdown_exit(px, py, dest_x, dest_y, net_name,
     t = 0.0
     while t <= neck_max + 1e-9:
         sx, sy = px + ux * t, py + uy * t
+        # Full-width trace must fit at the exit point.
         pt = (sx - hw, sy - hw, sx + hw, sy + hw)
         if not any(rect_overlap(pt, o) for o in ic_obs):
-            return sx, sy
+            # Stub path from (px,py) → (sx,sy) must also be clear at neck_w.
+            # Without this check the stub can thread over another net's via.
+            if t < 1e-9:
+                return sx, sy  # zero-length stub always ok
+            stub_r = seg_rect(px, py, sx, sy, neck_w or full_w)
+            if not any(rect_overlap(stub_r, o) for o in ic_obs):
+                return sx, sy
         t += MAZE_RES_MM
-    return px + ux * neck_max, py + uy * neck_max
+    # No valid exit found — return pad position so caller routes at full width.
+    return px, py
 
 
 # ── Duplicate track guard ─────────────────────────────────────────────────────
@@ -428,6 +437,21 @@ def net_already_routed(net_name, layer_id):
 
 
 # ── Full-net routing helpers ──────────────────────────────────────────────────
+
+def anchor_accessible(ax, ay, net_name, layer_id, width_mm):
+    """
+    Return True if at least one cardinal direction from (ax,ay) is clear
+    at width_mm.  An anchor that fails this check is physically surrounded
+    by other-net copper and unreachable by a trace of width_mm — e.g. a
+    fanout via packed between signal vias (J_DSI1 between TOUCH_* vias).
+    """
+    obs = build_obstacles(layer_id, {net_name})
+    step = MAZE_RES_MM
+    for dx, dy in ((step, 0), (-step, 0), (0, step), (0, -step)):
+        r = seg_rect(ax + dx, ay + dy, ax, ay, width_mm)
+        if not any(rect_overlap(r, o) for o in obs):
+            return True
+    return False
 
 def find_nearby_via(px, py, net_name):
     """Return (vx, vy) of nearest via on net_name within FANOUT_VIA_PROXIMITY, or None."""
@@ -579,6 +603,10 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
             if anchor is None:
                 continue
             ax, ay = anchor
+            if not anchor_accessible(ax, ay, net_name, layer_id, width_mm):
+                log.append(f"  [full-net] SKIP {ref}: anchor ({ax:.3f},{ay:.3f})"
+                           f" unreachable at {width_mm}mm width")
+                continue
             key = (round(ax, 3), round(ay, 3))
             if key in seen:
                 continue
@@ -611,8 +639,10 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
         log.append(f"    {best_c[2]}({best_c[0]:.2f},{best_c[1]:.2f})"
                    f" → {best_u[2]}({best_u[0]:.2f},{best_u[1]:.2f})"
                    f"  d={best_dist:.1f}mm")
+        # No neckdown between MST anchors — anchors are already fanout vias or
+        # pad-transition vias in open space, so full-width routing applies directly.
         route_between(best_c[0], best_c[1], best_u[0], best_u[1],
-                      net_name, width_mm, layer_id, neck_w, neck_max,
+                      net_name, width_mm, layer_id, None, None,
                       via_pad, via_drill)
         connected.append(best_u); unconnected.remove(best_u)
 
