@@ -1831,6 +1831,20 @@ def _cluster_adjacent_pads(pending: List["PendingVia"],
             # Extend neckdown length enough to clear the widest lateral offset.
             primary.neckdown_len_mm = max(primary.neckdown_len_mm, max_lat + 0.1)
 
+            # Extend neckdown to clear all real pad copper in the escape direction.
+            # Uses pad_bbox top/bottom/left/right edge (same formula as _face_fanout
+            # line ~4089) so the via is never placed inside any real pad's copper.
+            _cl_via_r = primary.via_drill_mm / 2.0 + primary.via_annular_mm
+            if primary.pad_bbox is not None:
+                _cl_pah = (primary.pad_y - primary.pad_bbox[1] if edy < 0 else
+                           primary.pad_bbox[3] - primary.pad_y  if edy > 0 else
+                           primary.pad_x - primary.pad_bbox[0]  if edx < 0 else
+                           primary.pad_bbox[2] - primary.pad_x)
+            else:
+                _cl_pah = (primary.pad_h_mm if abs(edy) > 0.5 else primary.pad_w_mm) / 2.0
+            primary.neckdown_len_mm = max(primary.neckdown_len_mm,
+                                          _cl_pah + clearance + _cl_via_r)
+
             # Recompute via position: centroid pad + escape * neckdown_len.
             primary.via_x = primary.pad_x + edx * primary.neckdown_len_mm
             primary.via_y = primary.pad_y + edy * primary.neckdown_len_mm
@@ -6043,6 +6057,26 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _co_keepout_set = getattr(_face_fanout, '_last_keepout_set', set())
 
         for _pv_co, _vx_co, _vy_co in _co_assignments:
+            if _pv_co.cluster_real_pads:
+                # Same stale-bbox fix as _sg_assignments: re-enforce minimum clearance.
+                if _pv_co.pad_bbox is not None:
+                    _cl_pah_co = (_pv_co.pad_y - _pv_co.pad_bbox[1] if _co_edy < 0 else
+                                  _pv_co.pad_bbox[3] - _pv_co.pad_y  if _co_edy > 0 else
+                                  _pv_co.pad_x - _pv_co.pad_bbox[0]  if _co_edx < 0 else
+                                  _pv_co.pad_bbox[2] - _pv_co.pad_x)
+                else:
+                    _cl_pah_co = (_pv_co.pad_h_mm if abs(_co_edy) > 0.5
+                                  else _pv_co.pad_w_mm) / 2.0
+                _cl_via_r_co = _pv_co.via_drill_mm / 2.0 + _pv_co.via_annular_mm
+                _max_rp_along_co = max(rx * _co_edx + ry * _co_edy
+                                       for rx, ry, _ in _pv_co.cluster_real_pads)
+                _min_along_co = _max_rp_along_co + _cl_pah_co + _coopt_sg_clr + _cl_via_r_co
+                _cur_along_co = _vx_co * _co_edx + _vy_co * _co_edy
+                if _cur_along_co < _min_along_co:
+                    _co_ldx2, _co_ldy2 = -_co_edy, _co_edx
+                    _via_lat_co = _vx_co * _co_ldx2 + _vy_co * _co_ldy2
+                    _vx_co = _via_lat_co * _co_ldx2 + _min_along_co * _co_edx
+                    _vy_co = _via_lat_co * _co_ldy2 + _min_along_co * _co_edy
             _pv_co.via_x = _vx_co
             _pv_co.via_y = _vy_co
             _pv_co.face_fanout_assigned = True
@@ -6133,6 +6167,29 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             _sg_bus_stubs = getattr(_face_fanout, '_last_bus_stubs', [])
 
             for _pv_sg, _vx_sg, _vy_sg in _sg_assignments:
+                if _pv_sg.cluster_real_pads:
+                    # _face_fanout's _own_depth_floor uses pad_bbox which is stale for
+                    # cluster primaries (recorded at original pad position, not centroid).
+                    # Its x-distance check wrongly returns 0, letting Strategy B collapse
+                    # the via to depth=0. Re-enforce minimum clearance from real pad copper.
+                    if _pv_sg.pad_bbox is not None:
+                        _cl_pah_sg = (_pv_sg.pad_y - _pv_sg.pad_bbox[1] if _sub_edy < 0 else
+                                      _pv_sg.pad_bbox[3] - _pv_sg.pad_y  if _sub_edy > 0 else
+                                      _pv_sg.pad_x - _pv_sg.pad_bbox[0]  if _sub_edx < 0 else
+                                      _pv_sg.pad_bbox[2] - _pv_sg.pad_x)
+                    else:
+                        _cl_pah_sg = (_pv_sg.pad_h_mm if abs(_sub_edy) > 0.5
+                                      else _pv_sg.pad_w_mm) / 2.0
+                    _cl_via_r_sg = _pv_sg.via_drill_mm / 2.0 + _pv_sg.via_annular_mm
+                    _max_rp_along_sg = max(rx * _sub_edx + ry * _sub_edy
+                                           for rx, ry, _ in _pv_sg.cluster_real_pads)
+                    _min_along_sg = _max_rp_along_sg + _cl_pah_sg + _coopt_sg_clr + _cl_via_r_sg
+                    _cur_along_sg = _vx_sg * _sub_edx + _vy_sg * _sub_edy
+                    if _cur_along_sg < _min_along_sg:
+                        _sg_ldx2, _sg_ldy2 = -_sub_edy, _sub_edx
+                        _via_lat_sg = _vx_sg * _sg_ldx2 + _vy_sg * _sg_ldy2
+                        _vx_sg = _via_lat_sg * _sg_ldx2 + _min_along_sg * _sub_edx
+                        _vy_sg = _via_lat_sg * _sg_ldy2 + _min_along_sg * _sub_edy
                 _pv_sg.via_x = _vx_sg
                 _pv_sg.via_y = _vy_sg
                 _pv_sg.face_fanout_assigned = True

@@ -20,7 +20,7 @@ BOARD = cfg.PCB_FILE
 # ── Configure target(s) ───────────────────────────────────────────────────────
 # List one or more footprint references to inspect.
 # All faces and pad types are emitted automatically.
-TARGET_REFS = ['U3']
+TARGET_REFS = ['SOM1']
 
 # ── Clear board ───────────────────────────────────────────────────────────────
 import subprocess as _sp
