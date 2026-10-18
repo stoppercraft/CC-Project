@@ -414,22 +414,33 @@ def place_pad_via(ref, px, py, pad_layer, net_name, route_layer_id,
     obs_pad   = build_obstacles(pad_layer,      {net_name})
     obs_route = build_obstacles(route_layer_id, {net_name})
 
-    for dist in (0.5, 0.7, 1.0, 1.2, 1.5, 2.0, 2.5):
-        for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0),
-                        (-1, -1), (-1, 1), (1, -1), (1, 1)):
-            norm = math.hypot(dx, dy)
-            vx = px + dx / norm * dist
-            vy = py + dy / norm * dist
-            via_rect  = (vx - via_r - c, vy - via_r - c,
-                         vx + via_r + c, vy + via_r + c)
-            stub_rect = seg_rect(px, py, vx, vy, stub_w + 2 * c)
-            if (not any(rect_overlap(via_rect,  o) for o in obs_pad)   and
-                    not any(rect_overlap(via_rect,  o) for o in obs_route) and
-                    not any(rect_overlap(stub_rect, o) for o in obs_pad)):
-                add_track(px, py, vx, vy, stub_w, pad_layer, net_name)
-                add_via(vx, vy, net_name, via_pad, via_drill)
-                log.append(f"    pad-via {ref}: stub→({vx:.3f},{vy:.3f})")
-                return vx, vy
+    # Try the requested stub width first, then narrower fallbacks.
+    # A narrower tail-stub still connects the pad to its via; the full-width
+    # trunk routes from the via center so there is no current bottleneck.
+    stub_widths = [stub_w]
+    if stub_w > 0.4 + 1e-6:
+        stub_widths.append(0.4)
+    if stub_w > 0.3 + 1e-6:
+        stub_widths.append(0.3)
+
+    for sw in stub_widths:
+        for dist in (0.5, 0.7, 1.0, 1.2, 1.5, 2.0, 2.5):
+            for dx, dy in ((0, -1), (0, 1), (-1, 0), (1, 0),
+                            (-1, -1), (-1, 1), (1, -1), (1, 1)):
+                norm = math.hypot(dx, dy)
+                vx = px + dx / norm * dist
+                vy = py + dy / norm * dist
+                via_rect  = (vx - via_r - c, vy - via_r - c,
+                             vx + via_r + c, vy + via_r + c)
+                stub_rect = seg_rect(px, py, vx, vy, sw + 2 * c)
+                if (not any(rect_overlap(via_rect,  o) for o in obs_pad)   and
+                        not any(rect_overlap(via_rect,  o) for o in obs_route) and
+                        not any(rect_overlap(stub_rect, o) for o in obs_pad)):
+                    add_track(px, py, vx, vy, sw, pad_layer, net_name)
+                    add_via(vx, vy, net_name, via_pad, via_drill)
+                    log.append(f"    pad-via {ref}: stub→({vx:.3f},{vy:.3f})" +
+                               (f" [neckdown {sw}mm]" if sw < stub_w else ""))
+                    return vx, vy
 
     if require_offset:
         log.append(f"    SKIP {ref}: no clear via offset — pad unreachable in full-net pass")
@@ -519,23 +530,56 @@ def find_nearby_via(px, py, net_name):
     return best
 
 
+PAD_STUB_TOL = 0.25   # mm — how close a track endpoint must be to a pad centre
+                       # to count as "this pad has a stub connecting it to its via"
+
+def pad_has_stub(px, py, pad_layer_id, net_name):
+    """
+    True if a track endpoint on pad_layer_id/net_name lies within PAD_STUB_TOL
+    of (px, py).  Used to verify that a nearby via is actually this pad's own
+    transition point rather than a different component's via that happens to
+    share the same net and be within FANOUT_VIA_PROXIMITY.
+    """
+    for track in board.GetTracks():
+        if track.GetClass() == "PCB_VIA" or track.GetNetname() != net_name:
+            continue
+        if track.GetLayer() != pad_layer_id:
+            continue
+        sx = tomm(track.GetStart().x); sy = tomm(track.GetStart().y)
+        ex = tomm(track.GetEnd().x);   ey = tomm(track.GetEnd().y)
+        if (math.hypot(sx - px, sy - py) <= PAD_STUB_TOL or
+                math.hypot(ex - px, ey - py) <= PAD_STUB_TOL):
+            return True
+    for rx1, ry1, rx2, ry2, _hw, rlyr, rnet in _run_obs:
+        if rnet != net_name or rlyr != pad_layer_id:
+            continue
+        if rx1 == rx2 and ry1 == ry2:
+            continue  # point obstacle — via, not a stub
+        if (math.hypot(rx1 - px, ry1 - py) <= PAD_STUB_TOL or
+                math.hypot(rx2 - px, ry2 - py) <= PAD_STUB_TOL):
+            return True
+    return False
+
+
 def get_pad_anchor(ref, pad, net_name, route_layer_id, via_pad, via_drill, stub_w,
                    require_offset=False):
     """
     Return (x, y) routing anchor on route_layer_id, or None if unreachable.
-    Priority: nearby fanout via > pad on layer > new pad-transition via.
+    Priority: nearby fanout via (with confirmed stub) > pad on layer > new via.
 
-    Using the fanout via as anchor means full-width power traces never need
-    to thread through tight-pitch pad grids — the fanout script already
-    handled that escape.
+    A nearby via is only accepted as this pad's anchor when a track endpoint
+    on the pad's own layer exists within PAD_STUB_TOL of the pad centre —
+    confirming that the pad has a stub connecting it to the via.  Without this
+    check, a different component's via on the same net (within
+    FANOUT_VIA_PROXIMITY) would be misidentified as this pad's anchor, causing
+    the pad to be marked connected when it has no copper to the routed network.
 
     When require_offset=True, returns None instead of a blocked pad-center
-    anchor (used by route_net_full to skip truly unreachable pads such as
-    USB connector VBUS pins surrounded by GND shield copper).
+    anchor (used by route_net_full to skip truly unreachable pads).
     """
     px = tomm(pad.GetPosition().x); py = tomm(pad.GetPosition().y)
     via = find_nearby_via(px, py, net_name)
-    if via is not None:
+    if via is not None and pad_has_stub(px, py, pad.GetLayer(), net_name):
         return via
     ls = pad.GetLayerSet()
     if pad_on_layer(ls, route_layer_id):
@@ -669,19 +713,26 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
             if anchor is None:
                 continue
             ax, ay = anchor
-            if not anchor_accessible(ax, ay, net_name, layer_id, width_mm):
-                log.append(f"  [full-net] SKIP {ref}: anchor ({ax:.3f},{ay:.3f})"
-                           f" unreachable at {width_mm}mm width")
-                continue
-            key = (round(ax, 3), round(ay, 3))
-            if key in seen:
-                continue
+            # Compute effective connection width at this anchor before the
+            # accessibility gate.  Pads reached via a transition via connect at
+            # via_pad width (not the full trunk width); the trunk expands to
+            # width_mm further along the route.  Using eff_w here prevents
+            # fine-pitch connector / SOM pads from being rejected by an
+            # anchor_accessible check that would require a 2.5mm corridor
+            # directly out of a 0.6mm via.
             if find_nearby_via(px, py, net_name) is not None:
                 eff_w = min(via_pad, width_mm)
             elif pad_on_layer(pad.GetLayerSet(), layer_id):
                 eff_w = min(tomm(pad.GetSize().x), tomm(pad.GetSize().y), width_mm)
             else:
                 eff_w = min(via_pad, width_mm)
+            if not anchor_accessible(ax, ay, net_name, layer_id, eff_w):
+                log.append(f"  [full-net] SKIP {ref}: anchor ({ax:.3f},{ay:.3f})"
+                           f" unreachable at {eff_w}mm width")
+                continue
+            key = (round(ax, 3), round(ay, 3))
+            if key in seen:
+                continue
             seen.add(key); anchors.append((ax, ay, ref, eff_w))
 
     if len(anchors) < 2:
