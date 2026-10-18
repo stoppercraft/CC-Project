@@ -311,6 +311,10 @@ SWITCHING_LOOPS = [
         "vin_via_allowed":  True,
         "out_via_allowed":  True,
         "boot_via_allowed": False,
+        # Tap refs: components on this power net that carry only small/sense currents
+        # and should connect via narrow traces off the main spine rather than at
+        # trunk width.  All other components on each net get full trunk width.
+        "full_net_taps": ["R_TOP1", "R_VDET_H1", "TP_5V1"],
     },
 ]
 

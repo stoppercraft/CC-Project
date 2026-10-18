@@ -637,18 +637,16 @@ def route_between(x1, y1, x2, y2, net_name, width_mm, layer_id,
 
 
 def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
-                   neck_w, neck_max):
+                   neck_w, neck_max, tap_refs=None):
     """
     Connect all pads on net_name using Prim's MST on layer_id.
 
-    Anchors carry an effective width (eff_w): the via copper diameter when the
-    anchor is a fanout via, or the pad's shortest side otherwise.  The MST is
-    built in full before routing so node degrees can be computed.  Interior
-    (trunk) edges route at width_mm with COMP_KEEPOUT_MM applied to push them
-    away from populated areas.  Leaf (stub) edges route at min(eff_w, width_mm)
-    without component keepout — stubs must approach their component by design.
-    Trunk edges are routed before stubs so the main spine is placed while the
-    board is least congested.
+    tap_refs: optional list of component refs that are low-current taps (sense
+    resistors, test points) and should connect via narrow traces.  Any MST edge
+    where either endpoint's ref is in tap_refs routes at min(tap_eff_w, width_mm)
+    without component keepout.  All other edges (the spine) route at width_mm
+    with COMP_KEEPOUT_MM applied.  Spine edges are routed first while the board
+    is least congested.
     """
     via_stub_w = neck_w or 0.4
 
@@ -701,35 +699,35 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
 
     log.append(f"    connected={len(connected)}  unconnected={len(unconnected)}")
 
+    # Tap set: refs whose connections should be narrow (sense/test components).
+    tap_set = set(tap_refs) if tap_refs else set()
+
     # Phase 1 — build the full MST edge list (Prim's, no routing yet).
+    # Non-tap (spine) nodes must connect from other spine nodes so that full-width
+    # trunk traces never originate from a narrow tap via.  Tap nodes may connect
+    # from any connected node.
     mst_edges = []
     _conn = list(connected); _unconn = list(unconnected)
+    spine = [a for a in _conn if a[2] not in tap_set]
     while _unconn:
         best_dist = float("inf"); best_c = best_u = None
-        for c in _conn:
-            for u in _unconn:
+        for u in _unconn:
+            sources = _conn if (u[2] in tap_set or not spine) else spine
+            for c in sources:
                 d = math.hypot(c[0]-u[0], c[1]-u[1])
                 if d < best_dist:
                     best_dist = d; best_c = c; best_u = u
         mst_edges.append((best_c, best_u))
         _conn.append(best_u); _unconn.remove(best_u)
+        if best_u[2] not in tap_set:
+            spine.append(best_u)
 
-    # Phase 2 — compute node degrees to identify trunk vs stub edges.
-    degree = {}
-    for c, u in mst_edges:
-        ck = (round(c[0], 3), round(c[1], 3))
-        uk = (round(u[0], 3), round(u[1], 3))
-        degree[ck] = degree.get(ck, 0) + 1
-        degree[uk] = degree.get(uk, 0) + 1
-
-    # A stub edge has at least one leaf endpoint (degree == 1).  A single-edge
-    # MST (two anchors) is always a trunk — no stub distinction needed.
-    is_multi = len(mst_edges) > 1
+    # Phase 2 — classify edges as spine (full width) or tap (narrow).
+    # With the spine-preferred MST, the destination node (best_u) determines the
+    # classification: tap destination → narrow tap edge; spine destination → trunk.
     trunk_edges = []; stub_edges = []
     for c, u in mst_edges:
-        ck = (round(c[0], 3), round(c[1], 3))
-        uk = (round(u[0], 3), round(u[1], 3))
-        if is_multi and (degree.get(ck, 0) == 1 or degree.get(uk, 0) == 1):
+        if u[2] in tap_set:
             stub_edges.append((c, u))
         else:
             trunk_edges.append((c, u))
@@ -745,11 +743,9 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
                       via_pad, via_drill, comp_keepout_mm=COMP_KEEPOUT_MM)
 
     for best_c, best_u in stub_edges:
-        ck = (round(best_c[0], 3), round(best_c[1], 3))
-        uk = (round(best_u[0], 3), round(best_u[1], 3))
-        leaf_eff_w = best_c[3] if degree.get(ck, 0) == 1 else best_u[3]
-        route_w = min(leaf_eff_w, width_mm)
-        log.append(f"    [stub {route_w:.2f}mm] {best_c[2]}({best_c[0]:.2f},{best_c[1]:.2f})"
+        # best_u is the tap destination; narrow to its effective width.
+        route_w = min(best_u[3], width_mm)
+        log.append(f"    [tap {route_w:.2f}mm] {best_c[2]}({best_c[0]:.2f},{best_c[1]:.2f})"
                    f" → {best_u[2]}({best_u[0]:.2f},{best_u[1]:.2f})"
                    f"  d={math.hypot(best_c[0]-best_u[0],best_c[1]-best_u[1]):.1f}mm")
         route_between(best_c[0], best_c[1], best_u[0], best_u[1],
@@ -923,13 +919,15 @@ for loop in cfg.SWITCHING_LOOPS:
     # Fanout vias serve as anchors for tight-pitch pads (SOM, BGA) so full-width
     # power traces route between accessible via positions, not pad centers.
     log.append(f"\n  [full-net pass — {loop['name']}]")
+    tap_refs = loop.get("full_net_taps", [])
     for net_name, w, lyr in [
         (vin_net,  w_vin,  layer_id),
         (sw_net,   w_sw,   layer_id),
         (out_net,  w_out,  layer_id),
         (boot_net, w_boot, boot_layer_id),
     ]:
-        route_net_full(net_name, w, lyr, via_pad, via_drill, neck_w, neck_max)
+        route_net_full(net_name, w, lyr, via_pad, via_drill, neck_w, neck_max,
+                       tap_refs=tap_refs)
 
 if APPLY:
     board.Save(cfg.PCB_FILE)
