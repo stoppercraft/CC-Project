@@ -62,13 +62,13 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-**Last --apply: commit `599caec` — 2026-10-17 — route_critical.py first clean run.**
-**DRC run 2026-10-17. Board inspection PASS.**
-# Updated 2026-10-17 (session 33).
+**Last --apply: commit `f73309c` — 2026-10-18 — route_critical.py spine+taps overlap fix.**
+**Board inspection PASS: 25 +5V B.Cu tracks, zero overlapping traces.**
+# Updated 2026-10-18 (session 34).
 
 ### What to do next
 
-**Continue iterating on route_critical.py.** The first clean run is the START of the iteration phase, not the end. Examine the output, identify what needs improvement, and refine the script — same process as route_fanout_vias.py.
+**Continue iterating on route_critical.py.** User has more things to work on. Examine current output, ask what they want to tackle next.
 
 Do NOT move to route_highspeed.py. The user explicitly stated we work on route_critical.py step by step until it produces the results they are looking for. Only move to the next script when the user explicitly says so.
 
@@ -114,8 +114,11 @@ Result: U3/6, U3/7, U3/9, U3/10, U3/12, U3/13 all got vias placed.
 - Live board = script output saved on Frameline_Compute_V2.kicad_pcb (NOT reference zip)
 - Reference zip: `...\Frameline_Compute_V2-backups\Frameline_Compute_V2-2026-09-21_100203.zip`
 
-**route_critical.py**: First clean run done (commit 599caec, 2026-10-17). **ITERATING — not done.** No conflicts, 0 shorts, 0 copper_edge_clearance, zone artifacts only. Board inspection PASS.
-- Key fixes so far: board edge keepouts (BOARD_EDGE_CLEARANCE=0.50mm), MAZE_MARGIN=16mm (required for +5V L1→R_TOP1 to detour west of VMAIN horizontal at x=157.8), neckdown stub clearance check, anchor_accessible(), require_offset for isolated pads.
+**route_critical.py**: Iterating — commit `f73309c` (2026-10-18). **ITERATING — not done.** No conflicts, 0 shorts, 0 copper_edge_clearance, zero overlapping traces. Board inspection PASS.
+- Key fixes so far: board edge keepouts (BOARD_EDGE_CLEARANCE=0.50mm), MAZE_MARGIN=16mm, neckdown stub clearance check, anchor_accessible(), require_offset for isolated pads.
+- **Spine+taps topology** (this session): full_net_taps config key in routing_config.py (R_TOP1, R_VDET_H1, TP_5V1 for +5V). Non-tap nodes use Prim's MST from spine_pts only; tap nodes deferred until all trunks routed.
+- **Overlap fix** (this session): tap source re-evaluated against all spine waypoints AND projections onto routed trunk segments (_closest_on_seg). Taps now branch perpendicularly (T-junction) rather than re-traversing co-directional trunk stretches.
+- VMAIN full-net now routes at 2.0mm (was 0.6mm stub): Q3 and Q2 reached via 2.0mm trunk from C_VIN1.
 - TOUCH_SCL annular_width violation (152.2404,151.076) was NOT investigated.
 - Layer names: B.Cu (routing layer, ID=2) = "CM5 fanout + slow signals + power switching"; F.Cu (ID=0) = "Escape routing + slow signals (I2C, GPIO, SPI, debug)"
 **route_highspeed.py**: BLOCKED — do not start until user explicitly says so.
