@@ -751,12 +751,37 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
                     spine_pts.append((wx, wy, None))
 
     # Route tap edges (narrow, no component keepout).
+    # Re-evaluate each tap's source against both the fully-populated spine_pts
+    # AND projections onto every routed trunk segment.  The segment projection
+    # finds the closest T-junction point on an existing trunk, so the tap always
+    # branches perpendicularly rather than re-traversing a co-directional stretch.
+    def _closest_on_seg(px, py, x1, y1, x2, y2):
+        dx, dy = x2 - x1, y2 - y1
+        if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+            return x1, y1
+        t = max(0.0, min(1.0, ((px-x1)*dx + (py-y1)*dy) / (dx*dx + dy*dy)))
+        return x1 + t*dx, y1 + t*dy
+
     for src_xy, src_anchor, best_u in tap_edges:
         route_w = min(best_u[3], width_mm)
-        sx, sy = src_xy
         ux, uy = best_u[0], best_u[1]
-        src_lbl = (f"{src_anchor[2]}({sx:.2f},{sy:.2f})"
-                   if src_anchor else f"wpt({sx:.2f},{sy:.2f})")
+        sx, sy, sa = src_xy[0], src_xy[1], src_anchor
+        best_tap_d = float("inf")
+        for wx, wy, wa in spine_pts:
+            d = math.hypot(wx - ux, wy - uy)
+            if d < best_tap_d:
+                best_tap_d = d; sx, sy, sa = wx, wy, wa
+        for rx1, ry1, rx2, ry2, rhw, rlayer, rnet in _run_obs:
+            if rnet != net_name or rlayer != layer_id:
+                continue
+            if rx1 == rx2 and ry1 == ry2:  # skip via point obstacles
+                continue
+            cx, cy = _closest_on_seg(ux, uy, rx1, ry1, rx2, ry2)
+            d = math.hypot(cx - ux, cy - uy)
+            if d < best_tap_d:
+                best_tap_d = d; sx, sy, sa = cx, cy, None
+        src_lbl = (f"{sa[2]}({sx:.2f},{sy:.2f})"
+                   if sa else f"wpt({sx:.2f},{sy:.2f})")
         log.append(f"    [tap {route_w:.2f}mm] {src_lbl}"
                    f" → {best_u[2]}({ux:.2f},{uy:.2f})"
                    f"  d={math.hypot(sx-ux, sy-uy):.1f}mm")
