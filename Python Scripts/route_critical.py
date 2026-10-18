@@ -596,6 +596,15 @@ def route_between(x1, y1, x2, y2, net_name, width_mm, layer_id,
         log.append(f"    [manhattan blocked] → maze")
         waypoints = route_maze(ex1, ey1, ex2, ey2, width_mm, obstacles)
 
+    # If component keepout made the route impossible, retry without it.
+    if waypoints is None and comp_keepout_mm > 0:
+        log.append(f"    [keepout blocked] → retry without component keepout")
+        fb_obs = build_obstacles(layer_id, {net_name}, comp_keepout_mm=0.0)
+        waypoints = (route_manhattan(ex1, ey1, ex2, ey2, width_mm, fb_obs) or
+                     route_maze(ex1, ey1, ex2, ey2, width_mm, fb_obs))
+        if waypoints is not None:
+            log.append(f"    [keepout fallback succeeded]")
+
     if waypoints is None and via_pad is not None and ALT_LAYER != layer_id:
         alt_obs = build_obstacles(ALT_LAYER, {net_name},
                                   comp_keepout_mm=comp_keepout_mm)
