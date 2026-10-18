@@ -446,16 +446,21 @@ Add the following block to `routing_config.py` between `HS_ROUTE_WIDTHS` and
 ```python
 # ── Routing clearance audit — for route_clearance_audit.py ───────────────────
 CLEARANCE_AUDIT = {
-    "signal_trace_width_mm":   0.20,   # default signal trace width for unlisted nets
-    "via_drill_mm":            0.30,   # standard signal/power via drill diameter
-    "via_annular_ring_mm":     0.15,   # standard via copper annular ring width
-    "via_clearance_mm":        0.15,   # via copper-to-copper clearance
-    "hs_via_drill_mm":         0.25,   # HS differential pair layer-change via drill
-    "hs_via_annular_ring_mm":  0.15,   # HS via annular ring width
-    "neckdown_length_mm":      0.50,   # minimum neckdown transition zone length beside pad
-    "diff_pair_min_sep_mm":    8.0,    # minimum edge-to-edge gap between diff-pair components
-    "board_margin_mm":         3.0,    # minimum distance from board edge for any component
-    "corridor_margin_mm":      0.50,   # extra routing margin added to calculated corridor minimum
+    "signal_trace_width_mm":     0.20,   # default signal trace width for unlisted nets
+    "via_drill_mm":              0.30,   # standard signal/power via drill diameter
+    "via_annular_ring_mm":       0.15,   # standard via copper annular ring width
+    "via_clearance_mm":          0.15,   # via copper-to-copper clearance
+    "hs_via_drill_mm":           0.25,   # HS differential pair layer-change via drill
+    "hs_via_annular_ring_mm":    0.15,   # HS via annular ring width
+    "neckdown_length_mm":        0.50,   # minimum neckdown transition zone length beside pad
+    "diff_pair_min_sep_mm":      8.0,    # minimum edge-to-edge gap between diff-pair components
+    "board_margin_mm":           3.0,    # minimum distance from board edge for any component
+    "corridor_margin_mm":        0.50,   # extra routing margin added to calculated corridor minimum
+    "via_share_proximity_mm":    5.5,    # auto-skip threshold: nets whose SMD pads all share one
+                                         # layer and are within this distance (BFS-connected) are
+                                         # skipped automatically — no layer-transition via placed.
+                                         # Increase if densely packed local nets are being missed;
+                                         # decrease if unrelated same-layer nets are being merged.
 }
 ```
 
@@ -468,6 +473,7 @@ CLEARANCE_AUDIT = {
 | `neckdown_length_mm` | How much space beside a pad for a trace-to-pad width transition | Traces are unusually wide relative to pads |
 | `diff_pair_min_sep_mm` | Minimum gap between components sharing a diff-pair net | Your meander length budget changes |
 | `corridor_margin_mm` | Extra buffer added to computed corridor minimum | Routing is tight and you want more breathing room |
+| `via_share_proximity_mm` | Auto-skip proximity threshold for `route_fanout_vias.py` — see Part 0.75 | Local nets are being missed or unrelated nets are being merged |
 
 **Step 0.5b — Run the dry run and iterate.**
 
@@ -660,7 +666,7 @@ them from the schematic or enumerate from the PCB with:
 import sys; sys.path.insert(0, cfg.KICAD_SITE_PKGS)
 import pcbnew
 board = pcbnew.LoadBoard(cfg.PCB_FILE)
-nets = sorted(n.GetNetname() for n in board.GetNets())
+nets = sorted(board.GetNetInfo().NetsByName().keys())
 ```
 
 ---
@@ -671,7 +677,7 @@ nets = sorted(n.GetNetname() for n in board.GetNets())
 |---|---|---|
 | Crystal oscillator nets | **Yes** | No via ever — see rules above |
 | GND | **Yes** | Shared via at ground plane; per-pad via is redundant |
-| Bulk power rail (e.g. LT_1V2, LT_3V3) | Yes, if a shared power via is placed by another script | Avoids double via on the power rail at a single pad |
+| Bulk power rail that spans the board on one layer (e.g. LT_1V2, LT_3V3) | **Yes** | Pads are spread across the board — the auto-skip proximity check won't connect them, so a via would be placed. Add explicitly if no layer transition is ever needed for this net |
 | High-speed differential pair nets — pads span layers or span the board | **No** — declare in `HS_PAIRS` instead | HS pair vias are co-optimized with trace routing in `route_highspeed.py` |
 | High-speed differential pair nets — all pads same layer, locally co-located | **No action needed** — auto-skip detects them at runtime | Topology check fires: same layer + locally connected = no via, regardless of HS_PAIRS membership |
 | Switching loop nets (bootstrap cap, compensation, soft-start) — all pads same layer, locally co-located | **No action needed** — auto-skip detects them at runtime | Same topology rule; SWITCHING_LOOPS membership does not override the same-layer local check |
@@ -722,6 +728,7 @@ print(f"Vias: {len(vias)}  Traces: {len(traces)}")
 
 | Output section | What to look for |
 |---|---|
+| `[auto-skip]` header | Printed first — lists every net detected as local single-layer at runtime. Review the net list: all entries should be nets whose pads genuinely stay on one layer and don't need a layer transition. If an expected-via net appears here, see iteration loop below. |
 | Pad summary | Rows with `skip-net` — confirm all crystal/GND nets are in the skip list |
 | Via placement report | Any pad reporting `BLOCKED` — via could not be placed without clearance violation |
 | Compaction report | `MAX_ROUNDS reached` — compaction did not converge; may need component position adjustment |
@@ -742,6 +749,13 @@ print(f"Vias: {len(vias)}  Traces: {len(traces)}")
    - **Crystal net pad receiving a via**: crystal oscillator net is missing from
      `FANOUT_VIA_SKIP_NETS`. Add it. Verify in dry run that the pad now shows stub-only before
      running `--apply`.
+   - **Expected-via net appears in `[auto-skip]` list**: the auto-skip pre-pass detected the
+     net as local single-layer and suppressed its via. Verify this is correct: check that all
+     pads on the net are genuinely on the same layer and close enough together that no layer
+     transition is needed. If that is true, the auto-skip is correct — no action needed. If the
+     net actually does need a via (e.g., one pad is on a different layer than the others), the
+     auto-skip fired incorrectly — investigate why all pads appear same-layer (footprint
+     misconfiguration, wrong layer assignment) and fix the root cause rather than overriding.
    - **DRC clearance violation (non-zone)**: a placed via is too close to a neighbor. Check
      whether the via belongs to a net that should be in `FANOUT_VIA_SKIP_NETS`. If not, the
      component needs more clearance — return to Part 0.
@@ -760,6 +774,7 @@ print(f"Vias: {len(vias)}  Traces: {len(traces)}")
 | Zero BLOCKED vias | Every non-skip-net pad received a placed via |
 | Zero non-zone DRC violations | No copper-to-copper clearance violations |
 | All crystal nets stub-only | No via placed on any net in `FANOUT_VIA_SKIP_NETS` |
+| Auto-skip list reviewed | Every net in the `[auto-skip]` output is genuinely local single-layer; no expected-via net was silently suppressed |
 | Board inspection PASS | Escape traces start at pads, end dangling, no pad has both via + trace |
 | Via count matches script report | Via count in PCB equals the count the script reported emitting |
 
