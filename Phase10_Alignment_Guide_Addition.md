@@ -602,7 +602,11 @@ which was already populated in Step 0.5a — no separate fanout via params block
 FANOUT_VIA_SKIP_NETS = [
     "GND",       # GND nets — via is shared at ground plane; no per-pad via needed
     # Add crystal oscillator nets here — see Crystal Oscillator Rules below
-    # Add any power rail net whose fanout via is placed by another script
+    # Do NOT add local single-layer power/signal nets here — the auto-skip
+    # pre-pass in route_fanout_vias.py detects them automatically at runtime.
+    # Only add nets that the auto-skip cannot catch: fill-connected planes,
+    # nets that span the board on one layer, and crystal oscillator nets
+    # (which must never receive a via regardless of topology).
 ]
 
 # Ordered list of routable signal layers, most-preferred first.
@@ -668,7 +672,9 @@ nets = sorted(n.GetNetname() for n in board.GetNets())
 | Crystal oscillator nets | **Yes** | No via ever — see rules above |
 | GND | **Yes** | Shared via at ground plane; per-pad via is redundant |
 | Bulk power rail (e.g. LT_1V2, LT_3V3) | Yes, if a shared power via is placed by another script | Avoids double via on the power rail at a single pad |
-| High-speed differential pair nets | **No** — declare in `HS_PAIRS` instead | HS pair vias are co-optimized with trace routing in `route_highspeed.py` |
+| High-speed differential pair nets — pads span layers or span the board | **No** — declare in `HS_PAIRS` instead | HS pair vias are co-optimized with trace routing in `route_highspeed.py` |
+| High-speed differential pair nets — all pads same layer, locally co-located | **No action needed** — auto-skip detects them at runtime | Topology check fires: same layer + locally connected = no via, regardless of HS_PAIRS membership |
+| Switching loop nets (bootstrap cap, compensation, soft-start) — all pads same layer, locally co-located | **No action needed** — auto-skip detects them at runtime | Same topology rule; SWITCHING_LOOPS membership does not override the same-layer local check |
 | Regular signal nets | No | These need a fanout via to reach the routing layer |
 
 ---

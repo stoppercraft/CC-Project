@@ -205,7 +205,6 @@ FANOUT_VIA_SKIP_NETS = [
     "LT_XTAL_OUT",  # crystal oscillator stub — no via, stay on F.Cu
     "STUSB_1V2",    # STUSB4500 internal 1.2V LDO bypass — F.Cu only
     "STUSB_2V7",    # STUSB4500 internal 2.7V ref bypass — F.Cu only
-    "BUCK_BOOT",    # bootstrap net in SWITCHING_LOOPS — excluded from auto-skip, but F.Cu-only bypass cap, no via needed
 ]
 
 # ── High-voltage nets requiring extra fanout clearance ────────────────────────

@@ -4996,12 +4996,13 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
     # Scan every SMD pad on the board.  For each net where:
     #   1. all SMD pads share a single copper layer, AND
     #   2. all pads form a single connected component under
-    #      via_share_proximity_mm (centroid distance), AND
-    #   3. the net is not in hs_map (HS — managed by route_highspeed.py), AND
-    #   4. the net is not in sw_map (switching loop — managed by route_critical.py)
-    # → add to skip_nets.  These nets route entirely on their native layer;
-    # no layer-transition via is needed.  Complements the static FANOUT_VIA_SKIP_NETS
-    # list in routing_config.py, which handles explicit overrides (crystal nets, etc.).
+    #      via_share_proximity_mm (centroid distance)
+    # → add to skip_nets.  Topology is the sole criterion — HS_PAIRS and
+    # SWITCHING_LOOPS membership does not override it.  If a net's pads are
+    # all same-layer and local, no layer-transition via is needed regardless
+    # of what any config says about routing layer preferences.
+    # Complements the static FANOUT_VIA_SKIP_NETS list in routing_config.py,
+    # which handles nets that cannot be topology-detected (fill planes, etc.).
 
     _auto_threshold = cfg.CLEARANCE_AUDIT.get("via_share_proximity_mm", 5.0)
 
@@ -5023,8 +5024,6 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
     _auto_skipped: list = []
     for _anet, _apads in _auto_net_pads.items():
         if _anet in skip_nets:
-            continue
-        if _anet in hs_map or _anet in sw_map:
             continue
         if len(_apads) < 2:
             continue
