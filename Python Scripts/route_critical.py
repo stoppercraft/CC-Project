@@ -53,6 +53,7 @@ MAZE_MARGIN           = 16.0
 BEND_COST             = 4
 FANOUT_VIA_PROXIMITY  = 4.0    # mm — search radius for fanout vias near a pad
 ANCHOR_CONN_TOL       = 0.05   # mm — tolerance for "already has a track endpoint here"
+COMP_KEEPOUT_MM       = 0.5    # mm — margin around component bboxes for trunk routing
 
 board     = pcbnew.LoadBoard(cfg.PCB_FILE)
 F_CU      = board.GetLayerID("F.Cu")
@@ -125,13 +126,19 @@ def pad_on_layer(layer_set, layer_id):
 
 # ── Obstacle building ─────────────────────────────────────────────────────────
 
-def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None):
+def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None,
+                     comp_keepout_mm=0.0):
     """
     Return forbidden rectangles on layer_id (clearance-expanded).
 
     net_excl_pads   : set of nets whose pads are NOT obstacles (endpoints).
     net_excl_tracks : set of nets whose board tracks/vias/_run_obs entries
                       are NOT obstacles.  Defaults to net_excl_pads.
+    comp_keepout_mm : when > 0, add each footprint's bounding box (expanded by
+                      this margin) as an obstacle, skipping footprints that have
+                      any pad on a net in net_excl_pads.  Keeps trunk power
+                      routes out of populated component areas so future vias can
+                      be placed there.
     """
     if net_excl_tracks is None:
         net_excl_tracks = net_excl_pads
@@ -184,6 +191,25 @@ def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None):
         (-INF,         -INF,  INF,           _BRD_Y0 + ec),  # top edge
         (-INF,          _BRD_Y1 - ec, INF,  INF ),   # bottom edge
     ])
+
+    # Component body keepout — prevents trunk routes from threading through
+    # populated areas where future vias need to be placed.  Skips footprints
+    # that have any pad on the current net (we still need to reach those).
+    if comp_keepout_mm > 0:
+        excl = set(net_excl_pads)
+        for fp in board.GetFootprints():
+            if any(pad.GetNetname() in excl for pad in fp.Pads()):
+                continue
+            try:
+                bbox = fp.GetBoundingBox()
+            except Exception:
+                continue
+            bx0 = tomm(bbox.GetLeft())   - comp_keepout_mm
+            by0 = tomm(bbox.GetTop())    - comp_keepout_mm
+            bx1 = tomm(bbox.GetRight())  + comp_keepout_mm
+            by1 = tomm(bbox.GetBottom()) + comp_keepout_mm
+            if bx1 > bx0 and by1 > by0:
+                obs.append((bx0, by0, bx1, by1))
 
     return obs
 
@@ -548,7 +574,7 @@ def anchor_connected(ax, ay, net_name, layer_id):
 
 
 def route_between(x1, y1, x2, y2, net_name, width_mm, layer_id,
-                  neck_w, neck_max, via_pad, via_drill):
+                  neck_w, neck_max, via_pad, via_drill, comp_keepout_mm=0.0):
     """Route from (x1,y1) to (x2,y2) on layer_id at width_mm."""
     global _conflict_count
     use_neck = neck_w and neck_max and neck_w < width_mm
@@ -561,7 +587,8 @@ def route_between(x1, y1, x2, y2, net_name, width_mm, layer_id,
         ex1, ey1 = x1, y1
         ex2, ey2 = x2, y2
 
-    obstacles = build_obstacles(layer_id, {net_name})
+    obstacles = build_obstacles(layer_id, {net_name},
+                                comp_keepout_mm=comp_keepout_mm)
     waypoints  = route_manhattan(ex1, ey1, ex2, ey2, width_mm, obstacles)
     used_layer = layer_id
 
@@ -570,7 +597,8 @@ def route_between(x1, y1, x2, y2, net_name, width_mm, layer_id,
         waypoints = route_maze(ex1, ey1, ex2, ey2, width_mm, obstacles)
 
     if waypoints is None and via_pad is not None and ALT_LAYER != layer_id:
-        alt_obs = build_obstacles(ALT_LAYER, {net_name})
+        alt_obs = build_obstacles(ALT_LAYER, {net_name},
+                                  comp_keepout_mm=comp_keepout_mm)
         alt_wp  = (route_manhattan(ex1, ey1, ex2, ey2, width_mm, alt_obs) or
                    route_maze(ex1, ey1, ex2, ey2, width_mm, alt_obs))
         if alt_wp is not None:
@@ -603,23 +631,32 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
                    neck_w, neck_max):
     """
     Connect all pads on net_name using Prim's MST on layer_id.
-    Pads with a nearby fanout via use the via as their routing anchor,
-    so full-width power traces never need to thread tight-pitch pad grids.
-    Only anchors not yet reachable from existing copper are routed.
-    """
-    stub_w = neck_w or 0.4
 
-    # Collect one anchor per unique position; skip pads with no accessible anchor
-    # (e.g. connector VBUS pins surrounded by GND shield copper — require_offset
-    # ensures place_pad_via returns None rather than a blocked pad-center position)
+    Anchors carry an effective width (eff_w): the via copper diameter when the
+    anchor is a fanout via, or the pad's shortest side otherwise.  The MST is
+    built in full before routing so node degrees can be computed.  Interior
+    (trunk) edges route at width_mm with COMP_KEEPOUT_MM applied to push them
+    away from populated areas.  Leaf (stub) edges route at min(eff_w, width_mm)
+    without component keepout — stubs must approach their component by design.
+    Trunk edges are routed before stubs so the main spine is placed while the
+    board is least congested.
+    """
+    via_stub_w = neck_w or 0.4
+
+    # Collect one anchor per unique position.
+    # Each anchor is (ax, ay, ref, eff_w) where eff_w is the effective trace
+    # width the anchor can accept: via copper diameter for fanout-via anchors,
+    # pad shortest side for direct-pad anchors.
     anchors = []; seen = set()
     for fp in board.GetFootprints():
         ref = fp.GetReference()
         for pad in fp.Pads():
             if pad.GetNetname() != net_name:
                 continue
+            px = tomm(pad.GetPosition().x); py = tomm(pad.GetPosition().y)
             anchor = get_pad_anchor(ref, pad, net_name, layer_id,
-                                    via_pad, via_drill, stub_w, require_offset=True)
+                                    via_pad, via_drill, via_stub_w,
+                                    require_offset=True)
             if anchor is None:
                 continue
             ax, ay = anchor
@@ -630,15 +667,22 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
             key = (round(ax, 3), round(ay, 3))
             if key in seen:
                 continue
-            seen.add(key); anchors.append((ax, ay, ref))
+            # Effective width at this anchor.
+            if find_nearby_via(px, py, net_name) is not None:
+                eff_w = min(via_pad, width_mm)
+            elif pad_on_layer(pad.GetLayerSet(), layer_id):
+                eff_w = min(tomm(pad.GetSize().x), tomm(pad.GetSize().y), width_mm)
+            else:
+                eff_w = min(via_pad, width_mm)
+            seen.add(key); anchors.append((ax, ay, ref, eff_w))
 
     if len(anchors) < 2:
         return
 
     log.append(f"  [full-net] {net_name}: {len(anchors)} anchor(s)")
 
-    connected   = [(x,y,r) for x,y,r in anchors if     anchor_connected(x,y,net_name,layer_id)]
-    unconnected = [(x,y,r) for x,y,r in anchors if not anchor_connected(x,y,net_name,layer_id)]
+    connected   = [a for a in anchors if     anchor_connected(a[0],a[1],net_name,layer_id)]
+    unconnected = [a for a in anchors if not anchor_connected(a[0],a[1],net_name,layer_id)]
 
     if not unconnected:
         log.append(f"    all anchors already connected — skip")
@@ -648,23 +692,60 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
 
     log.append(f"    connected={len(connected)}  unconnected={len(unconnected)}")
 
-    # Prim's: repeatedly connect nearest unconnected anchor to connected set
-    while unconnected:
+    # Phase 1 — build the full MST edge list (Prim's, no routing yet).
+    mst_edges = []
+    _conn = list(connected); _unconn = list(unconnected)
+    while _unconn:
         best_dist = float("inf"); best_c = best_u = None
-        for c in connected:
-            for u in unconnected:
+        for c in _conn:
+            for u in _unconn:
                 d = math.hypot(c[0]-u[0], c[1]-u[1])
                 if d < best_dist:
                     best_dist = d; best_c = c; best_u = u
-        log.append(f"    {best_c[2]}({best_c[0]:.2f},{best_c[1]:.2f})"
+        mst_edges.append((best_c, best_u))
+        _conn.append(best_u); _unconn.remove(best_u)
+
+    # Phase 2 — compute node degrees to identify trunk vs stub edges.
+    degree = {}
+    for c, u in mst_edges:
+        ck = (round(c[0], 3), round(c[1], 3))
+        uk = (round(u[0], 3), round(u[1], 3))
+        degree[ck] = degree.get(ck, 0) + 1
+        degree[uk] = degree.get(uk, 0) + 1
+
+    # A stub edge has at least one leaf endpoint (degree == 1).  A single-edge
+    # MST (two anchors) is always a trunk — no stub distinction needed.
+    is_multi = len(mst_edges) > 1
+    trunk_edges = []; stub_edges = []
+    for c, u in mst_edges:
+        ck = (round(c[0], 3), round(c[1], 3))
+        uk = (round(u[0], 3), round(u[1], 3))
+        if is_multi and (degree.get(ck, 0) == 1 or degree.get(uk, 0) == 1):
+            stub_edges.append((c, u))
+        else:
+            trunk_edges.append((c, u))
+
+    # Phase 3 — route trunk edges first (wide, component keepout applied),
+    # then stub edges (narrowed to anchor's effective width, no keepout).
+    for best_c, best_u in trunk_edges:
+        log.append(f"    [trunk {width_mm}mm] {best_c[2]}({best_c[0]:.2f},{best_c[1]:.2f})"
                    f" → {best_u[2]}({best_u[0]:.2f},{best_u[1]:.2f})"
-                   f"  d={best_dist:.1f}mm")
-        # No neckdown between MST anchors — anchors are already fanout vias or
-        # pad-transition vias in open space, so full-width routing applies directly.
+                   f"  d={math.hypot(best_c[0]-best_u[0],best_c[1]-best_u[1]):.1f}mm")
         route_between(best_c[0], best_c[1], best_u[0], best_u[1],
                       net_name, width_mm, layer_id, None, None,
-                      via_pad, via_drill)
-        connected.append(best_u); unconnected.remove(best_u)
+                      via_pad, via_drill, comp_keepout_mm=COMP_KEEPOUT_MM)
+
+    for best_c, best_u in stub_edges:
+        ck = (round(best_c[0], 3), round(best_c[1], 3))
+        uk = (round(best_u[0], 3), round(best_u[1], 3))
+        leaf_eff_w = best_c[3] if degree.get(ck, 0) == 1 else best_u[3]
+        route_w = min(leaf_eff_w, width_mm)
+        log.append(f"    [stub {route_w:.2f}mm] {best_c[2]}({best_c[0]:.2f},{best_c[1]:.2f})"
+                   f" → {best_u[2]}({best_u[0]:.2f},{best_u[1]:.2f})"
+                   f"  d={math.hypot(best_c[0]-best_u[0],best_c[1]-best_u[1]):.1f}mm")
+        route_between(best_c[0], best_c[1], best_u[0], best_u[1],
+                      net_name, route_w, layer_id, None, None,
+                      via_pad, via_drill, comp_keepout_mm=0.0)
 
 
 # ── Main routing function ─────────────────────────────────────────────────────
