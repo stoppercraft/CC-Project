@@ -179,11 +179,14 @@ HS_ROUTE_WIDTHS = {
 #   In1.Cu — GND plane (F.Cu reference / In2.Cu top reference)
 #   In2.Cu — HS diff pairs, buried stripline (HDMI0, DP Alt Mode, MIPI1)
 #   In3.Cu — GND plane (In2.Cu bottom reference)
-#   In4.Cu — power planes (+5V / VMAIN)
-#   B.Cu   — CM5 fanout + slow signals + power switching
+#   In4.Cu — power trace routing (+5V / VMAIN and all switching converter rails)
+#   B.Cu   — CM5 fanout + slow signals
+# All components are SMD on F.Cu. Fanout vias are through-hole and reach In4.Cu
+# at no extra cost. In4.Cu is sandwiched between In3.Cu (GND) and In1.Cu (GND),
+# giving power traces a shielded return path on both sides.
 # power_alt: layer used when a power trace cannot route on the primary layer.
 LAYER_SCHEME = {
-    "power":     "B.Cu",   # switching loop power traces (primary layer)
+    "power":     "In4.Cu", # switching loop power traces (primary layer)
     "power_alt": "F.Cu",   # via-detour escape layer for blocked power traces
     "highspeed": "In2.Cu", # HS differential pairs (buried stripline)
     "gnd_ref":   "GND",    # GND reference net name for return via pairing
@@ -283,7 +286,7 @@ CLEARANCE_AUDIT = {
 SWITCHING_LOOPS = [
     {
         "name":               "TPS54561 buck — U1",
-        "layer":              "B.Cu",
+        "layer":              "In4.Cu",
         "sw_width_mm":        2.0,   # switching node (3–5A peak)
         "out_width_mm":       2.5,   # output rail (5A)
         "vin_width_mm":       2.0,   # input rail (3A)
@@ -302,7 +305,7 @@ SWITCHING_LOOPS = [
         "neckdown_max_mm":    15.0,  # max stub length before giving up
         # bootstrap_layer: route the bootstrap trace on the IC's own layer (F.Cu) — both U1
         # and C_BOOT1 are SMD on F.Cu and the trace is short/narrow (0.3mm). Keeping it on
-        # F.Cu avoids needing vias and prevents the BOOT route from blocking B.Cu power paths.
+        # F.Cu avoids needing vias and prevents the BOOT route from blocking In4.Cu power paths.
         "bootstrap_layer":  "F.Cu",
         # Via-detour: when direct routing is blocked, attempt layer change via LAYER_SCHEME[power_alt].
         # SW: via-detour enabled — C_BOOT1.1 physically traps a 2mm trace at U1.SW; B.Cu detour
