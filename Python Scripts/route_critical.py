@@ -575,7 +575,8 @@ def anchor_connected(ax, ay, net_name, layer_id):
 
 def route_between(x1, y1, x2, y2, net_name, width_mm, layer_id,
                   neck_w, neck_max, via_pad, via_drill, comp_keepout_mm=0.0):
-    """Route from (x1,y1) to (x2,y2) on layer_id at width_mm."""
+    """Route from (x1,y1) to (x2,y2) on layer_id at width_mm.
+    Returns the routed waypoint list on success, None on conflict."""
     global _conflict_count
     use_neck = neck_w and neck_max and neck_w < width_mm
     if use_neck:
@@ -622,7 +623,7 @@ def route_between(x1, y1, x2, y2, net_name, width_mm, layer_id,
         log.append(f"    CONFLICT: no path {net_name} ({x1:.2f},{y1:.2f})→({x2:.2f},{y2:.2f})"
                    f"  [{', '.join(bl) or 'none'}]")
         _conflict_count += 1
-        return False
+        return None
 
     if use_neck:
         if abs(ex1-x1) > 1e-6 or abs(ey1-y1) > 1e-6:
@@ -633,27 +634,28 @@ def route_between(x1, y1, x2, y2, net_name, width_mm, layer_id,
         add_track(waypoints[i][0], waypoints[i][1],
                   waypoints[i+1][0], waypoints[i+1][1],
                   width_mm, used_layer, net_name)
-    return True
+    return waypoints
 
 
 def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
                    neck_w, neck_max, tap_refs=None):
     """
-    Connect all pads on net_name using Prim's MST on layer_id.
+    Connect all pads on net_name using greedy Prim's MST on layer_id.
 
     tap_refs: optional list of component refs that are low-current taps (sense
-    resistors, test points) and should connect via narrow traces.  Any MST edge
-    where either endpoint's ref is in tap_refs routes at min(tap_eff_w, width_mm)
-    without component keepout.  All other edges (the spine) route at width_mm
-    with COMP_KEEPOUT_MM applied.  Spine edges are routed first while the board
-    is least congested.
+    resistors, test points).  Tap nodes connect narrow off the spine; all other
+    nodes (spine) connect at full width.
+
+    Spine-waypoint extension: after routing each trunk edge, its intermediate
+    waypoints are added to the spine candidate pool.  Subsequent trunk routes
+    can then start from a branch point on an already-routed trace rather than
+    re-traversing the same initial segment, eliminating trace overlaps when
+    multiple branches leave the same hub.
     """
     via_stub_w = neck_w or 0.4
 
     # Collect one anchor per unique position.
-    # Each anchor is (ax, ay, ref, eff_w) where eff_w is the effective trace
-    # width the anchor can accept: via copper diameter for fanout-via anchors,
-    # pad shortest side for direct-pad anchors.
+    # Each anchor is (ax, ay, ref, eff_w).
     anchors = []; seen = set()
     for fp in board.GetFootprints():
         ref = fp.GetReference()
@@ -674,7 +676,6 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
             key = (round(ax, 3), round(ay, 3))
             if key in seen:
                 continue
-            # Effective width at this anchor.
             if find_nearby_via(px, py, net_name) is not None:
                 eff_w = min(via_pad, width_mm)
             elif pad_on_layer(pad.GetLayerSet(), layer_id):
@@ -699,58 +700,68 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
 
     log.append(f"    connected={len(connected)}  unconnected={len(unconnected)}")
 
-    # Tap set: refs whose connections should be narrow (sense/test components).
     tap_set = set(tap_refs) if tap_refs else set()
 
-    # Phase 1 — build the full MST edge list (Prim's, no routing yet).
-    # Non-tap (spine) nodes must connect from other spine nodes so that full-width
-    # trunk traces never originate from a narrow tap via.  Tap nodes may connect
-    # from any connected node.
-    mst_edges = []
+    # Greedy Prim's with spine-waypoint extension.
+    # spine_pts: (x, y, anchor_or_None) — routable points on the spine.
+    # anchor is None for intermediate waypoints from previously routed trunk edges.
+    # Non-tap nodes must connect from spine_pts so trunk traces never originate
+    # from a narrow tap via.
     _conn = list(connected); _unconn = list(unconnected)
-    spine = [a for a in _conn if a[2] not in tap_set]
+    spine_pts = [(a[0], a[1], a)
+                 for a in _conn if a[2] not in tap_set]
+
+    tap_edges = []  # deferred: (src_xy, src_anchor_or_None, dest_anchor)
+
     while _unconn:
-        best_dist = float("inf"); best_c = best_u = None
+        best_dist = float("inf")
+        best_src_xy = None; best_src_anchor = None; best_u = None
         for u in _unconn:
-            sources = _conn if (u[2] in tap_set or not spine) else spine
-            for c in sources:
-                d = math.hypot(c[0]-u[0], c[1]-u[1])
+            u_is_tap = u[2] in tap_set
+            srcs = ([(a[0], a[1], a) for a in _conn]
+                    if (u_is_tap or not spine_pts)
+                    else spine_pts)
+            for sx, sy, sa in srcs:
+                d = math.hypot(sx - u[0], sy - u[1])
                 if d < best_dist:
-                    best_dist = d; best_c = c; best_u = u
-        mst_edges.append((best_c, best_u))
+                    best_dist = d
+                    best_src_xy = (sx, sy); best_src_anchor = sa; best_u = u
+
         _conn.append(best_u); _unconn.remove(best_u)
-        if best_u[2] not in tap_set:
-            spine.append(best_u)
 
-    # Phase 2 — classify edges as spine (full width) or tap (narrow).
-    # With the spine-preferred MST, the destination node (best_u) determines the
-    # classification: tap destination → narrow tap edge; spine destination → trunk.
-    trunk_edges = []; stub_edges = []
-    for c, u in mst_edges:
-        if u[2] in tap_set:
-            stub_edges.append((c, u))
+        if best_u[2] in tap_set:
+            tap_edges.append((best_src_xy, best_src_anchor, best_u))
         else:
-            trunk_edges.append((c, u))
+            sx, sy = best_src_xy
+            ux, uy = best_u[0], best_u[1]
+            src_lbl = (f"{best_src_anchor[2]}({sx:.2f},{sy:.2f})"
+                       if best_src_anchor else f"wpt({sx:.2f},{sy:.2f})")
+            log.append(f"    [trunk {width_mm}mm] {src_lbl}"
+                       f" → {best_u[2]}({ux:.2f},{uy:.2f})"
+                       f"  d={math.hypot(sx-ux, sy-uy):.1f}mm")
+            waypts = route_between(sx, sy, ux, uy, net_name, width_mm, layer_id,
+                                   None, None, via_pad, via_drill,
+                                   comp_keepout_mm=COMP_KEEPOUT_MM)
+            # Extend spine with destination and intermediate waypoints so the
+            # next trunk route can branch off the already-placed trace instead
+            # of re-traversing the shared initial segment.
+            spine_pts.append((ux, uy, best_u))
+            if waypts and len(waypts) > 2:
+                for wx, wy in waypts[1:-1]:
+                    spine_pts.append((wx, wy, None))
 
-    # Phase 3 — route trunk edges first (wide, component keepout applied),
-    # then stub edges (narrowed to anchor's effective width, no keepout).
-    for best_c, best_u in trunk_edges:
-        log.append(f"    [trunk {width_mm}mm] {best_c[2]}({best_c[0]:.2f},{best_c[1]:.2f})"
-                   f" → {best_u[2]}({best_u[0]:.2f},{best_u[1]:.2f})"
-                   f"  d={math.hypot(best_c[0]-best_u[0],best_c[1]-best_u[1]):.1f}mm")
-        route_between(best_c[0], best_c[1], best_u[0], best_u[1],
-                      net_name, width_mm, layer_id, None, None,
-                      via_pad, via_drill, comp_keepout_mm=COMP_KEEPOUT_MM)
-
-    for best_c, best_u in stub_edges:
-        # best_u is the tap destination; narrow to its effective width.
+    # Route tap edges (narrow, no component keepout).
+    for src_xy, src_anchor, best_u in tap_edges:
         route_w = min(best_u[3], width_mm)
-        log.append(f"    [tap {route_w:.2f}mm] {best_c[2]}({best_c[0]:.2f},{best_c[1]:.2f})"
-                   f" → {best_u[2]}({best_u[0]:.2f},{best_u[1]:.2f})"
-                   f"  d={math.hypot(best_c[0]-best_u[0],best_c[1]-best_u[1]):.1f}mm")
-        route_between(best_c[0], best_c[1], best_u[0], best_u[1],
-                      net_name, route_w, layer_id, None, None,
-                      via_pad, via_drill, comp_keepout_mm=0.0)
+        sx, sy = src_xy
+        ux, uy = best_u[0], best_u[1]
+        src_lbl = (f"{src_anchor[2]}({sx:.2f},{sy:.2f})"
+                   if src_anchor else f"wpt({sx:.2f},{sy:.2f})")
+        log.append(f"    [tap {route_w:.2f}mm] {src_lbl}"
+                   f" → {best_u[2]}({ux:.2f},{uy:.2f})"
+                   f"  d={math.hypot(sx-ux, sy-uy):.1f}mm")
+        route_between(sx, sy, ux, uy, net_name, route_w, layer_id,
+                      None, None, via_pad, via_drill, comp_keepout_mm=0.0)
 
 
 # ── Main routing function ─────────────────────────────────────────────────────
