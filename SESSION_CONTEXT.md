@@ -62,31 +62,34 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-**Last --apply: commit `7769f8f` — 2026-10-11 — 115 vias, crystal nets skip-only.**
-**DRC and board inspection NOT run after this apply.**
-# Updated 2026-10-11 (session 29).
+**Last --apply: commit `acfb3ff` — 2026-10-17 — 97 vias, 24 auto-skipped nets.**
+**DRC run 2026-10-17. Board inspection PASS.**
+# Updated 2026-10-17 (session 32).
 
 ### What to do next
 
-1. **Route and Verify** — run DRC and board inspection on current 115-via board.
-2. Investigate U2 fanout: `[face-fanout] U2 face (0,-1): 0 placed, 5 bus-stub segments` —
-   run debug_fanout.py with TARGET_REFS=['U2'] to verify U2 pad handling is correct.
-3. Fix compaction phantom clearance for skip-net pads (r=0 → full extension radius)
-4. Rewrite section 7c (axial + 45° diagonal — code-level plan in memory/project_u3_section7c_state.md)
-5. Run Route and Verify after section 7c verified in debug
+1. **Investigate annular_width DRC violation** before starting Part A:
+   - TOUCH_SCL via at (152.2404, 151.076) — annular ring 0.120mm vs 0.150mm minimum
+   - Determine if this is a script sizing bug or pre-existing board issue; fix if needed
+2. **Run route_critical.py** (Phase 10 Part A — switching loop routing)
+   - Script exists at `E:\Claude Projects\CC Project Folder\Python Scripts\route_critical.py`
+   - Config: SWITCHING_LOOPS in routing_config.py already populated
 
 Script execution order: route_fanout_vias.py → route_critical.py → route_highspeed.py
 
 ---
 
-## Phase 10 Routing Status (2026-10-11, commit 7769f8f)
+## Phase 10 Routing Status (2026-10-17, commit acfb3ff)
 
-**route_fanout_vias.py**: --apply run, DRC and board inspection pending.
-- 115 vias total (8 VIPPO + 107 side-exit), 2 implicit keepouts (escape=0)
-- Crystal nets LT_XTAL_IN / LT_XTAL_OUT now in FANOUT_VIA_SKIP_NETS — stub-only, no vias
-- U3 west face: 2 signal + 6 skip-net pads (pads 18/19 now skip-net)
-- U2 face (0,-1): 0 placed vias, 5 bus-stub segments — needs investigation
-- Section 7c skip-net stub extension not firing (order-of-operations issue, see IMMEDIATE NEXT ACTION)
+**route_fanout_vias.py**: --apply run, DRC run, board inspection PASS.
+- 97 vias total (1 via-in-pad + 96 side-exit), 1 implicit keepout (escape=0)
+- 24 nets auto-skipped by Section 0b pre-pass (topology criterion: same layer + locally connected)
+- Auto-skip criterion is now topology-only — hs_map and sw_map exclusions removed (commit f6e1ab7)
+- FANOUT_VIA_SKIP_NETS trimmed to 7 entries: GND, LT_1V2, LT_3V3, LT_XTAL_IN, LT_XTAL_OUT, STUSB_1V2, STUSB_2V7
+- DRC 2026-10-17: 503 clearance + 200 hole_clearance (all zone artifacts), 88 track_width (0.127mm HS neckdowns, expected), 13 track_dangling + 11 via_dangling (expected pre-routing), 8 starved_thermal, 199 silk_overlap + 199 silk_over_copper
+- **1 annular_width violation**: TOUCH_SCL via at (152.2404, 151.076), 0.120mm ring vs 0.150mm minimum — investigate before Part A
+- **1 solder_mask_bridge**: L1 mask polygon + +5V track — likely pre-existing, non-blocking
+- 227 unconnected items (expected — general signals not yet routed)
 
 **Fix applied this session (session 25):**
 Corridor-width pre-filter added before `_sandwiched_trace_stubs` call (~line 4042).
@@ -114,7 +117,7 @@ Result: U3/6, U3/7, U3/9, U3/10, U3/12, U3/13 all got vias placed.
 - Live board = script output saved on Frameline_Compute_V2.kicad_pcb (NOT reference zip)
 - Reference zip: `...\Frameline_Compute_V2-backups\Frameline_Compute_V2-2026-09-21_100203.zip`
 
-**route_critical.py**: not yet run. Run after fanout script 0 violations achieved.
+**route_critical.py**: not yet run. Investigate annular_width violation first, then run Part A.
 **route_highspeed.py**: not yet run. Run after route_critical.py.
 
 ---
