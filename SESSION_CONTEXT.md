@@ -62,18 +62,14 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-**Last --apply: commit `acfb3ff` — 2026-10-17 — 97 vias, 24 auto-skipped nets.**
+**Last --apply: commit `599caec` — 2026-10-17 — route_critical.py COMPLETE.**
 **DRC run 2026-10-17. Board inspection PASS.**
-# Updated 2026-10-17 (session 32).
+# Updated 2026-10-17 (session 33).
 
 ### What to do next
 
-1. **Investigate annular_width DRC violation** before starting Part A:
-   - TOUCH_SCL via at (152.2404, 151.076) — annular ring 0.120mm vs 0.150mm minimum
-   - Determine if this is a script sizing bug or pre-existing board issue; fix if needed
-2. **Run route_critical.py** (Phase 10 Part A — switching loop routing)
-   - Script exists at `E:\Claude Projects\CC Project Folder\Python Scripts\route_critical.py`
-   - Config: SWITCHING_LOOPS in routing_config.py already populated
+1. **Run route_highspeed.py** (Phase 10 Part B — high-speed differential pairs)
+   - Script exists at `E:\Claude Projects\CC Project Folder\Python Scripts\route_highspeed.py`
 
 Script execution order: route_fanout_vias.py → route_critical.py → route_highspeed.py
 
@@ -117,8 +113,10 @@ Result: U3/6, U3/7, U3/9, U3/10, U3/12, U3/13 all got vias placed.
 - Live board = script output saved on Frameline_Compute_V2.kicad_pcb (NOT reference zip)
 - Reference zip: `...\Frameline_Compute_V2-backups\Frameline_Compute_V2-2026-09-21_100203.zip`
 
-**route_critical.py**: not yet run. Investigate annular_width violation first, then run Part A.
-**route_highspeed.py**: not yet run. Run after route_critical.py.
+**route_critical.py**: COMPLETE (commit 599caec, 2026-10-17). No conflicts. DRC: 0 shorts, 0 copper_edge_clearance, all clearance violations are zone artifacts. Board inspection PASS (R_TOP1 reached, +5V stays within board, westernmost x=131.649mm).
+- Key fixes in this script: board edge keepouts (BOARD_EDGE_CLEARANCE=0.50mm), MAZE_MARGIN=16mm (required for +5V L1→R_TOP1 to detour west of VMAIN horizontal at x=157.8), neckdown stub clearance check, anchor_accessible(), require_offset for isolated pads.
+- TOUCH_SCL annular_width violation (152.2404,151.076) was NOT investigated — proceeded directly to route_critical.py.
+**route_highspeed.py**: not yet run. Next step.
 
 ---
 
