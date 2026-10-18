@@ -45,13 +45,14 @@ os.environ["PATH"] = KICAD_BIN + os.pathsep + os.environ.get("PATH", "")
 sys.path.insert(0, cfg.KICAD_SITE_PKGS)
 import pcbnew
 
-APPLY        = "--apply" in sys.argv
-CLEARANCE_MM = 0.15
-MAZE_RES_MM  = 0.1
-MAZE_MARGIN  = 8.0
-BEND_COST    = 4
-FANOUT_VIA_PROXIMITY = 4.0   # mm — search radius for fanout vias near a pad
-ANCHOR_CONN_TOL      = 0.05  # mm — tolerance for "already has a track endpoint here"
+APPLY                 = "--apply" in sys.argv
+CLEARANCE_MM          = 0.15
+BOARD_EDGE_CLEARANCE  = 0.50   # mm — copper-to-edge DRC minimum
+MAZE_RES_MM           = 0.1
+MAZE_MARGIN           = 16.0
+BEND_COST             = 4
+FANOUT_VIA_PROXIMITY  = 4.0    # mm — search radius for fanout vias near a pad
+ANCHOR_CONN_TOL       = 0.05   # mm — tolerance for "already has a track endpoint here"
 
 board     = pcbnew.LoadBoard(cfg.PCB_FILE)
 F_CU      = board.GetLayerID("F.Cu")
@@ -63,6 +64,13 @@ _conflict_count = 0
 # Virtual copper table: (x1, y1, x2, y2, half_width, layer_id, net_name)
 # Point obstacles (vias): x1==x2, y1==y2, half_width==via_radius.
 _run_obs: list = []
+
+# Board bounding box — used to keep routes inside the board outline.
+_bbox   = board.GetBoardEdgesBoundingBox()
+_BRD_X0 = pcbnew.ToMM(_bbox.GetLeft())
+_BRD_X1 = pcbnew.ToMM(_bbox.GetRight())
+_BRD_Y0 = pcbnew.ToMM(_bbox.GetTop())
+_BRD_Y1 = pcbnew.ToMM(_bbox.GetBottom())
 
 
 # ── Geometry helpers ──────────────────────────────────────────────────────────
@@ -164,6 +172,18 @@ def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None):
             continue
         obs.append((min(rx1, rx2) - rhw - c, min(ry1, ry2) - rhw - c,
                     max(rx1, rx2) + rhw + c, max(ry1, ry2) + rhw + c))
+
+    # Board edge keepouts — routes must stay BOARD_EDGE_CLEARANCE inside the outline.
+    # Obstacle boundary placed at the edge minus the required clearance; the maze/
+    # manhattan router's own half-width expansion then enforces the full rule.
+    ec  = BOARD_EDGE_CLEARANCE
+    INF = 9999.0
+    obs.extend([
+        (_BRD_X1 - ec, -INF,  INF,          INF ),   # right edge
+        (-INF,         -INF,  _BRD_X0 + ec, INF ),   # left edge
+        (-INF,         -INF,  INF,           _BRD_Y0 + ec),  # top edge
+        (-INF,          _BRD_Y1 - ec, INF,  INF ),   # bottom edge
+    ])
 
     return obs
 
