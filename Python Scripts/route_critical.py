@@ -50,6 +50,8 @@ CLEARANCE_MM = 0.15
 MAZE_RES_MM  = 0.1
 MAZE_MARGIN  = 8.0
 BEND_COST    = 4
+FANOUT_VIA_PROXIMITY = 4.0   # mm — search radius for fanout vias near a pad
+ANCHOR_CONN_TOL      = 0.05  # mm — tolerance for "already has a track endpoint here"
 
 board     = pcbnew.LoadBoard(cfg.PCB_FILE)
 F_CU      = board.GetLayerID("F.Cu")
@@ -353,10 +355,13 @@ def add_via(x, y, net_name, pad_mm, drill_mm):
 # ── Pad-to-layer transition via ───────────────────────────────────────────────
 
 def place_pad_via(ref, px, py, pad_layer, net_name, route_layer_id,
-                  via_pad, via_drill, stub_w):
+                  via_pad, via_drill, stub_w, *, require_offset=False):
     """
     Place a short stub on pad_layer from (px,py) to a nearby clear point, and
     a through via at that point.  Returns via (vx, vy) as the new routing anchor.
+
+    If require_offset=True and no clear offset position exists, returns None
+    instead of falling back to a via at the blocked pad center.
     """
     via_r = via_pad / 2.0
     c     = CLEARANCE_MM
@@ -380,6 +385,9 @@ def place_pad_via(ref, px, py, pad_layer, net_name, route_layer_id,
                 log.append(f"    pad-via {ref}: stub→({vx:.3f},{vy:.3f})")
                 return vx, vy
 
+    if require_offset:
+        log.append(f"    SKIP {ref}: no clear via offset — pad unreachable in full-net pass")
+        return None
     log.append(f"    WARNING: no offset via near {ref} — via at pad center")
     add_via(px, py, net_name, via_pad, via_drill)
     return px, py
@@ -417,6 +425,196 @@ def net_already_routed(net_name, layer_id):
         if track.GetNetname() == net_name and track.GetLayer() == layer_id:
             return True
     return False
+
+
+# ── Full-net routing helpers ──────────────────────────────────────────────────
+
+def find_nearby_via(px, py, net_name):
+    """Return (vx, vy) of nearest via on net_name within FANOUT_VIA_PROXIMITY, or None."""
+    best_dist = FANOUT_VIA_PROXIMITY
+    best = None
+    for track in board.GetTracks():
+        if track.GetClass() != "PCB_VIA" or track.GetNetname() != net_name:
+            continue
+        vx = tomm(track.GetPosition().x); vy = tomm(track.GetPosition().y)
+        d = math.hypot(vx - px, vy - py)
+        if d < best_dist:
+            best_dist = d; best = (vx, vy)
+    for rx1, ry1, rx2, ry2, _hw, _lyr, rnet in _run_obs:
+        if rnet != net_name or rx1 != rx2 or ry1 != ry2:
+            continue
+        d = math.hypot(rx1 - px, ry1 - py)
+        if d < best_dist:
+            best_dist = d; best = (rx1, ry1)
+    return best
+
+
+def get_pad_anchor(ref, pad, net_name, route_layer_id, via_pad, via_drill, stub_w,
+                   require_offset=False):
+    """
+    Return (x, y) routing anchor on route_layer_id, or None if unreachable.
+    Priority: nearby fanout via > pad on layer > new pad-transition via.
+
+    Using the fanout via as anchor means full-width power traces never need
+    to thread through tight-pitch pad grids — the fanout script already
+    handled that escape.
+
+    When require_offset=True, returns None instead of a blocked pad-center
+    anchor (used by route_net_full to skip truly unreachable pads such as
+    USB connector VBUS pins surrounded by GND shield copper).
+    """
+    px = tomm(pad.GetPosition().x); py = tomm(pad.GetPosition().y)
+    via = find_nearby_via(px, py, net_name)
+    if via is not None:
+        return via
+    ls = pad.GetLayerSet()
+    if pad_on_layer(ls, route_layer_id):
+        return (px, py)
+    if via_pad is not None:
+        return place_pad_via(ref, px, py, pad.GetLayer(), net_name,
+                             route_layer_id, via_pad, via_drill, stub_w,
+                             require_offset=require_offset)
+    return (px, py)
+
+
+def anchor_connected(ax, ay, net_name, layer_id):
+    """
+    True if (ax, ay) has a TRACK endpoint on net_name/layer_id.
+    Standalone fanout vias are intentionally excluded — a via on the net
+    without a connecting trace is not yet part of the routed network.
+    """
+    for rx1, ry1, rx2, ry2, _hw, rlyr, rnet in _run_obs:
+        if rnet != net_name or rlyr != layer_id:
+            continue
+        if rx1 == rx2 and ry1 == ry2:
+            continue  # point obstacle = via — skip
+        if (math.hypot(ax - rx1, ay - ry1) <= ANCHOR_CONN_TOL or
+                math.hypot(ax - rx2, ay - ry2) <= ANCHOR_CONN_TOL):
+            return True
+    for track in board.GetTracks():
+        if track.GetNetname() != net_name or track.GetClass() == "PCB_VIA":
+            continue
+        if track.GetLayer() == layer_id:
+            sx = tomm(track.GetStart().x); sy = tomm(track.GetStart().y)
+            ex = tomm(track.GetEnd().x);   ey = tomm(track.GetEnd().y)
+            if (math.hypot(ax - sx, ay - sy) <= ANCHOR_CONN_TOL or
+                    math.hypot(ax - ex, ay - ey) <= ANCHOR_CONN_TOL):
+                return True
+    return False
+
+
+def route_between(x1, y1, x2, y2, net_name, width_mm, layer_id,
+                  neck_w, neck_max, via_pad, via_drill):
+    """Route from (x1,y1) to (x2,y2) on layer_id at width_mm."""
+    global _conflict_count
+    use_neck = neck_w and neck_max and neck_w < width_mm
+    if use_neck:
+        ex1, ey1 = find_neckdown_exit(x1, y1, x2, y2, net_name,
+                                       width_mm, neck_w, neck_max, layer_id)
+        ex2, ey2 = find_neckdown_exit(x2, y2, x1, y1, net_name,
+                                       width_mm, neck_w, neck_max, layer_id)
+    else:
+        ex1, ey1 = x1, y1
+        ex2, ey2 = x2, y2
+
+    obstacles = build_obstacles(layer_id, {net_name})
+    waypoints  = route_manhattan(ex1, ey1, ex2, ey2, width_mm, obstacles)
+    used_layer = layer_id
+
+    if waypoints is None:
+        log.append(f"    [manhattan blocked] → maze")
+        waypoints = route_maze(ex1, ey1, ex2, ey2, width_mm, obstacles)
+
+    if waypoints is None and via_pad is not None and ALT_LAYER != layer_id:
+        alt_obs = build_obstacles(ALT_LAYER, {net_name})
+        alt_wp  = (route_manhattan(ex1, ey1, ex2, ey2, width_mm, alt_obs) or
+                   route_maze(ex1, ey1, ex2, ey2, width_mm, alt_obs))
+        if alt_wp is not None:
+            log.append(f"    [via-detour] → {board.GetLayerName(ALT_LAYER)}")
+            add_via(ex1, ey1, net_name, via_pad, via_drill)
+            waypoints = alt_wp; used_layer = ALT_LAYER
+            add_via(ex2, ey2, net_name, via_pad, via_drill)
+
+    if waypoints is None:
+        region = (min(ex1,ex2)-2, min(ey1,ey2)-2, max(ex1,ex2)+2, max(ey1,ey2)+2)
+        bl = identify_blockers(region, layer_id, {net_name})
+        log.append(f"    CONFLICT: no path {net_name} ({x1:.2f},{y1:.2f})→({x2:.2f},{y2:.2f})"
+                   f"  [{', '.join(bl) or 'none'}]")
+        _conflict_count += 1
+        return False
+
+    if use_neck:
+        if abs(ex1-x1) > 1e-6 or abs(ey1-y1) > 1e-6:
+            add_track(x1, y1, ex1, ey1, neck_w, layer_id, net_name)
+        if abs(ex2-x2) > 1e-6 or abs(ey2-y2) > 1e-6:
+            add_track(ex2, ey2, x2, y2, neck_w, layer_id, net_name)
+    for i in range(len(waypoints) - 1):
+        add_track(waypoints[i][0], waypoints[i][1],
+                  waypoints[i+1][0], waypoints[i+1][1],
+                  width_mm, used_layer, net_name)
+    return True
+
+
+def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
+                   neck_w, neck_max):
+    """
+    Connect all pads on net_name using Prim's MST on layer_id.
+    Pads with a nearby fanout via use the via as their routing anchor,
+    so full-width power traces never need to thread tight-pitch pad grids.
+    Only anchors not yet reachable from existing copper are routed.
+    """
+    stub_w = neck_w or 0.4
+
+    # Collect one anchor per unique position; skip pads with no accessible anchor
+    # (e.g. connector VBUS pins surrounded by GND shield copper — require_offset
+    # ensures place_pad_via returns None rather than a blocked pad-center position)
+    anchors = []; seen = set()
+    for fp in board.GetFootprints():
+        ref = fp.GetReference()
+        for pad in fp.Pads():
+            if pad.GetNetname() != net_name:
+                continue
+            anchor = get_pad_anchor(ref, pad, net_name, layer_id,
+                                    via_pad, via_drill, stub_w, require_offset=True)
+            if anchor is None:
+                continue
+            ax, ay = anchor
+            key = (round(ax, 3), round(ay, 3))
+            if key in seen:
+                continue
+            seen.add(key); anchors.append((ax, ay, ref))
+
+    if len(anchors) < 2:
+        return
+
+    log.append(f"  [full-net] {net_name}: {len(anchors)} anchor(s)")
+
+    connected   = [(x,y,r) for x,y,r in anchors if     anchor_connected(x,y,net_name,layer_id)]
+    unconnected = [(x,y,r) for x,y,r in anchors if not anchor_connected(x,y,net_name,layer_id)]
+
+    if not unconnected:
+        log.append(f"    all anchors already connected — skip")
+        return
+    if not connected:
+        connected = [unconnected.pop(0)]
+
+    log.append(f"    connected={len(connected)}  unconnected={len(unconnected)}")
+
+    # Prim's: repeatedly connect nearest unconnected anchor to connected set
+    while unconnected:
+        best_dist = float("inf"); best_c = best_u = None
+        for c in connected:
+            for u in unconnected:
+                d = math.hypot(c[0]-u[0], c[1]-u[1])
+                if d < best_dist:
+                    best_dist = d; best_c = c; best_u = u
+        log.append(f"    {best_c[2]}({best_c[0]:.2f},{best_c[1]:.2f})"
+                   f" → {best_u[2]}({best_u[0]:.2f},{best_u[1]:.2f})"
+                   f"  d={best_dist:.1f}mm")
+        route_between(best_c[0], best_c[1], best_u[0], best_u[1],
+                      net_name, width_mm, layer_id, neck_w, neck_max,
+                      via_pad, via_drill)
+        connected.append(best_u); unconnected.remove(best_u)
 
 
 # ── Main routing function ─────────────────────────────────────────────────────
@@ -550,37 +748,48 @@ for loop in cfg.SWITCHING_LOOPS:
     routed_nets = [n for n in (sw_net, out_net, vin_net, boot_net)
                    if net_already_routed(n, layer_id)]
     if routed_nets:
-        log.append(f"  SKIP loop — already routed on {loop['layer']}: {', '.join(routed_nets)}")
-        continue
+        log.append(f"  SKIP loop connections — already routed on {loop['layer']}: {', '.join(routed_nets)}")
+    else:
+        for cap in loop["input_caps"]:
+            log.append(f"  [VIN]  {vin_net}: {ic_ref} → {cap}")
+            route_connection(ic_ref, cap, vin_net, w_vin, layer_id, neck_w, neck_max,
+                             via_allowed=via_vin, via_pad=via_pad, via_drill=via_drill)
 
-    for cap in loop["input_caps"]:
-        log.append(f"  [VIN]  {vin_net}: {ic_ref} → {cap}")
-        route_connection(ic_ref, cap, vin_net, w_vin, layer_id, neck_w, neck_max,
-                         via_allowed=via_vin, via_pad=via_pad, via_drill=via_drill)
+        log.append(f"  [BOOT] {boot_net}: {ic_ref} → {boot_cap}")
+        route_connection(ic_ref, boot_cap, boot_net, w_boot, boot_layer_id, neck_w, neck_max,
+                         via_allowed=via_boot, via_pad=via_pad, via_drill=via_drill)
 
-    log.append(f"  [BOOT] {boot_net}: {ic_ref} → {boot_cap}")
-    route_connection(ic_ref, boot_cap, boot_net, w_boot, boot_layer_id, neck_w, neck_max,
-                     via_allowed=via_boot, via_pad=via_pad, via_drill=via_drill)
+        log.append(f"  [SW]   {sw_net}: {ic_ref} → {ind_ref}")
+        route_connection(ic_ref, ind_ref, sw_net, w_sw, layer_id, neck_w, neck_max,
+                         via_allowed=via_sw, via_pad=via_pad, via_drill=via_drill)
 
-    log.append(f"  [SW]   {sw_net}: {ic_ref} → {ind_ref}")
-    route_connection(ic_ref, ind_ref, sw_net, w_sw, layer_id, neck_w, neck_max,
-                     via_allowed=via_sw, via_pad=via_pad, via_drill=via_drill)
+        for cap in loop["output_caps"]:
+            log.append(f"  [OUT]  {out_net}: {ind_ref} → {cap}")
+            route_connection(ind_ref, cap, out_net, w_out, layer_id, neck_w, neck_max,
+                             via_allowed=via_out, via_pad=via_pad, via_drill=via_drill)
 
-    for cap in loop["output_caps"]:
-        log.append(f"  [OUT]  {out_net}: {ind_ref} → {cap}")
-        route_connection(ind_ref, cap, out_net, w_out, layer_id, neck_w, neck_max,
-                         via_allowed=via_out, via_pad=via_pad, via_drill=via_drill)
+        sw_pads = [(tomm(pad.GetPosition().x), tomm(pad.GetPosition().y))
+                   for fp in board.GetFootprints()
+                   for pad in fp.Pads()
+                   if pad.GetNetname() == sw_net]
+        if sw_pads:
+            xs = [p[0] for p in sw_pads]; ys = [p[1] for p in sw_pads]
+            area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+            status = "PASS" if area <= 50 else "FAIL"
+            log.append(f"  [SW-AREA] {max(xs)-min(xs):.1f}×{max(ys)-min(ys):.1f}mm"
+                       f"  ≈{area:.1f}mm²  [{status} ≤50mm²]")
 
-    sw_pads = [(tomm(pad.GetPosition().x), tomm(pad.GetPosition().y))
-               for fp in board.GetFootprints()
-               for pad in fp.Pads()
-               if pad.GetNetname() == sw_net]
-    if sw_pads:
-        xs = [p[0] for p in sw_pads]; ys = [p[1] for p in sw_pads]
-        area = (max(xs) - min(xs)) * (max(ys) - min(ys))
-        status = "PASS" if area <= 50 else "FAIL"
-        log.append(f"  [SW-AREA] {max(xs)-min(xs):.1f}×{max(ys)-min(ys):.1f}mm"
-                   f"  ≈{area:.1f}mm²  [{status} ≤50mm²]")
+    # Full-net routing pass: connect all remaining pads on each net using Prim's MST.
+    # Fanout vias serve as anchors for tight-pitch pads (SOM, BGA) so full-width
+    # power traces route between accessible via positions, not pad centers.
+    log.append(f"\n  [full-net pass — {loop['name']}]")
+    for net_name, w, lyr in [
+        (vin_net,  w_vin,  layer_id),
+        (sw_net,   w_sw,   layer_id),
+        (out_net,  w_out,  layer_id),
+        (boot_net, w_boot, boot_layer_id),
+    ]:
+        route_net_full(net_name, w, lyr, via_pad, via_drill, neck_w, neck_max)
 
 if APPLY:
     board.Save(cfg.PCB_FILE)
