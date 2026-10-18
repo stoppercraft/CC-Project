@@ -1686,8 +1686,11 @@ def _try_via_in_pad(via: PendingVia, min_annular_mm: float) -> bool:
         via.via_in_pad = True
         return True
 
+    # Only reduce annular ring if it still meets the DRC minimum (via.via_annular_mm).
+    # min_annular_mm is the fabricator absolute floor — lower than the DRC minimum,
+    # so using it here would produce vias that pass fab but fail DRC.
     needed = (pad_min - via.via_drill_mm) / 2.0
-    if needed >= min_annular_mm:
+    if needed >= via.via_annular_mm:
         via.via_annular_mm   = needed
         via.via_x, via.via_y = via.pad_x, via.pad_y
         via.via_in_pad       = True
