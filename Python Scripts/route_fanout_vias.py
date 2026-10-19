@@ -2018,9 +2018,40 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
             return (1 if is_single_pad else 0, _min_clear(pv))
 
         ranked = sorted(cluster, key=_primary_key)
+
+        def _via_overlaps_cluster_member(cand: "PendingVia") -> bool:
+            """True if cand's minimum-neckdown via lands inside any other
+            cluster member's pad_bbox.  Same-net copper touching is DRC-safe
+            but visually poor; a different primary produces a cleaner result."""
+            if cand.pad_bbox is None:
+                return False
+            _al0, _at0, _ar0, _ab0 = cand.pad_bbox
+            _edx_c, _edy_c = cand.escape_dx, cand.escape_dy
+            _vr = cand.via_drill_mm / 2.0 + cand.via_annular_mm
+            _half = max(
+                _edx_c * (_ar0 - cand.pad_x) + _edy_c * (_ab0 - cand.pad_y),
+                _edx_c * (_ar0 - cand.pad_x) + _edy_c * (_at0 - cand.pad_y),
+                _edx_c * (_al0 - cand.pad_x) + _edy_c * (_ab0 - cand.pad_y),
+                _edx_c * (_al0 - cand.pad_x) + _edy_c * (_at0 - cand.pad_y),
+                0.0)
+            _nk = _half + clearance + _vr
+            _vx = cand.pad_x + _edx_c * _nk
+            _vy = cand.pad_y + _edy_c * _nk
+            for _other in cluster:
+                if _other is cand or _other.pad_bbox is None:
+                    continue
+                _ol, _ot, _or, _ob = _other.pad_bbox
+                if (_vx + _vr > _ol and _vx - _vr < _or
+                        and _vy + _vr > _ot and _vy - _vr < _ob):
+                    return True
+            return False
+
         primary = next(
-            (pv for pv in ranked if _can_side_exit(pv, pad_obs, clearance)),
-            ranked[0]
+            (pv for pv in ranked
+             if _can_side_exit(pv, pad_obs, clearance)
+             and not _via_overlaps_cluster_member(pv)),
+            next((pv for pv in ranked if _can_side_exit(pv, pad_obs, clearance)),
+                 ranked[0])
         )
 
         # VIPPO preference: if primary pad is too narrow for the drill, prefer an
