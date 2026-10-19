@@ -62,19 +62,33 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-**Last debug run: commit `90693c9` — 2026-10-18 — face-overflow fallback in route_fanout_vias.py.**
-**Debug result: 0 implicit keepouts, J_DSI1/16 (TOUCH_INT) now escapes SOUTH.**
-# Updated 2026-10-18 (session 35).
+**Last debug run: commit `6b3fde7` — 2026-10-19 (session 36).**
+**Debug result: 99 vias, 0 keepouts, 0 crossing warnings.**
+# Updated 2026-10-19 (session 36).
 
 ### What to do next
 
-**route_fanout_vias.py debug/iteration still in progress.** The overflow fix resolved J_DSI1/16,
-but the following issues remain for J_DSI1:
-1. J_DSI1/7 ↔ J_DSI1/6 (MIPI1_D1_P/N) crossing — same-component, manual geometry fix needed
-2. J_DSI1/17 (TOUCH_SCL) and R_TRST1/1 (TOUCH_RST) still escape NORTH; user ref has them SOUTH
-   — separate escape_direction() algorithm issue, not the keepout problem
+**route_fanout_vias.py debug/iteration still in progress.** The script has NOT been run with
+--apply. Wait for user to direct next step (either --apply or more algorithm work).
 
-The script has NOT been run with --apply since the overflow fix. Wait for user to direct next step.
+#### Remaining J_DSI1 issues — ACCEPTED LIMITATIONS (no algorithmic fix)
+- J_DSI1/15 (TOUCH_RST) and J_DSI1/17 (TOUCH_SCL): still escape NORTH (via at y≈152.113).
+  User reference has them SOUTH (y≈154.3–154.7). Root cause: bbox center skewed south by
+  mounting pads → all signal pads read as "north of center" → edy=-1. Nearest destinations
+  (pull-up resistors at y≈151) are also north, so preferred_dir=north gives no improvement.
+  No general algorithmic fix without project-specific overrides (prohibited).
+- R_TRST1/1 (TOUCH_RST): now suppressed — shares J_DSI1/15's via. Not a separate issue.
+
+#### Fixed this session (session 36)
+1. **crossing() false positive (commit 014b367):** J_DSI1/7↔J_DSI1/6 (MIPI1_D1_P/N) no longer
+   reported as crossing. Root cause: _via_corner() used wrong stub geometry; replaced with
+   _route_45deg_stub() in _get_seg_coords inside crossing().
+2. **nearest-dest preferred_dir (commit 6b3fde7):** _all_net_pad_pos precompute +
+   _nearest_dest_dir() added. PRIORITY_OTHER pads now get preferred_dir = direction toward
+   nearest same-net other-footprint pad. Causes R_TRST1/1 to merge into J_DSI1/15's cluster
+   (shorter suppressed route). General benefit for other boards; didn't fix J_DSI1 TOUCH
+   directions because nearest destinations are north.
+
 Do NOT switch to route_critical.py or route_highspeed.py without explicit instruction.
 
 Script execution order: route_fanout_vias.py → route_critical.py (IN PROGRESS) → route_highspeed.py (BLOCKED)
@@ -83,13 +97,15 @@ Script execution order: route_fanout_vias.py → route_critical.py (IN PROGRESS)
 
 ## Phase 10 Routing Status (2026-10-17, commit acfb3ff)
 
-**route_fanout_vias.py**: Debug run (apply=False). Commit `90693c9` (2026-10-18).
-- **99 vias** (0 via-in-pad, 99 side-exit), **0 implicit keepouts** — improved from 97/2
+**route_fanout_vias.py**: Debug run (apply=False). Latest commit `6b3fde7` (2026-10-19, session 36).
+- **99 vias** (0 via-in-pad, 99 side-exit), **0 implicit keepouts**, **0 crossing warnings**
 - 24 nets auto-skipped by Section 0b pre-pass (topology-only)
 - FANOUT_VIA_SKIP_NETS: 7 entries (GND, LT_1V2, LT_3V3, LT_XTAL_IN, LT_XTAL_OUT, STUSB_1V2, STUSB_2V7)
-- Face-overflow fallback (1f-overflow): J_DSI1/16 (TOUCH_INT) flipped to south; J_USB_OUT1/A4 also resolved
-- **Not yet --apply'd** since overflow fix. DRC not re-run.
-- Remaining J_DSI1 issues: J_DSI1/7↔6 crossing (MIPI1_D1_P/N, same-component); TOUCH_SCL+RST still north
+- Face-overflow fallback (1f-overflow): J_DSI1/16 (TOUCH_INT) south; J_USB_OUT1/A4 resolved
+- crossing() fixed: uses _route_45deg_stub (not _via_corner) in _get_seg_coords
+- preferred_dir: PRIORITY_OTHER pads biased toward nearest same-net destination
+- **Not yet --apply'd**. DRC not re-run since 90693c9.
+- Remaining (accepted): J_DSI1/15 (TOUCH_RST) and J_DSI1/17 (TOUCH_SCL) still north — no fix
 
 **Fix applied this session (session 25):**
 Corridor-width pre-filter added before `_sandwiched_trace_stubs` call (~line 4042).
