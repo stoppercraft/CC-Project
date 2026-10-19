@@ -2038,30 +2038,17 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
                 if _vippo_alt is not None:
                     primary = _vippo_alt
 
-            # A secondary is suppressed if it is within threshold of the primary directly
-            # AND the same-layer trace between them is physically viable.
-            #
-            # Exception: if the secondary is on a radial fanout footprint (QFN/QFP) AND
-            # is on a DIFFERENT component than the primary, require it to be DIRECTLY
-            # within threshold.  Cross-component traces between QFN faces would have to
-            # cross under IC bodies — not routable.  Without this guard, the
-            # connected-component algorithm creates cross-face chains (e.g. U3/20 LT_3V3
-            # suppressed by R_RST1/1 via an intermediate hop) that suppress vias the
-            # reference board places independently.
-            #
-            # Same-component pads (sec.ref == pri.ref) always use chain-suppress:
-            # on-layer traces within a single footprint's pad ring are always routable
-            # (going around the IC body), so sharing is valid regardless of distance.
-            #
-            # Non-radial-fanout secondaries (bypass caps, connectors, resistors) retain
-            # full chain-suppress behavior — a central bypass cap can suppress a chain of
-            # nearby power-supply pads even if the outermost is >2×threshold from the primary.
+            # All cross-component suppression requires direct proximity to the primary
+            # (pad-edge to pad-edge < threshold), not just reachability through a chain.
+            # A large intermediate pad (e.g. a bulk cap with a tall polygon) can otherwise
+            # bridge two geometrically distant pad groups into one BFS component, causing
+            # pads 8+ mm from the primary to lose their vias.
+            # Same-component pads use chain-suppress: traces within one footprint's pad
+            # ring are always routable.
             def _should_suppress(sec: "PendingVia", pri: "PendingVia") -> bool:
                 if fp_by_ref is not None and sec.ref != pri.ref:
-                    fp_sec = fp_by_ref.get(sec.ref)
-                    if fp_sec is not None and _is_radial_fanout_fp(fp_sec):
-                        return _pad_edge_dist(sec, pri) < _threshold
-                return True  # same-component or non-radial: chain-suppress
+                    return _pad_edge_dist(sec, pri) < _threshold
+                return True  # same-component: chain-suppress is valid
 
             _both_ic = False
             if len(cluster) == 2 and fp_by_ref is not None:
