@@ -5378,6 +5378,36 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             if _p2.GetNetname() and not _p2.GetNetname().startswith("unconnected")
         }
 
+    # Per-net pad positions across all footprints — used to bias PRIORITY_OTHER
+    # escape directions toward the nearest same-net destination.
+    _all_net_pad_pos: Dict[str, List[Tuple[str, float, float]]] = {}
+    for _fp3 in board.GetFootprints():
+        _ref3 = _fp3.GetReference()
+        for _p3 in _fp3.Pads():
+            _nn3 = _p3.GetNetname()
+            if _nn3 and not _nn3.startswith("unconnected"):
+                _all_net_pad_pos.setdefault(_nn3, []).append(
+                    (_ref3, pcbnew.ToMM(_p3.GetPosition().x),
+                     pcbnew.ToMM(_p3.GetPosition().y))
+                )
+
+    def _nearest_dest_dir(net: str, src_ref: str, spx: float, spy: float
+                          ) -> Optional[Tuple[float, float]]:
+        """Unit vector toward the nearest same-net pad on a different footprint."""
+        best_d2 = float('inf')
+        bx = by = 0.0
+        for _dref, _dx, _dy in _all_net_pad_pos.get(net, []):
+            if _dref == src_ref:
+                continue
+            d2 = (_dx - spx) ** 2 + (_dy - spy) ** 2
+            if d2 < best_d2:
+                best_d2 = d2
+                bx, by = _dx, _dy
+        if best_d2 == float('inf') or best_d2 < 1e-6:
+            return None
+        dist = best_d2 ** 0.5
+        return ((bx - spx) / dist, (by - spy) / dist)
+
     pending: List[PendingVia] = []
 
     for fp in board.GetFootprints():
@@ -5428,7 +5458,12 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                     continue
             drill, annular  = via_params(priority)
             floor, nl, mx   = neckdown_params(priority, net_name)
-            dx, dy          = escape_direction(fp, pad, nl)
+            _pref: Optional[Tuple[float, float]] = None
+            if priority == PRIORITY_OTHER:
+                _ppx = pcbnew.ToMM(pad.GetPosition().x)
+                _ppy = pcbnew.ToMM(pad.GetPosition().y)
+                _pref = _nearest_dest_dir(net_name, ref, _ppx, _ppy)
+            dx, dy          = escape_direction(fp, pad, nl, preferred_dir=_pref)
             pw              = pcbnew.ToMM(pad.GetSizeX())
             ph              = pcbnew.ToMM(pad.GetSizeY())
             _net_obj  = pad.GetNet()
