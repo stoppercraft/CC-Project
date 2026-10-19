@@ -1537,15 +1537,21 @@ def crossing(va: PendingVia, vb: PendingVia, clearance: float = 0.0) -> bool:
     combined = hw_a + cl + hw_b
 
     def _get_seg_coords(via: PendingVia):
-        cx, cy = _via_corner(via)
-        pts = [(via.pad_x, via.pad_y), (cx, cy)]
-        if not (abs(via.via_x - cx) < 1e-4 and abs(via.via_y - cy) < 1e-4):
-            pts.append((via.via_x, via.via_y))
-        result = []
-        for i in range(len(pts) - 1):
-            if math.hypot(pts[i+1][0] - pts[i][0], pts[i+1][1] - pts[i][1]) > 1e-6:
-                result.append((pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1]))
-        return result
+        # Use actual 45-degree stub geometry so the crossing check matches what
+        # debug_fanout and the apply pass will emit.  _via_corner() assumed the
+        # stub goes axially all the way to neckdown depth before turning, but
+        # _route_45deg_stub (axial_first) only goes axially for
+        # (axial - |lateral|), producing a shorter axial segment.  For face-fanout
+        # pads the difference is large enough to produce false crossing positives.
+        segs = _route_45deg_stub(via.pad_x, via.pad_y,
+                                  via.via_x, via.via_y,
+                                  via.escape_dx, via.escape_dy,
+                                  axial_first=True)
+        if not segs:
+            d = math.hypot(via.via_x - via.pad_x, via.via_y - via.pad_y)
+            if d > 1e-6:
+                return [(via.pad_x, via.pad_y, via.via_x, via.via_y)]
+        return segs
 
     segs_a = _get_seg_coords(va)
     segs_b = _get_seg_coords(vb)
