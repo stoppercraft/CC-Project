@@ -6426,6 +6426,106 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                   f"{len(_sg_bus_stubs)} bus-stub segments")
 
     # ------------------------------------------------------------------
+    # 1f-overflow. Face-overflow retry on opposite escape direction
+    # ------------------------------------------------------------------
+    # After sub-fanout, pads marked implicit_keepout + face_fanout_assigned
+    # were rejected because their original face was too crowded.  For each
+    # such pad, probe the OPPOSITE cardinal direction.  If that corridor is
+    # clear (_side_exit_score > 0), permanently flip the escape direction,
+    # clear the keepout/assigned flags, and re-run _face_fanout on the new
+    # face.  This is general: any connector on any board benefits from it.
+
+    _overflow_by_face: Dict[tuple, List[PendingVia]] = defaultdict(list)
+    for _pv_of in pending:
+        if not (_pv_of.implicit_keepout and _pv_of.face_fanout_assigned):
+            continue
+        if not _pv_of.net_name or _pv_of.net_name.startswith('unconnected-'):
+            continue
+        _of_orig_edx = _pv_of.escape_dx
+        _of_orig_edy = _pv_of.escape_dy
+        _pv_of.escape_dx = -_of_orig_edx
+        _pv_of.escape_dy = -_of_orig_edy
+        _of_score = _side_exit_score(_pv_of, _pad_obs_early, clearance)
+        if _of_score > 0:
+            _pv_of.implicit_keepout = False
+            _pv_of.face_fanout_assigned = False
+            _fkey_of = (_pv_of.ref,
+                        round(_pv_of.escape_dx, 4),
+                        round(_pv_of.escape_dy, 4))
+            _overflow_by_face[_fkey_of].append(_pv_of)
+            print(f"  [overflow-fanout] {_pv_of.ref}/{_pv_of.pad_num} "
+                  f"({_pv_of.net_name}): flipped to "
+                  f"({_pv_of.escape_dx:.0f},{_pv_of.escape_dy:.0f})")
+        else:
+            _pv_of.escape_dx = _of_orig_edx
+            _pv_of.escape_dy = _of_orig_edy
+
+    for _fkey_of, _face_grp_of in _overflow_by_face.items():
+        _of_ref   = _fkey_of[0]
+        _of_edx   = _fkey_of[1]
+        _of_edy   = _fkey_of[2]
+        _of_ldx, _of_ldy = -_of_edy, _of_edx
+
+        # Try to find tight sub-groups; fall back to whole group if none.
+        _of_sub_groups = _find_tight_subgroups(_face_grp_of, _coopt_sg_clr)
+        if not _of_sub_groups:
+            _of_sub_groups = [_face_grp_of]
+
+        for _of_sg_pads in _of_sub_groups:
+            if not _of_sg_pads:
+                continue
+
+            _of_sg_ca = _of_sg_pads[0].via_annular_mm
+            _of_sg_pending_set = {(_pv.ref, _pv.pad_num) for _pv in pending}
+
+            _fp_of = _fp_by_ref.get(_of_ref)
+            _of_all_skip = _build_skip_net_pvs(
+                _fp_of, _of_sg_pads, _of_edx, _of_edy, skip_nets)
+            _of_min_lat = min(v.pad_x * _of_ldx + v.pad_y * _of_ldy for v in _of_sg_pads)
+            _of_max_lat = max(v.pad_x * _of_ldx + v.pad_y * _of_ldy for v in _of_sg_pads)
+            _of_lat_margin = 1.0
+            _of_skip_pvs = [
+                pv for pv in _of_all_skip
+                if (_of_min_lat - _of_lat_margin
+                    <= pv.pad_x * _of_ldx + pv.pad_y * _of_ldy
+                    <= _of_max_lat + _of_lat_margin)
+            ]
+            _of_pads_aug = _of_sg_pads + _of_skip_pvs
+            _of_fc = (sum(v.pad_x * _of_ldx + v.pad_y * _of_ldy for v in _of_pads_aug)
+                      / len(_of_pads_aug))
+            _of_pads_aug.sort(key=lambda v: -abs(v.pad_x * _of_ldx + v.pad_y * _of_ldy - _of_fc))
+
+            print(f"  [overflow-fanout] {_of_ref} face ({_of_edx:.0f},{_of_edy:.0f}): "
+                  f"{len(_of_sg_pads)} signal + {len(_of_skip_pvs)} skip-net pad(s)")
+
+            _of_assignments = _face_fanout(
+                _of_pads_aug, _pad_obs_early, _of_sg_pending_set,
+                _coopt_sg_clr, _of_sg_ca, _of_edx, _of_edy,
+            )
+            _of_bus_stubs = getattr(_face_fanout, '_last_bus_stubs', [])
+
+            for _pv_of2, _vx_of, _vy_of in _of_assignments:
+                _pv_of2.via_x = _vx_of
+                _pv_of2.via_y = _vy_of
+                _pv_of2.face_fanout_assigned = True
+                _pv_of2.neckdown_len_mm = math.hypot(
+                    _vx_of - _pv_of2.pad_x, _vy_of - _pv_of2.pad_y)
+
+            for _pv_of2 in _of_pads_aug:
+                if _pv_of2.implicit_keepout:
+                    _pv_of2.face_fanout_assigned = True
+
+            _run._all_skip_net_pvs.extend(_of_skip_pvs)
+            _run._all_bus_stubs.extend(_of_bus_stubs)
+            _run._all_bus_stubs_by_ref.setdefault(_of_ref, []).extend(_of_bus_stubs)
+
+            _placed_of = len(_of_assignments)
+            _ko_of = sum(1 for v in _of_pads_aug if v.implicit_keepout)
+            print(f"  [overflow-fanout] {_of_ref} face ({_of_edx:.0f},{_of_edy:.0f}): "
+                  f"{_placed_of} placed, {_ko_of} keepout, "
+                  f"{len(_of_bus_stubs)} bus-stub segments")
+
+    # ------------------------------------------------------------------
     # 1g. Greedy per-face via stagger (delegated to _stagger_vias)
     # ------------------------------------------------------------------
     _stagger_vias(pending, _ca, clearance)
