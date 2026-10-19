@@ -2054,6 +2054,58 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
                  ranked[0])
         )
 
+        # Lateral offset search: if the primary's minimum-neckdown via still
+        # lands inside a cluster member's footprint bbox (e.g. two facing pads
+        # where swapping primary doesn't help), try shifting the via laterally
+        # (perpendicular to the escape direction) in increasing steps until it
+        # clears all cluster bboxes AND passes the foreign-pad obstacle check.
+        # Result is written to corner_lat_offset_mm so _stagger_vias picks it up.
+        if primary.pad_bbox is not None and _via_overlaps_cluster_member(primary):
+            _edx_ls, _edy_ls = primary.escape_dx, primary.escape_dy
+            _ldx_ls, _ldy_ls = -_edy_ls, _edx_ls
+            _vr_ls = primary.via_drill_mm / 2.0 + primary.via_annular_mm
+            _al_ls, _at_ls, _ar_ls, _ab_ls = primary.pad_bbox
+            _half_ls = max(
+                _edx_ls * (_ar_ls - primary.pad_x) + _edy_ls * (_ab_ls - primary.pad_y),
+                _edx_ls * (_ar_ls - primary.pad_x) + _edy_ls * (_at_ls - primary.pad_y),
+                _edx_ls * (_al_ls - primary.pad_x) + _edy_ls * (_ab_ls - primary.pad_y),
+                _edx_ls * (_al_ls - primary.pad_x) + _edy_ls * (_at_ls - primary.pad_y),
+                0.0)
+            _nk_ls = _half_ls + clearance + _vr_ls
+            _bvx_ls = primary.pad_x + _edx_ls * _nk_ls
+            _bvy_ls = primary.pad_y + _edy_ls * _nk_ls
+
+            def _lat_pos_ok(lat):
+                _vx = _bvx_ls + _ldx_ls * lat
+                _vy = _bvy_ls + _ldy_ls * lat
+                for _oth in cluster:
+                    if _oth is primary or _oth.pad_bbox is None:
+                        continue
+                    _ol, _ot, _or_, _ob = _oth.pad_bbox
+                    if (_vx + _vr_ls > _ol and _vx - _vr_ls < _or_
+                            and _vy + _vr_ls > _ot and _vy - _vr_ls < _ob):
+                        return False
+                return _clear_of_obs(_vx, _vy, 0.0, pad_obs,
+                                     primary.ref, primary.pad_x, primary.pad_y,
+                                     excl_net=primary.net_name,
+                                     via_copper=_vr_ls,
+                                     via_net=primary.net_name,
+                                     via_netclass=primary.netclass,
+                                     via_ref=primary.ref)
+
+            _found_lat = None
+            for _ls_lat in (0.2, -0.2, 0.4, -0.4, 0.6, -0.6, 0.8, -0.8,
+                            1.0, -1.0, 1.2, -1.2, 1.5, -1.5, 2.0, -2.0):
+                if _lat_pos_ok(_ls_lat):
+                    _found_lat = _ls_lat
+                    break
+
+            if _found_lat is not None:
+                primary.corner_lat_offset_mm = _found_lat
+                print(f"  [lat-shift] {primary.ref}/{primary.pad_num} "
+                      f"({primary.net_name}): lateral {_found_lat:+.2f}mm "
+                      f"to clear cluster member")
+
         # VIPPO preference: if primary pad is too narrow for the drill, prefer an
         # immediately adjacent pad that can host a via-in-pad.
         if min(primary.pad_w_mm, primary.pad_h_mm) < primary.via_drill_mm:
