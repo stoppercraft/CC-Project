@@ -1962,6 +1962,128 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
 
     to_suppress: set = set()
 
+    _min_ann_s = cfg.CLEARANCE_AUDIT.get("via_annular_ring_min_mm", 0.10)
+    _vippo_adj_mm = 2.0
+
+    def _min_clear(pv: "PendingVia") -> float:
+        if pv.pad_bbox is not None:
+            al, at, ar, ab_ = pv.pad_bbox
+            edx, edy = pv.escape_dx, pv.escape_dy
+            half_ext = (max(edx, 0) * (ar - pv.pad_x)
+                        + max(-edx, 0) * (pv.pad_x - al)
+                        + max(edy, 0) * (ab_ - pv.pad_y)
+                        + max(-edy, 0) * (pv.pad_y - at))
+        else:
+            half_ext = min(pv.pad_w_mm, pv.pad_h_mm) / 2.0
+        return half_ext + pv.via_drill_mm / 2.0 + pv.via_annular_mm
+
+    def _process_cluster(cluster: list) -> None:
+        """
+        Select a primary for this cluster, suppress its direct neighbors, then
+        recursively sub-cluster remaining pads so distant pad groups (connected
+        only through a bridge pad) each get their own independent primary rather
+        than all being silently un-suppressed or sharing a via that is too far away.
+        """
+        if len(cluster) < 2:
+            return
+
+        # Two-IC direct-route check: exactly 2 multi-pin IC pads on the same
+        # net/layer directly within threshold — no via needed at either.
+        if len(cluster) == 2 and fp_by_ref is not None:
+            _pad_counts = []
+            _has_radial = False
+            for pv in cluster:
+                _fp = fp_by_ref.get(pv.ref)
+                if _fp is not None:
+                    _pad_counts.append(sum(1 for _ in _fp.Pads()))
+                    if _is_radial_fanout_fp(_fp):
+                        _has_radial = True
+                else:
+                    _pad_counts.append(0)
+            if all(c >= 5 for c in _pad_counts) and _has_radial:
+                for pv in cluster:
+                    to_suppress.add(id(pv))
+                names = ", ".join(f"{pv.ref}/{pv.pad_num}" for pv in cluster)
+                print(f"  [direct-route] {names} ({cluster[0].net_name}): "
+                      f"2-IC-pad cluster — same-layer direct connection, no via needed")
+                return
+
+        # Select primary: least-constrained pad that can side-exit.
+        ranked = sorted(cluster, key=_min_clear)
+        primary = next(
+            (pv for pv in ranked if _can_side_exit(pv, pad_obs, clearance)),
+            ranked[0]
+        )
+
+        # VIPPO preference: if primary pad is too narrow for the drill, prefer an
+        # immediately adjacent pad that can host a via-in-pad.
+        if min(primary.pad_w_mm, primary.pad_h_mm) < primary.via_drill_mm:
+            _vippo_alt = next(
+                (pv for pv in ranked
+                 if pv is not primary
+                 and min(pv.pad_w_mm, pv.pad_h_mm) >= pv.via_drill_mm + 2.0 * _min_ann_s
+                 and _pad_edge_dist(pv, primary) <= _vippo_adj_mm),
+                None
+            )
+            if _vippo_alt is not None:
+                primary = _vippo_alt
+
+        # Suppress direct neighbors of primary.
+        # Cross-component: requires direct pad-edge proximity to the primary
+        # (not just chain reachability) so that a large bridge pad cannot pull
+        # geometrically distant pad groups under one primary.
+        # Same-component: always suppressed (traces within one footprint are routable).
+        def _directly_suppressible(sec: "PendingVia", pri: "PendingVia") -> bool:
+            if fp_by_ref is not None and sec.ref != pri.ref:
+                return _pad_edge_dist(sec, pri) < _threshold
+            return True
+
+        secondaries = [pv for pv in cluster if pv is not primary
+                       and _directly_suppressible(pv, primary)]
+        for sec in secondaries:
+            to_suppress.add(id(sec))
+
+        sec_names = ", ".join(f"{pv.ref}/{pv.pad_num}" for pv in secondaries)
+        if sec_names:
+            print(f"  [share] {primary.ref}/{primary.pad_num} "
+                  f"({primary.net_name}): via shared — suppressed {sec_names}")
+
+        # Recursively sub-cluster pads not claimed by this primary.
+        # This handles the case where a bridge pad connected two distant groups:
+        # the bridge and its close neighbors become secondaries, while the far
+        # group re-forms its own cluster and gets its own primary.
+        suppressed_ids = {id(s) for s in secondaries}
+        remaining = [pv for pv in cluster if pv is not primary
+                     and id(pv) not in suppressed_ids]
+        if len(remaining) < 2:
+            return
+
+        n_r = len(remaining)
+        sub_adj: List[List[int]] = [[] for _ in range(n_r)]
+        for i in range(n_r):
+            for j in range(i + 1, n_r):
+                if _pad_edge_dist(remaining[i], remaining[j]) < _threshold:
+                    sub_adj[i].append(j)
+                    sub_adj[j].append(i)
+
+        sub_vis = [False] * n_r
+        for start in range(n_r):
+            if sub_vis[start]:
+                continue
+            sub_comp: List[int] = []
+            queue = [start]
+            while queue:
+                cur = queue.pop(0)
+                if sub_vis[cur]:
+                    continue
+                sub_vis[cur] = True
+                sub_comp.append(cur)
+                for nb in sub_adj[cur]:
+                    if not sub_vis[nb]:
+                        queue.append(nb)
+            if len(sub_comp) >= 2:
+                _process_cluster([remaining[i] for i in sub_comp])
+
     for _key, pvs in by_group.items():
         if len(pvs) < 2:
             continue
@@ -1970,8 +2092,7 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
         adj: List[List[int]] = [[] for _ in range(n)]
         for i in range(n):
             for j in range(i + 1, n):
-                d = _pad_edge_dist(pvs[i], pvs[j])
-                if d < _threshold:
+                if _pad_edge_dist(pvs[i], pvs[j]) < _threshold:
                     adj[i].append(j)
                     adj[j].append(i)
 
@@ -1991,102 +2112,8 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
                     if not visited[nb]:
                         queue.append(nb)
 
-            if len(component) < 2:
-                continue
-
-            cluster = [pvs[i] for i in component]
-
-            # Sort by ascending min-clear (original behaviour: least-constrained
-            # pad first), then pick the first that can actually side-exit.
-            def _min_clear(pv: "PendingVia") -> float:
-                if pv.pad_bbox is not None:
-                    al, at, ar, ab_ = pv.pad_bbox
-                    edx, edy = pv.escape_dx, pv.escape_dy
-                    half_ext = (max(edx, 0) * (ar - pv.pad_x)
-                                + max(-edx, 0) * (pv.pad_x - al)
-                                + max(edy, 0) * (ab_ - pv.pad_y)
-                                + max(-edy, 0) * (pv.pad_y - at))
-                else:
-                    half_ext = min(pv.pad_w_mm, pv.pad_h_mm) / 2.0
-                return half_ext + pv.via_drill_mm / 2.0 + pv.via_annular_mm
-            ranked = sorted(cluster, key=_min_clear)
-            primary = next(
-                (pv for pv in ranked if _can_side_exit(pv, pad_obs, clearance)),
-                ranked[0]  # fallback: least-constrained geometry
-            )
-
-            # Post-selection fix: if the chosen primary cannot physically host any
-            # via (pad_min < via_drill — the drill itself won't fit), and a
-            # VIPPO-capable pad exists on the same net IMMEDIATELY ADJACENT to the
-            # primary, prefer it.  This handles the case where a narrow IC pad
-            # (e.g. 0.250mm QFN signal pad) cannot receive a via, while an
-            # immediately-adjacent bypass cap can via-in-pad with reduced annular.
-            #
-            # The adjacency guard (_vippo_adj_mm) prevents this from firing on
-            # distant same-net pads (e.g. another IC 4-5mm away on the same signal
-            # net) — those should each resolve independently, not inherit the via.
-            _min_ann_s = cfg.CLEARANCE_AUDIT.get("via_annular_ring_min_mm", 0.10)
-            _vippo_adj_mm = 2.0
-            if min(primary.pad_w_mm, primary.pad_h_mm) < primary.via_drill_mm:
-                _vippo_alt = next(
-                    (pv for pv in ranked
-                     if pv is not primary
-                     and min(pv.pad_w_mm, pv.pad_h_mm) >= pv.via_drill_mm + 2.0 * _min_ann_s
-                     and _pad_edge_dist(pv, primary) <= _vippo_adj_mm),
-                    None
-                )
-                if _vippo_alt is not None:
-                    primary = _vippo_alt
-
-            # All cross-component suppression requires direct proximity to the primary
-            # (pad-edge to pad-edge < threshold), not just reachability through a chain.
-            # A large intermediate pad (e.g. a bulk cap with a tall polygon) can otherwise
-            # bridge two geometrically distant pad groups into one BFS component, causing
-            # pads 8+ mm from the primary to lose their vias.
-            # Same-component pads use chain-suppress: traces within one footprint's pad
-            # ring are always routable.
-            def _should_suppress(sec: "PendingVia", pri: "PendingVia") -> bool:
-                if fp_by_ref is not None and sec.ref != pri.ref:
-                    return _pad_edge_dist(sec, pri) < _threshold
-                return True  # same-component: chain-suppress is valid
-
-            _both_ic = False
-            if len(cluster) == 2 and fp_by_ref is not None:
-                # Remove both pads only when both are on multi-pin IC packages
-                # (≥5 pads each) AND at least one is a radial fanout IC (QFN/QFP).
-                # This handles IC signal pairs that connect directly on-layer
-                # (e.g. QFN pad ↔ nearby SOIC pad on the same signal net) while
-                # preserving via placement for passive-to-IC pairs (bypass caps,
-                # pull-ups, TVS diodes) where the IC may still need a layer transition.
-                _pad_counts = []
-                _has_radial = False
-                for pv in cluster:
-                    _fp = fp_by_ref.get(pv.ref)
-                    if _fp is not None:
-                        _pad_counts.append(sum(1 for _ in _fp.Pads()))
-                        if _is_radial_fanout_fp(_fp):
-                            _has_radial = True
-                    else:
-                        _pad_counts.append(0)
-                _both_ic = all(c >= 5 for c in _pad_counts) and _has_radial
-
-            if _both_ic:
-                # Exactly two IC pads on the same net/layer directly within threshold:
-                # no via needed at either — the router connects them on-layer.
-                for pv in cluster:
-                    to_suppress.add(id(pv))
-                names = ", ".join(f"{pv.ref}/{pv.pad_num}" for pv in cluster)
-                print(f"  [direct-route] {names} ({cluster[0].net_name}): "
-                      f"2-IC-pad cluster — same-layer direct connection, no via needed")
-            else:
-                secondaries = [pv for pv in cluster if pv is not primary
-                               and _should_suppress(pv, primary)]
-                for sec in secondaries:
-                    to_suppress.add(id(sec))
-
-                sec_names = ", ".join(f"{pv.ref}/{pv.pad_num}" for pv in secondaries)
-                print(f"  [share] {primary.ref}/{primary.pad_num} "
-                      f"({primary.net_name}): via shared — suppressed {sec_names}")
+            if len(component) >= 2:
+                _process_cluster([pvs[i] for i in component])
 
     return [pv for pv in pending if id(pv) not in to_suppress]
 
