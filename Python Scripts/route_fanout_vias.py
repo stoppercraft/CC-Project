@@ -1883,18 +1883,20 @@ def _pad_edge_dist(a: "PendingVia", b: "PendingVia") -> float:
     return math.hypot(dx, dy)
 
 
-def _can_side_exit(pv: "PendingVia", pad_obs: List[Obstacle],
-                   clearance: float) -> bool:
+def _side_exit_score(pv: "PendingVia", pad_obs: List[Obstacle],
+                     clearance: float) -> int:
     """
-    Quick test: can this pad place a side-exit via (outside its own pad copper)
-    given only pad obstacles?  Tries a few sample points along the escape axis.
-    Does not consider existing tracks — this is a first-order feasibility check.
+    Count how many of the five sample distances along pv's escape axis produce
+    a clear via position against pad obstacles.  0 means no valid position
+    exists (same as _can_side_exit returning False).  Higher scores indicate a
+    more open corridor and are used to rank proximity-cluster primaries: a pad
+    that can place its via at many distances is a better shared-via anchor than
+    one whose corridor is narrow or nearly blocked.
     """
     edx, edy   = pv.escape_dx, pv.escape_dy
     via_copper = pv.via_drill_mm / 2.0 + pv.via_annular_mm
     via_r_clr  = via_copper + clearance
 
-    # Compute minimum distance from pad centre to clear the pad copper bbox.
     if pv.pad_bbox is not None:
         al, at, ar, ab_ = pv.pad_bbox
         half_ext = (max(edx, 0) * (ar - pv.pad_x)
@@ -1903,23 +1905,33 @@ def _can_side_exit(pv: "PendingVia", pad_obs: List[Obstacle],
                     + max(-edy, 0) * (pv.pad_y - at))
     else:
         half_ext = min(pv.pad_w_mm, pv.pad_h_mm) / 2.0
-    min_dist = half_ext + via_copper  # must be at least this far from pad centre
+    min_dist = half_ext + via_copper
 
+    score = 0
     for dist in (min_dist + 0.05, min_dist + 0.3, min_dist + 0.8,
                  min_dist + 1.5, min_dist + 3.0):
         if dist > pv.max_search_mm:
             break
         vx = pv.pad_x + edx * dist
         vy = pv.pad_y + edy * dist
-        # Exclude own pad from obstacle check (stub connects them).
         if _clear_of_obs(vx, vy, via_r_clr, pad_obs,
                          pv.ref, pv.pad_x, pv.pad_y,
                          excl_net=pv.net_name,
                          via_copper=via_copper,
                          via_net=pv.net_name, via_netclass=pv.netclass,
                          via_ref=pv.ref):
-            return True
-    return False
+            score += 1
+    return score
+
+
+def _can_side_exit(pv: "PendingVia", pad_obs: List[Obstacle],
+                   clearance: float) -> bool:
+    """
+    Quick test: can this pad place a side-exit via (outside its own pad copper)
+    given only pad obstacles?  Tries a few sample points along the escape axis.
+    Does not consider existing tracks — this is a first-order feasibility check.
+    """
+    return _side_exit_score(pv, pad_obs, clearance) > 0
 
 
 def _suppress_proximity_via_sharing(pending: List["PendingVia"],
@@ -2012,10 +2024,101 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
         # Single-pad footprints (test points, fiducials) are deprioritized —
         # they are dead-end probe pads, not routing nodes, so a multi-pad
         # component always makes a better via anchor.
+        #
+        # _directly_suppressible defined early so _sup_count can use it in _primary_key.
+        def _directly_suppressible(sec: "PendingVia", pri: "PendingVia") -> bool:
+            if fp_by_ref is not None and sec.ref != pri.ref:
+                return _pad_edge_dist(sec, pri) < _threshold
+            return True
+
+        # Corridor quality score: count how many sample distances along the
+        # escape axis are clear of pad obstacles.  Prefer candidates with more
+        # open corridors — a pad hemmed in by a neighbouring component's pads
+        # may become an implicit keepout during placement, making it a poor
+        # shared-via anchor even though it technically passes _can_side_exit.
+        _scores = {id(pv): _side_exit_score(pv, pad_obs, clearance)
+                   for pv in cluster}
+
+        # Suppressible-count: how many cluster members this candidate can
+        # directly claim as secondaries.  Prefer primaries that cover more
+        # members — especially important for same-component clusters where
+        # same-ref pads are always suppressible (no distance check), so a
+        # same-ref candidate beats a cross-component one when coverage differs.
+        _sup_count = {
+            id(pv): sum(1 for other in cluster
+                        if other is not pv and _directly_suppressible(other, pv))
+            for pv in cluster
+        }
+
+        # Opposite-direction blocker pre-check: collect minimum-neckdown via
+        # positions of all non-cluster pending vias (not yet suppressed).
+        # Face_fanout can co-stagger same-direction vias; opposite-direction
+        # (head-on) pairs cannot be resolved and will produce implicit keepouts
+        # at runtime if a blocked candidate is selected as primary.
+        _cluster_ids = {id(pv) for pv in cluster}
+        _nc_minvia: List[tuple] = []  # (vx, vy, vr, edx, edy)
+        for _nc_pv in pending:
+            if id(_nc_pv) in _cluster_ids or id(_nc_pv) in to_suppress:
+                continue
+            _nc_edx, _nc_edy = _nc_pv.escape_dx, _nc_pv.escape_dy
+            _nc_vr = _nc_pv.via_drill_mm / 2.0 + _nc_pv.via_annular_mm
+            if _nc_pv.pad_bbox is not None:
+                _nc_al, _nc_at, _nc_ar, _nc_ab = _nc_pv.pad_bbox
+                _nc_half = max(
+                    _nc_edx * (_nc_ar - _nc_pv.pad_x) + _nc_edy * (_nc_ab - _nc_pv.pad_y),
+                    _nc_edx * (_nc_ar - _nc_pv.pad_x) + _nc_edy * (_nc_at - _nc_pv.pad_y),
+                    _nc_edx * (_nc_al - _nc_pv.pad_x) + _nc_edy * (_nc_ab - _nc_pv.pad_y),
+                    _nc_edx * (_nc_al - _nc_pv.pad_x) + _nc_edy * (_nc_at - _nc_pv.pad_y),
+                    0.0)
+            else:
+                _nc_half = min(_nc_pv.pad_w_mm, _nc_pv.pad_h_mm) / 2.0
+            _nc_nk = _nc_half + clearance + _nc_vr
+            _nc_minvia.append((_nc_pv.pad_x + _nc_edx * _nc_nk,
+                               _nc_pv.pad_y + _nc_edy * _nc_nk,
+                               _nc_vr, _nc_edx, _nc_edy))
+
+        def _opposite_blocker(cand: "PendingVia") -> bool:
+            """True if any non-cluster pending via has opposite escape direction
+            and its minimum-neckdown via position conflicts with cand's minimum
+            via.  Opposite-direction (head-on) pairs cannot be resolved by
+            face_fanout; selecting such a candidate as primary will make it an
+            implicit keepout at runtime."""
+            if cand.pad_bbox is None:
+                return False
+            _al, _at, _ar, _ab = cand.pad_bbox
+            _edx, _edy = cand.escape_dx, cand.escape_dy
+            _vr = cand.via_drill_mm / 2.0 + cand.via_annular_mm
+            _half = max(
+                _edx * (_ar - cand.pad_x) + _edy * (_ab - cand.pad_y),
+                _edx * (_ar - cand.pad_x) + _edy * (_at - cand.pad_y),
+                _edx * (_al - cand.pad_x) + _edy * (_ab - cand.pad_y),
+                _edx * (_al - cand.pad_x) + _edy * (_at - cand.pad_y),
+                0.0)
+            _nk = _half + clearance + _vr
+            _cvx = cand.pad_x + _edx * _nk
+            _cvy = cand.pad_y + _edy * _nk
+            for _ovx, _ovy, _ovr, _oedx, _oedy in _nc_minvia:
+                if _edx * _oedx + _edy * _oedy >= 0:
+                    continue  # same or perpendicular — face_fanout can stagger
+                if math.hypot(_cvx - _ovx, _cvy - _ovy) < _vr + _ovr + clearance:
+                    return True
+            return False
+
         def _primary_key(pv: "PendingVia"):
             fp = fp_by_ref.get(pv.ref) if fp_by_ref else None
-            is_single_pad = fp is not None and sum(1 for _ in fp.Pads()) == 1
-            return (1 if is_single_pad else 0, _min_clear(pv))
+            n_pads = sum(1 for _ in fp.Pads()) if fp else 99
+            is_single_pad = fp is not None and n_pads == 1
+            # Opposite-direction head-on blocker: deprioritise candidates whose
+            # minimum via conflicts with a non-cluster pending via of opposite
+            # escape direction — these cannot be resolved at runtime.
+            # Among non-blocked candidates, prefer smaller footprints (n_pads)
+            # so connector pads are not crowded; score breaks n_pads ties.
+            return (1 if is_single_pad else 0,
+                    1 if _opposite_blocker(pv) else 0,
+                    -_sup_count[id(pv)],
+                    n_pads,
+                    -_scores[id(pv)],
+                    _min_clear(pv))
 
         ranked = sorted(cluster, key=_primary_key)
 
@@ -2048,9 +2151,9 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
 
         primary = next(
             (pv for pv in ranked
-             if _can_side_exit(pv, pad_obs, clearance)
+             if _scores[id(pv)] > 0
              and not _via_overlaps_cluster_member(pv)),
-            next((pv for pv in ranked if _can_side_exit(pv, pad_obs, clearance)),
+            next((pv for pv in ranked if _scores[id(pv)] > 0),
                  ranked[0])
         )
 
@@ -2120,15 +2223,6 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
                 primary = _vippo_alt
 
         # Suppress direct neighbors of primary.
-        # Cross-component: requires direct pad-edge proximity to the primary
-        # (not just chain reachability) so that a large bridge pad cannot pull
-        # geometrically distant pad groups under one primary.
-        # Same-component: always suppressed (traces within one footprint are routable).
-        def _directly_suppressible(sec: "PendingVia", pri: "PendingVia") -> bool:
-            if fp_by_ref is not None and sec.ref != pri.ref:
-                return _pad_edge_dist(sec, pri) < _threshold
-            return True
-
         secondaries = [pv for pv in cluster if pv is not primary
                        and _directly_suppressible(pv, primary)]
         for sec in secondaries:
@@ -5029,12 +5123,21 @@ def _stagger_vias(pending: List[PendingVia], ca: dict, clearance: float) -> None
     _sg_clr  = ca["via_clearance_mm"]
 
     _face_groups: Dict[tuple, List[PendingVia]] = defaultdict(list)
+    _ff_anchors: Dict[tuple, List[PendingVia]] = defaultdict(list)
     for _pv_sg in pending:
+        _fkey_sg = (_pv_sg.ref, _pv_sg.escape_dx, _pv_sg.escape_dy)
         if _pv_sg.face_fanout_assigned:
-            continue
-        _face_groups[(_pv_sg.ref,
-                      _pv_sg.escape_dx,
-                      _pv_sg.escape_dy)].append(_pv_sg)
+            # Track face-fanout vias so non-face-fanout pads on the same face
+            # can account for them as fixed obstacles in the stagger computation.
+            _ff_anchors[_fkey_sg].append(_pv_sg)
+        else:
+            _face_groups[_fkey_sg].append(_pv_sg)
+
+    # Dummy object with corner_lat_offset_mm=0 used for face-fanout obstacles
+    # whose lateral position is already baked into the pad_lat entry below.
+    class _FfObstacle:
+        corner_lat_offset_mm = 0.0
+    _ff_obs = _FfObstacle()
 
     for _fkey, _fgrp in _face_groups.items():
         _edx_sg, _edy_sg = _fkey[1], _fkey[2]
@@ -5043,7 +5146,15 @@ def _stagger_vias(pending: List[PendingVia], ca: dict, clearance: float) -> None
         _fgrp.sort(key=lambda pv: pv.pad_x * _ldx_sg + pv.pad_y * _ldy_sg)
 
         # _placed: list of (pad_lat, assigned_neckdown, via_copper_d, pv_object)
+        # Pre-populate with face-fanout vias from the same ref+direction: their
+        # via positions are fixed and must constrain non-face-fanout neckdowns.
         _placed_sg: List[tuple] = []
+        for _ff_pv in _ff_anchors.get(_fkey, []):
+            _ff_via_lat = _ff_pv.via_x * _ldx_sg + _ff_pv.via_y * _ldy_sg
+            _ff_via_axial = ((_ff_pv.via_x - _ff_pv.pad_x) * _edx_sg
+                             + (_ff_pv.via_y - _ff_pv.pad_y) * _edy_sg)
+            _ff_vpd = (_sg_hvpd if _ff_pv.priority == PRIORITY_HS else _sg_nvpd)
+            _placed_sg.append((_ff_via_lat, _ff_via_axial, _ff_vpd, _ff_obs))
 
         for _pv_sg in _fgrp:
             _pad_lat_sg = _pv_sg.pad_x * _ldx_sg + _pv_sg.pad_y * _ldy_sg
