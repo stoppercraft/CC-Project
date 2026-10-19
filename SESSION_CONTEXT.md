@@ -62,15 +62,20 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-**Last --apply: commit `f73309c` — 2026-10-18 — route_critical.py spine+taps overlap fix.**
-**Board inspection PASS: 25 +5V B.Cu tracks, zero overlapping traces.**
-# Updated 2026-10-18 (session 34).
+**Last debug run: commit `90693c9` — 2026-10-18 — face-overflow fallback in route_fanout_vias.py.**
+**Debug result: 0 implicit keepouts, J_DSI1/16 (TOUCH_INT) now escapes SOUTH.**
+# Updated 2026-10-18 (session 35).
 
 ### What to do next
 
-**Continue iterating on route_critical.py.** User has more things to work on. Examine current output, ask what they want to tackle next.
+**route_fanout_vias.py debug/iteration still in progress.** The overflow fix resolved J_DSI1/16,
+but the following issues remain for J_DSI1:
+1. J_DSI1/7 ↔ J_DSI1/6 (MIPI1_D1_P/N) crossing — same-component, manual geometry fix needed
+2. J_DSI1/17 (TOUCH_SCL) and R_TRST1/1 (TOUCH_RST) still escape NORTH; user ref has them SOUTH
+   — separate escape_direction() algorithm issue, not the keepout problem
 
-Do NOT move to route_highspeed.py. The user explicitly stated we work on route_critical.py step by step until it produces the results they are looking for. Only move to the next script when the user explicitly says so.
+The script has NOT been run with --apply since the overflow fix. Wait for user to direct next step.
+Do NOT switch to route_critical.py or route_highspeed.py without explicit instruction.
 
 Script execution order: route_fanout_vias.py → route_critical.py (IN PROGRESS) → route_highspeed.py (BLOCKED)
 
@@ -78,15 +83,13 @@ Script execution order: route_fanout_vias.py → route_critical.py (IN PROGRESS)
 
 ## Phase 10 Routing Status (2026-10-17, commit acfb3ff)
 
-**route_fanout_vias.py**: --apply run, DRC run, board inspection PASS.
-- 97 vias total (1 via-in-pad + 96 side-exit), 1 implicit keepout (escape=0)
-- 24 nets auto-skipped by Section 0b pre-pass (topology criterion: same layer + locally connected)
-- Auto-skip criterion is now topology-only — hs_map and sw_map exclusions removed (commit f6e1ab7)
-- FANOUT_VIA_SKIP_NETS trimmed to 7 entries: GND, LT_1V2, LT_3V3, LT_XTAL_IN, LT_XTAL_OUT, STUSB_1V2, STUSB_2V7
-- DRC 2026-10-17: 503 clearance + 200 hole_clearance (all zone artifacts), 88 track_width (0.127mm HS neckdowns, expected), 13 track_dangling + 11 via_dangling (expected pre-routing), 8 starved_thermal, 199 silk_overlap + 199 silk_over_copper
-- **1 annular_width violation**: TOUCH_SCL via at (152.2404, 151.076), 0.120mm ring vs 0.150mm minimum — investigate before Part A
-- **1 solder_mask_bridge**: L1 mask polygon + +5V track — likely pre-existing, non-blocking
-- 227 unconnected items (expected — general signals not yet routed)
+**route_fanout_vias.py**: Debug run (apply=False). Commit `90693c9` (2026-10-18).
+- **99 vias** (0 via-in-pad, 99 side-exit), **0 implicit keepouts** — improved from 97/2
+- 24 nets auto-skipped by Section 0b pre-pass (topology-only)
+- FANOUT_VIA_SKIP_NETS: 7 entries (GND, LT_1V2, LT_3V3, LT_XTAL_IN, LT_XTAL_OUT, STUSB_1V2, STUSB_2V7)
+- Face-overflow fallback (1f-overflow): J_DSI1/16 (TOUCH_INT) flipped to south; J_USB_OUT1/A4 also resolved
+- **Not yet --apply'd** since overflow fix. DRC not re-run.
+- Remaining J_DSI1 issues: J_DSI1/7↔6 crossing (MIPI1_D1_P/N, same-component); TOUCH_SCL+RST still north
 
 **Fix applied this session (session 25):**
 Corridor-width pre-filter added before `_sandwiched_trace_stubs` call (~line 4042).
