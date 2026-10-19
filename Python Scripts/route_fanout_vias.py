@@ -2009,7 +2009,15 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
                 return
 
         # Select primary: least-constrained pad that can side-exit.
-        ranked = sorted(cluster, key=_min_clear)
+        # Single-pad footprints (test points, fiducials) are deprioritized —
+        # they are dead-end probe pads, not routing nodes, so a multi-pad
+        # component always makes a better via anchor.
+        def _primary_key(pv: "PendingVia"):
+            fp = fp_by_ref.get(pv.ref) if fp_by_ref else None
+            is_single_pad = fp is not None and sum(1 for _ in fp.Pads()) == 1
+            return (1 if is_single_pad else 0, _min_clear(pv))
+
+        ranked = sorted(cluster, key=_primary_key)
         primary = next(
             (pv for pv in ranked if _can_side_exit(pv, pad_obs, clearance)),
             ranked[0]
