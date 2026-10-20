@@ -5551,7 +5551,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             drill, annular  = via_params(priority)
             floor, nl, mx   = neckdown_params(priority, net_name)
             _pref: Optional[Tuple[float, float]] = None
-            if priority == PRIORITY_OTHER:
+            if priority in (PRIORITY_OTHER, PRIORITY_HS):
                 _ppx = pcbnew.ToMM(pad.GetPosition().x)
                 _ppy = pcbnew.ToMM(pad.GetPosition().y)
                 _pref = _nearest_dest_dir(net_name, ref, _ppx, _ppy)
@@ -6082,7 +6082,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             for p in pads:
                 if p['ref'] != dest_ref:
                     continue
-                if ylo <= p['cy'] <= yhi and xlo <= p['cx'] <= xhi:
+                if ylo < p['cy'] < yhi and xlo <= p['cx'] <= xhi:
                     return True
         return False
 
@@ -6111,9 +6111,16 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _partner = _hs_by_ref_net.get((_hpv.ref, _partner_net)) if _partner_net else None
 
         if _partner is not None and id(_partner) not in _hs_direct_ids:
-            if _hs_nearest_dist(_partner) < _hs_threshold:
+            _partner_bp = _hs_nearest_bp(_partner)
+            _partner_ok = (_hs_nearest_dist(_partner) < _hs_threshold and
+                           not (_partner_bp is not None and
+                                _hs_corridor_blocked(_partner, _partner_bp)))
+            if _partner_ok:
                 _hs_direct_ids.add(id(_hpv))
                 _hs_direct_ids.add(id(_partner))
+            else:
+                # Partner is corridor-blocked — direct-route this pad independently.
+                _hs_direct_ids.add(id(_hpv))
         else:
             # No named partner in pending — remove independently.
             _hs_direct_ids.add(id(_hpv))
