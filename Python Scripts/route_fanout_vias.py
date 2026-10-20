@@ -211,6 +211,25 @@ def _is_small_discrete(fp) -> bool:
     return smd_count <= 6
 
 
+def _is_elongated_connector(fp) -> bool:
+    """True if the footprint is an elongated connector (aspect ratio > 3.0).
+
+    Used to guard the 2-IC-pad direct-route path: a connector pad that lands
+    in a 2-pad cluster with a radial IC should not be suppressed via the
+    direct-route shortcut — it still needs an escape stub.  Threshold 3.0
+    safely separates USB-C / FPC / SOM connectors from SOIC/DFN IC packages.
+    """
+    if fp is None:
+        return False
+    bbox = fp.GetBoundingBox()
+    w = pcbnew.ToMM(bbox.GetWidth())
+    h = pcbnew.ToMM(bbox.GetHeight())
+    mn = min(w, h)
+    if mn < 1e-3:
+        return False
+    return max(w, h) / mn > 3.0
+
+
 def _is_radial_fanout_fp(fp) -> bool:
     """True if the footprint is a compact multi-sided IC needing radial escape.
 
@@ -2032,7 +2051,9 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
                         _has_radial = True
                 else:
                     _pad_counts.append(0)
-            if all(c >= 5 for c in _pad_counts) and _has_radial:
+            _has_connector = any(_is_elongated_connector(fp_by_ref.get(pv.ref))
+                                 for pv in cluster)
+            if all(c >= 5 for c in _pad_counts) and _has_radial and not _has_connector:
                 for pv in cluster:
                     to_suppress.add(id(pv))
                 names = ", ".join(f"{pv.ref}/{pv.pad_num}" for pv in cluster)
@@ -2134,6 +2155,7 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
             # Among non-blocked candidates, prefer smaller footprints (n_pads)
             # so connector pads are not crowded; score breaks n_pads ties.
             return (1 if is_single_pad else 0,
+                    1 if _is_small_discrete(fp) else 0,
                     1 if _opposite_blocker(pv) else 0,
                     -_sup_count[id(pv)],
                     n_pads,
