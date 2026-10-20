@@ -197,6 +197,20 @@ def classify(net_name: str,
 # Escape direction
 # ---------------------------------------------------------------------------
 
+def _is_small_discrete(fp) -> bool:
+    """True if the footprint is a small passive/discrete (≤6 SMD pads).
+
+    Used to gate the hs-direct-route filter: only small discretes (series
+    resistors, ESD diodes, caps) may be direct-routed without a via.
+    Connectors and ICs with many pads always need escape stubs.
+    """
+    if fp is None:
+        return False
+    smd_count = sum(1 for p in fp.Pads()
+                    if p.GetAttribute() == pcbnew.PAD_ATTRIB_SMD)
+    return smd_count <= 6
+
+
 def _is_radial_fanout_fp(fp) -> bool:
     """True if the footprint is a compact multi-sided IC needing radial escape.
 
@@ -5990,8 +6004,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
     for _hpv in _hs_pv_list:
         if id(_hpv) in _hs_direct_ids:
             continue
-        # Connector pads always need stubs to escape — never direct-route them.
-        if _is_radial_fanout_fp(_fp_by_ref.get(_hpv.ref)):
+        # Only small discretes (≤6 SMD pads) may be direct-routed without a via.
+        # Connectors and multi-pad ICs always need escape stubs.
+        if not _is_small_discrete(_fp_by_ref.get(_hpv.ref)):
             continue
         if _hs_nearest_dist(_hpv) >= _hs_threshold:
             continue
