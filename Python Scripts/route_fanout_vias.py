@@ -4211,22 +4211,6 @@ def _face_fanout(
             if _d < _thr:
                 return ("stub_only", _d, _thr, "via-vs-stub-only", None)
 
-        # 4c. via circle vs stubs of placed pads (dual of section 5b)
-        # Section 5b checks current STUB vs placed VIA CIRCLES.  The reverse —
-        # current VIA CIRCLE vs placed STUBS — is not covered by 4b (which only
-        # checks _stub_only_segs, not pads in pending_set).  Without this check,
-        # a via can land within clearance of a previously-placed stub trace and
-        # produce a DRC violation even though the algorithm reports 0 keepouts.
-        for j, pc in enumerate(placed):
-            if pc['net'] == v.net_name:
-                continue
-            for _x1s, _y1s, _x2s, _y2s in pc['segs']:
-                _d   = _dist_to_segment(vx, vy, _x1s, _y1s, _x2s, _y2s)
-                _thr = via_copper_r + pc['stub_hw'] + CLEARANCE
-                if _d < _thr:
-                    return (f"stub[{pc['pad_num']}]", _d, _thr,
-                            "via-vs-placed-stub", j)
-
         # 5. stub checks — actual routed 45° segments
         segs = _route_45deg_stub(v.pad_x, v.pad_y, vx, vy, edx, edy, axial_first=True)
         if not segs:
@@ -4349,25 +4333,6 @@ def _face_fanout(
             _stub_only_segs.append((_px, _py, _ex, _ey,
                                     _pnw / 2.0, _v.net_name))
 
-    # Pre-compute routing corridor reservations for skip-net pads.
-    # Skip-net pads (e.g. LT_1V2) are in pending_set so they appear in
-    # signal_indices and are absent from _stub_only_segs.  Signal pads
-    # evaluated earlier in the outside-in order see no obstacle for these
-    # corridors, allowing their vias to land within clearance of the
-    # skip-net pad's future route path.  Pre-computing the axial corridor
-    # for every skip-net face pad as a fixed obstacle makes the check
-    # independent of placement order.
-    _skipnet_corridor_segs = []
-    for _i, _v in enumerate(face_pads):
-        if not _v.net_name or _v.net_name not in _skip_nets:
-            continue
-        if (_v.ref, _v.pad_num) not in pending_set:
-            continue
-        _cx2 = _v.pad_x + edx * FANOUT_DEPTH_CAP
-        _cy2 = _v.pad_y + edy * FANOUT_DEPTH_CAP
-        _skipnet_corridor_segs.append((_v.pad_x, _v.pad_y, _cx2, _cy2,
-                                       _v.neckdown_w_mm / 2.0, _v.net_name))
-
     sig_n        = len(signal_indices)
     lat_offs_arr = [0.0] * sig_n
     # Bus escape pads start with a minimum lateral offset so _route_45deg_stub
@@ -4468,23 +4433,8 @@ def _face_fanout(
 
         elif blk_j is not None:
             blocking_gi = placed[blk_j]['pad_i']
-            _blk_net = placed[blk_j].get('net', '')
             if blocking_gi in global_to_si:
-                _bsi = global_to_si[blocking_gi]
-                if _blk_net in _skip_nets:
-                    # Blocker is a skip-net pad — its axial stub sits at its
-                    # pad's lateral coord regardless of lat_off, so pushing it
-                    # never clears the corridor.  Redirect: push the failing
-                    # pad's HS partner outward instead so the pair widens.
-                    _fail_partner = hs_partner.get(fail_global_i)
-                    if (_fail_partner is not None
-                            and _fail_partner not in keepout_set
-                            and _fail_partner in global_to_si):
-                        lat_offs_arr[global_to_si[_fail_partner]] += STEP_MM
-                    else:
-                        lat_offs_arr[_bsi] += STEP_MM
-                else:
-                    lat_offs_arr[_bsi] += STEP_MM
+                lat_offs_arr[global_to_si[blocking_gi]] += STEP_MM
             else:
                 keepout_set.add(fail_global_i)
                 if fail_global_i in hs_partner:
@@ -4676,12 +4626,7 @@ def _face_fanout(
                 # via CLOSER to the partner's pad than the initial position. This permits
                 # convergent inward movement (e.g. U3/DP_AUX_N closing toward DP_AUX_P)
                 # while blocking divergent movement (e.g. pad47 going further from pad48).
-                # Corridor guard: once a valid inward position lands inside a skip-net pad's
-                # axial routing corridor, stop — further inward steps are always worse.
-                _d_broke_corridor = False
                 for _lsn in range(1, 21):
-                    if _d_broke_corridor:
-                        break
                     lat_D = -_lsn * STEP_MM
                     df_D  = max(v.neckdown_len_mm, _own_depth_floor(lat_D),
                                 _partner_depth_1p)
@@ -4697,21 +4642,6 @@ def _face_fanout(
                         vx_D = v.pad_x + ls * lat_D * ldx + edx * depth_D
                         vy_D = v.pad_y + ls * lat_D * ldy + edy * depth_D
                         if _check(v, vx_D, vy_D, other_placed) is None:
-                            # Corridor guard: reject if this valid inward position
-                            # encroaches on a skip-net pad's axial route corridor.
-                            _in_skipnet_corr = False
-                            for (_cx1, _cy1, _cx2, _cy2,
-                                 _cshw, _csnet) in _skipnet_corridor_segs:
-                                if _csnet == v.net_name:
-                                    continue
-                                _dcorr = _dist_to_segment(
-                                    vx_D, vy_D, _cx1, _cy1, _cx2, _cy2)
-                                if _dcorr < via_copper_r + _cshw + CLEARANCE:
-                                    _in_skipnet_corr = True
-                                    break
-                            if _in_skipnet_corr:
-                                _d_broke_corridor = True
-                                break  # inner while; outer for breaks via _d_broke_corridor
                             if _d_partner_init is not None:
                                 _dpv = face_pads[_d_partner_gi]
                                 _d_cand = math.hypot(vx_D - _dpv.pad_x,
@@ -5633,12 +5563,6 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                 _ppy = pcbnew.ToMM(pad.GetPosition().y)
                 _pref = _nearest_dest_dir(net_name, ref, _ppx, _ppy)
             dx, dy          = escape_direction(fp, pad, nl, preferred_dir=_pref)
-            if priority == PRIORITY_HS:
-                _ppx = pcbnew.ToMM(pad.GetPosition().x)
-                _ppy = pcbnew.ToMM(pad.GetPosition().y)
-                _pref_hs = _nearest_dest_dir(net_name, ref, _ppx, _ppy)
-                if _pref_hs is not None and _pref_hs[0]*dx + _pref_hs[1]*dy < 0:
-                    dx, dy = escape_direction(fp, pad, nl, preferred_dir=_pref_hs)
             pw              = pcbnew.ToMM(pad.GetSizeX())
             ph              = pcbnew.ToMM(pad.GetSizeY())
             _net_obj  = pad.GetNet()
