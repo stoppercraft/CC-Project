@@ -4367,6 +4367,7 @@ def _face_fanout(
                 _pah = (v.pad_h_mm if abs(edy) > 0.5 else v.pad_w_mm) / 2.0
             depth      = max(v.neckdown_len_mm, _pah + via_copper_r + CLEARANCE)
             depth_ceil = min(v.max_search_mm, FANOUT_DEPTH_CAP)
+            last_blk   = None
             while depth <= depth_ceil + 1e-9:
                 vx  = v.pad_x + edx * depth + ls * lat_off * ldx
                 vy  = v.pad_y + edy * depth + ls * lat_off * ldy
@@ -4386,7 +4387,8 @@ def _face_fanout(
                     pass_result[global_i] = (vx, vy)
                     placed_i = True
                     break
-                last_blk = blk
+                if last_blk is None:
+                    last_blk = blk
                 depth += DEPTH_STEP
 
             if not placed_i:
