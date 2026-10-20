@@ -4404,18 +4404,25 @@ def _face_fanout(
             break
 
         # Blocker analysis
-        # Prefer shallowest actionable blocker only when the blocking via is the HS
-        # pair partner of the failing pad.  That is the exact U3/47+48 case: pad47
-        # fails because pad48's via blocks the shallow corridor; using last_blk
-        # (deepest = C_LT1V8_BULK1, non-actionable) drives the wrong lat_off path.
-        # For all other cases keep last_blk so convergence is unchanged.
+        # Three cases:
+        # (a) Failing pad's HS partner is the shallowest actionable blocker →
+        #     use first_actionable_blk so the partner gets pushed outward.
+        # (b) Failing pad is a skip-net pad → use last_blk (deepest blocker).
+        #     Skip-net pads fail because signal-via stubs block their corridor
+        #     (stub-vs-via in the deepest check). Using first_fixed_blk would
+        #     push the skip-net pad's own lat_off instead of cascading to the
+        #     signal pad, which is the wrong direction.
+        # (c) All other signal pads → use first_fixed_blk if set, else last_blk.
         _fail_gi  = signal_indices[first_fail_si]
+        _fail_pv  = face_pads[_fail_gi]
         _act_j    = first_actionable_blk[4] if first_actionable_blk is not None else None
         _act_gi   = placed[_act_j]['pad_i'] if _act_j is not None else None
         _use_actionable = (_act_gi is not None and
                            _act_gi == hs_partner.get(_fail_gi))
+        _fail_is_skip = _fail_pv.net_name in _skip_nets
         name, d, thr, kind, blk_j = (
             first_actionable_blk if _use_actionable else
+            last_blk             if _fail_is_skip else
             (first_fixed_blk or last_blk)
         ) or ('?', 0, 0, '?', None)
         fail_global_i = signal_indices[first_fail_si]
@@ -5551,11 +5558,17 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             drill, annular  = via_params(priority)
             floor, nl, mx   = neckdown_params(priority, net_name)
             _pref: Optional[Tuple[float, float]] = None
-            if priority in (PRIORITY_OTHER, PRIORITY_HS):
+            if priority == PRIORITY_OTHER:
                 _ppx = pcbnew.ToMM(pad.GetPosition().x)
                 _ppy = pcbnew.ToMM(pad.GetPosition().y)
                 _pref = _nearest_dest_dir(net_name, ref, _ppx, _ppy)
             dx, dy          = escape_direction(fp, pad, nl, preferred_dir=_pref)
+            if priority == PRIORITY_HS:
+                _ppx = pcbnew.ToMM(pad.GetPosition().x)
+                _ppy = pcbnew.ToMM(pad.GetPosition().y)
+                _pref_hs = _nearest_dest_dir(net_name, ref, _ppx, _ppy)
+                if _pref_hs is not None and _pref_hs[0]*dx + _pref_hs[1]*dy < 0:
+                    dx, dy = escape_direction(fp, pad, nl, preferred_dir=_pref_hs)
             pw              = pcbnew.ToMM(pad.GetSizeX())
             ph              = pcbnew.ToMM(pad.GetSizeY())
             _net_obj  = pad.GetNet()
