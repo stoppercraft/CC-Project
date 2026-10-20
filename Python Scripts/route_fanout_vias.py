@@ -4357,7 +4357,9 @@ def _face_fanout(
             lat_off      = lat_offs_arr[si]
             ls           = _lat_sign(v)
 
-            placed_i   = False
+            placed_i             = False
+            first_actionable_blk = None   # shallowest depth where blk_j is not None (via-vs-via)
+            first_fixed_blk      = None   # shallowest depth where blk_j is None (fixed pad/bus)
             if v.pad_bbox is not None:
                 _pah = (v.pad_y - v.pad_bbox[1] if edy < 0 else
                         v.pad_bbox[3] - v.pad_y  if edy > 0 else
@@ -4387,6 +4389,11 @@ def _face_fanout(
                     placed_i = True
                     break
                 last_blk = blk
+                if blk[4] is not None:
+                    if first_actionable_blk is None:
+                        first_actionable_blk = blk
+                elif first_fixed_blk is None:
+                    first_fixed_blk = blk
                 depth += DEPTH_STEP
 
             if not placed_i:
@@ -4398,7 +4405,20 @@ def _face_fanout(
             break
 
         # Blocker analysis
-        name, d, thr, kind, blk_j = last_blk or ('?', 0, 0, '?', None)
+        # Prefer shallowest actionable blocker only when the blocking via is the HS
+        # pair partner of the failing pad.  That is the exact U3/47+48 case: pad47
+        # fails because pad48's via blocks the shallow corridor; using last_blk
+        # (deepest = C_LT1V8_BULK1, non-actionable) drives the wrong lat_off path.
+        # For all other cases keep last_blk so convergence is unchanged.
+        _fail_gi  = signal_indices[first_fail_si]
+        _act_j    = first_actionable_blk[4] if first_actionable_blk is not None else None
+        _act_gi   = placed[_act_j]['pad_i'] if _act_j is not None else None
+        _use_actionable = (_act_gi is not None and
+                           _act_gi == hs_partner.get(_fail_gi))
+        name, d, thr, kind, blk_j = (
+            first_actionable_blk if _use_actionable else
+            (first_fixed_blk or last_blk)
+        ) or ('?', 0, 0, '?', None)
         fail_global_i = signal_indices[first_fail_si]
         if kind in ('via-vs-bus', 'stub-vs-bus'):
             keepout_set.add(fail_global_i)
