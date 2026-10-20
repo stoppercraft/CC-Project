@@ -4433,8 +4433,45 @@ def _face_fanout(
 
         elif blk_j is not None:
             blocking_gi = placed[blk_j]['pad_i']
+            _blk_net = placed[blk_j].get('net', '')
             if blocking_gi in global_to_si:
-                lat_offs_arr[global_to_si[blocking_gi]] += STEP_MM
+                _bsi = global_to_si[blocking_gi]
+                _bv  = face_pads[blocking_gi]
+                _bls = _lat_sign(_bv)
+                _b_new_lat  = lat_offs_arr[_bsi] + STEP_MM
+                _b_lat_proj = (_bv.pad_x * ldx + _bv.pad_y * ldy) + _bls * _b_new_lat
+                _fail_partner = hs_partner.get(fail_global_i)
+                if _blk_net in _skip_nets:
+                    # Scenario B: blocking pad is skip-net — its axial stub sits
+                    # at its pad's lateral coord regardless of lat_off, so
+                    # pushing it never clears the corridor.  Redirect: push the
+                    # failing pad's HS partner outward instead.
+                    if (_fail_partner is not None
+                            and _fail_partner not in keepout_set
+                            and _fail_partner in global_to_si):
+                        lat_offs_arr[global_to_si[_fail_partner]] += STEP_MM
+                    else:
+                        lat_offs_arr[_bsi] += STEP_MM
+                else:
+                    # Scenario A: check whether pushing the blocker one more
+                    # step would bring its stub within clearance of any skip-net
+                    # pad on this face.  If so, redirect to the failing pad's
+                    # own direction instead of driving the blocker into a
+                    # skip-net corridor.
+                    _would_block_skip = any(
+                        _fk.net_name in _skip_nets
+                        and abs(_b_lat_proj
+                                - (_fk.pad_x * ldx + _fk.pad_y * ldy))
+                            < _bv.neckdown_w_mm / 2.0
+                              + _fk.neckdown_w_mm / 2.0
+                              + CLEARANCE
+                        for _fk in face_pads
+                        if _fk is not _bv
+                    )
+                    if _would_block_skip:
+                        lat_offs_arr[first_fail_si] += STEP_MM
+                    else:
+                        lat_offs_arr[_bsi] += STEP_MM
             else:
                 keepout_set.add(fail_global_i)
                 if fail_global_i in hs_partner:
