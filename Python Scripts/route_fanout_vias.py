@@ -3824,11 +3824,29 @@ def _find_tight_subgroups(face_pads: list, sg_clr: float) -> list:
         else:
             k += 1
 
-    # Expand each run by one pad on each side
+    # Expand each run by one pad on each side, but not across gaps > MAX_SPLIT_GAP_MM.
+    # A large lateral gap signals a functional boundary between signal blocks on the
+    # same connector face (e.g. MIPI pads vs TOUCH pads separated by GND/NC pins).
+    # Expanding across it merges unrelated groups and corrupts the herringbone center,
+    # causing outermost pads of one block to appear to be outermost of the combined
+    # group and receive incorrect (too-shallow) escape depths.
+    MAX_SPLIT_GAP_MM = 1.0
     expanded = []
     for start, end in raw_groups:
-        exp_start = max(0, start - 1)
-        exp_end = min(len(order) - 1, end + 1)
+        exp_start = start
+        exp_end = end
+        if start > 0:
+            i_prev = order[start - 1]
+            i_cur  = order[start]
+            gap_l  = abs(coords[i_cur] - coords[i_prev]) - max(halves[i_cur], halves[i_prev])
+            if gap_l <= MAX_SPLIT_GAP_MM:
+                exp_start = start - 1
+        if end < len(order) - 1:
+            i_cur  = order[end]
+            i_next = order[end + 1]
+            gap_r  = abs(coords[i_next] - coords[i_cur]) - max(halves[i_cur], halves[i_next])
+            if gap_r <= MAX_SPLIT_GAP_MM:
+                exp_end = end + 1
         expanded.append([face_pads[order[i]] for i in range(exp_start, exp_end + 1)])
 
     # Merge overlapping sub-groups (possible when expansion bridges a gap)
