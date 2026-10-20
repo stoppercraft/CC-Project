@@ -5990,6 +5990,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
     for _hpv in _hs_pv_list:
         if id(_hpv) in _hs_direct_ids:
             continue
+        # Connector pads always need stubs to escape — never direct-route them.
+        if _is_radial_fanout_fp(_fp_by_ref.get(_hpv.ref)):
+            continue
         if _hs_nearest_dist(_hpv) >= _hs_threshold:
             continue
 
