@@ -62,34 +62,34 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-**Last debug run: commit `6b3fde7` — 2026-10-19 (session 36).**
-**Debug result: 99 vias, 0 keepouts, 0 crossing warnings.**
-# Updated 2026-10-19 (session 36).
+**Last --apply run: commit `a26fb60` — 2026-10-20 (session 37).**
+**Result: 104 vias, 2 keepouts (U3/47 DP_RX1_N, U3/48 DP_RX1_P), 0 crossings.**
+**U3/47+48 stubs manually placed by user on board.**
+# Updated 2026-10-20 (session 37).
 
 ### What to do next
 
-**route_fanout_vias.py debug/iteration still in progress.** The script has NOT been run with
---apply. Wait for user to direct next step (either --apply or more algorithm work).
+Ask user what to work on: fanout bug fix, route_critical.py, or something else.
+Do NOT run any scripts without explicit instruction.
+
+#### Known unresolved bug — `last_blk` overwrite in `_face_fanout`
+In the depth-scan while loop, `last_blk = blk` overwrites on every failing depth. For U3/47:
+- Shallow depths: via-vs-via against pad48 → actionable (should increment pad48 lat_off)
+- Deep depths (~2.25mm): via-vs-pad against C_LT1V8_BULK1 → non-actionable fixed obstacle
+Final `last_blk` = C_LT1V8_BULK1 → algorithm increments pad47's own lat_off 50× → keepout.
+Correct fix: track first-actionable (blk_j not None) AND first-fixed (blk_j=None) blockers
+separately; prefer actionable if one exists. First-blocker fix (5cede7d) was reverted because
+it caused regressions when the FIRST depth's blocker was itself a fixed pad on other faces.
 
 #### Remaining J_DSI1 issues — ACCEPTED LIMITATIONS (no algorithmic fix)
 - J_DSI1/15 (TOUCH_RST) and J_DSI1/17 (TOUCH_SCL): still escape NORTH (via at y≈152.113).
-  User reference has them SOUTH (y≈154.3–154.7). Root cause: bbox center skewed south by
-  mounting pads → all signal pads read as "north of center" → edy=-1. Nearest destinations
-  (pull-up resistors at y≈151) are also north, so preferred_dir=north gives no improvement.
   No general algorithmic fix without project-specific overrides (prohibited).
-- R_TRST1/1 (TOUCH_RST): now suppressed — shares J_DSI1/15's via. Not a separate issue.
 
-#### Fixed this session (session 36)
-1. **crossing() false positive (commit 014b367):** J_DSI1/7↔J_DSI1/6 (MIPI1_D1_P/N) no longer
-   reported as crossing. Root cause: _via_corner() used wrong stub geometry; replaced with
-   _route_45deg_stub() in _get_seg_coords inside crossing().
-2. **nearest-dest preferred_dir (commit 6b3fde7):** _all_net_pad_pos precompute +
-   _nearest_dest_dir() added. PRIORITY_OTHER pads now get preferred_dir = direction toward
-   nearest same-net other-footprint pad. Causes R_TRST1/1 to merge into J_DSI1/15's cluster
-   (shorter suppressed route). General benefit for other boards; didn't fix J_DSI1 TOUCH
-   directions because nearest destinations are north.
+#### Fixed session 36 (commits 014b367, 6b3fde7)
+1. **crossing() false positive:** _route_45deg_stub() replaces _via_corner() in _get_seg_coords.
+2. **nearest-dest preferred_dir:** PRIORITY_OTHER pads biased toward nearest same-net destination.
 
-Do NOT switch to route_critical.py or route_highspeed.py without explicit instruction.
+Do NOT switch to route_highspeed.py without explicit instruction.
 
 Script execution order: route_fanout_vias.py → route_critical.py (IN PROGRESS) → route_highspeed.py (BLOCKED)
 
