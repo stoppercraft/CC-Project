@@ -4534,6 +4534,15 @@ def _face_fanout(
                 best_vx, best_vy = vx_cur, vy_cur
                 best_cost = cur_cost
 
+                # For HS pair members, track initial distance to partner's PAD so
+                # Strategy D can be allowed only when it moves the via TOWARD the partner.
+                _d_partner_gi = hs_partner.get(gi)
+                _d_partner_init = None
+                if _d_partner_gi is not None:
+                    _dpv = face_pads[_d_partner_gi]
+                    _d_partner_init = math.hypot(vx_cur - _dpv.pad_x,
+                                                  vy_cur - _dpv.pad_y)
+
                 # Pair depth floor: prevent going shallower than equalized partner,
                 # preserving depth equality established by 7b across outer passes.
                 _partner_gi_1p = hs_partner.get(gi)
@@ -4606,31 +4615,37 @@ def _face_fanout(
                 # A via blocked on its outward side may clear that neighbor by stepping
                 # inward (toward face center). Scan depths at each inward step, same as
                 # Strategy A does at the current lat_off.
-                # HS pair members are excluded: inward movement creates diverging stubs
-                # (one going left, the other right). Section 7b handles HS pair clearance
-                # by pushing the outer via outward instead.
-                if hs_partner.get(gi) is None:
-                    for _lsn in range(1, 21):
-                        lat_D = -_lsn * STEP_MM
-                        df_D  = max(v.neckdown_len_mm, _own_depth_floor(lat_D),
-                                    _partner_depth_1p)
-                        if math.hypot(abs(lat_D), df_D) >= best_cost - 1e-9:
+                # For HS pair members: allow Strategy D only when the candidate moves the
+                # via CLOSER to the partner's pad than the initial position. This permits
+                # convergent inward movement (e.g. U3/DP_AUX_N closing toward DP_AUX_P)
+                # while blocking divergent movement (e.g. pad47 going further from pad48).
+                for _lsn in range(1, 21):
+                    lat_D = -_lsn * STEP_MM
+                    df_D  = max(v.neckdown_len_mm, _own_depth_floor(lat_D),
+                                _partner_depth_1p)
+                    if math.hypot(abs(lat_D), df_D) >= best_cost - 1e-9:
+                        break
+                    depth_D = df_D
+                    while True:
+                        _cost_D = math.hypot(abs(lat_D), depth_D)
+                        if _cost_D >= best_cost - 1e-9:
                             break
-                        depth_D = df_D
-                        while True:
-                            _cost_D = math.hypot(abs(lat_D), depth_D)
-                            if _cost_D >= best_cost - 1e-9:
-                                break
-                            if depth_D > FANOUT_DEPTH_CAP + 1e-9:
-                                break
-                            vx_D = v.pad_x + ls * lat_D * ldx + edx * depth_D
-                            vy_D = v.pad_y + ls * lat_D * ldy + edy * depth_D
-                            if _check(v, vx_D, vy_D, other_placed) is None:
-                                if _cost_D < best_cost:
-                                    best_cost, best_vx, best_vy = _cost_D, vx_D, vy_D
-                                    lat_offs_arr[si] = lat_D
-                                break  # found minimum depth at this lat_D; continue outer loop
-                            depth_D += DEPTH_STEP
+                        if depth_D > FANOUT_DEPTH_CAP + 1e-9:
+                            break
+                        vx_D = v.pad_x + ls * lat_D * ldx + edx * depth_D
+                        vy_D = v.pad_y + ls * lat_D * ldy + edy * depth_D
+                        if _check(v, vx_D, vy_D, other_placed) is None:
+                            if _d_partner_init is not None:
+                                _dpv = face_pads[_d_partner_gi]
+                                _d_cand = math.hypot(vx_D - _dpv.pad_x,
+                                                      vy_D - _dpv.pad_y)
+                                if _d_cand >= _d_partner_init - 1e-9:
+                                    break  # diverges from partner — skip this lat_D
+                            if _cost_D < best_cost:
+                                best_cost, best_vx, best_vy = _cost_D, vx_D, vy_D
+                                lat_offs_arr[si] = lat_D
+                            break  # found minimum depth at this lat_D; continue outer loop
+                        depth_D += DEPTH_STEP
 
                 if best_cost < cur_cost - 1e-9:
                     final_placed[gi] = (best_vx, best_vy)
@@ -6042,6 +6057,35 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             return float('inf')
         return min(_hs_edge_dist(pv, bp) for bp in others)
 
+    def _hs_nearest_bp(pv: PendingVia):
+        """Return the nearest same-net same-layer pad on a different component, or None."""
+        others = [bp for bp in _board_pad_by_net.get(pv.net_name, [])
+                  if bp['ref'] != pv.ref and bp['layer'] == pv.pad_layer_id]
+        if not others:
+            return None
+        return min(others, key=lambda bp: _hs_edge_dist(pv, bp))
+
+    def _hs_corridor_blocked(pv: PendingVia, dest_bp: dict) -> bool:
+        """True if any pad of the destination component (on a different net) lies
+        between pv and dest_bp. Catches cases like a connector's inner row blocking
+        a direct top-layer path to its outer row."""
+        x1, y1 = pv.pad_x, pv.pad_y
+        x2, y2 = dest_bp['cx'], dest_bp['cy']
+        xlo = min(x1, x2) - 0.3
+        xhi = max(x1, x2) + 0.3
+        ylo = min(y1, y2)
+        yhi = max(y1, y2)
+        dest_ref = dest_bp['ref']
+        for net, pads in _board_pad_by_net.items():
+            if net == pv.net_name:
+                continue
+            for p in pads:
+                if p['ref'] != dest_ref:
+                    continue
+                if ylo <= p['cy'] <= yhi and xlo <= p['cx'] <= xhi:
+                    return True
+        return False
+
     _hs_pv_list = [pv for pv in pending if pv.priority == PRIORITY_HS]
     _hs_by_ref_net = {(pv.ref, pv.net_name): pv for pv in _hs_pv_list}
     _hs_direct_ids: set = set()
@@ -6054,6 +6098,12 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         if not _is_small_discrete(_fp_by_ref.get(_hpv.ref)):
             continue
         if _hs_nearest_dist(_hpv) >= _hs_threshold:
+            continue
+        # Skip direct-route if the destination component has pads on other nets
+        # blocking the direct path (e.g. a connector's inner row between source
+        # and destination).
+        _nearest_bp = _hs_nearest_bp(_hpv)
+        if _nearest_bp is not None and _hs_corridor_blocked(_hpv, _nearest_bp):
             continue
 
         # Pad qualifies. Check P/N partner.
