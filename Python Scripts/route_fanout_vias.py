@@ -4311,8 +4311,10 @@ def _face_fanout(
             continue
         if _i in bus_pad_set:
             continue
-        if (_v.ref, _v.pad_num) in pending_set:
+        if (_v.ref, _v.pad_num) in pending_set and _v.net_name not in _skip_nets:
             continue  # via-bearing pad — not stub-only
+        # Skip-net pads in pending_set are still stub-only: their minimum neckdown
+        # stub must be a pre-obstacle so signal vias cannot crowd their escape corridor.
         _sx2 = _v.pad_x + edx * _v.neckdown_len_mm
         _sy2 = _v.pad_y + edy * _v.neckdown_len_mm
         _stub_only_segs.append((_v.pad_x, _v.pad_y, _sx2, _sy2,
@@ -5195,8 +5197,11 @@ def _face_fanout(
             continue  # no-net or unconnected pad — not routable, skip entirely
         if i in bus_pad_set:
             continue
-        if (v.ref, v.pad_num) in pending_set:
-            continue  # via-bearing pad, handled above
+        if (v.ref, v.pad_num) in pending_set and v.net_name not in _skip_nets:
+            continue  # via-bearing pad (needs a via), handled above
+        # Skip-net pads in pending_set fall through here when the signal_indices
+        # loop failed to place them (blocked by prior vias) — compute their best
+        # available stub just as we do for pads not in pending_set.
 
         stub_hw   = v.neckdown_w_mm / 2.0
         v_lat     = v.pad_x * ldx + v.pad_y * ldy
