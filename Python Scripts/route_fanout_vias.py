@@ -84,6 +84,7 @@ class PendingVia:
     cluster_real_pads:     list  = None  # [(pad_x, pad_y, neckdown_w_mm), ...] for herringbone cluster primaries
     sandwiched:            bool  = False  # True → non-HS pad between HS pairs on same face; escaped inward
     face_fanout_assigned:  bool  = False  # True → via position assigned by _face_fanout; skip 1g/1g-2d/run_passes search
+    corridor_only:         bool  = False  # True → skip-net pad; reserve full escape corridor, no via placed
 
 
 @dataclass
@@ -3664,6 +3665,25 @@ def _fp_face_needs_coopt(fp, edx: float, edy: float, sg_clr: float,
     return False
 
 
+def _has_skip_corridor_conflict(face_grp: list, skip_pvs: list,
+                                sg_clr: float, edx: float, edy: float) -> bool:
+    """True if any signal pad's lateral position is within blocking distance of
+    a skip-net pad's escape corridor on the same face.
+
+    When this is True, _face_fanout must run so it can adjust lateral offsets
+    to prevent signal vias from blocking the skip-net pad's routing corridor.
+    """
+    ldx, ldy = -edy, edx
+    for pv in face_grp:
+        pv_lat = pv.pad_x * ldx + pv.pad_y * ldy
+        via_r = pv.via_drill_mm / 2.0 + pv.via_annular_mm
+        for sk in skip_pvs:
+            sk_lat = sk.pad_x * ldx + sk.pad_y * ldy
+            if abs(pv_lat - sk_lat) < via_r + sk.neckdown_w_mm / 2.0 + sg_clr:
+                return True
+    return False
+
+
 def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
                         skip_nets: set) -> list:
     """Build PendingVia objects for skip-net pads on a face.
@@ -3723,6 +3743,7 @@ def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
                                pcbnew.ToMM(sk_bb.GetTop()),
                                pcbnew.ToMM(sk_bb.GetRight()),
                                pcbnew.ToMM(sk_bb.GetBottom())),
+            corridor_only   = True,
         ))
     return skip_pvs
 
@@ -4309,10 +4330,37 @@ def _face_fanout(
             continue
         if _i in bus_pad_set:
             continue
-        if (_v.ref, _v.pad_num) in pending_set:
-            continue  # via-bearing pad — not stub-only
-        _sx2 = _v.pad_x + edx * _v.neckdown_len_mm
-        _sy2 = _v.pad_y + edy * _v.neckdown_len_mm
+        _is_pending = (_v.ref, _v.pad_num) in pending_set
+        # Compute extension eligibility before deciding whether to skip.
+        # Auto-skip corridor_only pads (net not in static _skip_nets) that are
+        # in pending_set need their extended corridor pre-registered here so it
+        # is visible to outer signal pads before the placement loop runs.
+        # Only include them when the corridor WOULD be extended — if the HS
+        # guard fires (an HS neighbor is within blocking distance and equidistant
+        # or closer to face_center), the short corridor is safe to leave in the
+        # placement loop rather than pre-registering it here.
+        _corr_len = _v.neckdown_len_mm
+        _would_extend = False
+        if _v.net_name not in _skip_nets:
+            _cor_vlat_s = _v.pad_x * ldx + _v.pad_y * ldy
+            _cor_vdist_s = abs(_cor_vlat_s - face_center)
+            _cor_thr_s = _v.via_drill_mm / 2.0 + ca + _v.neckdown_w_mm / 2.0 + CLEARANCE
+            _cor_hs_s = any(
+                abs(face_pads[_gk].pad_x * ldx + face_pads[_gk].pad_y * ldy
+                    - _cor_vlat_s) < _cor_thr_s
+                and abs(face_pads[_gk].pad_x * ldx + face_pads[_gk].pad_y * ldy
+                        - face_center) <= _cor_vdist_s
+                and face_pads[_gk].priority == PRIORITY_HS
+                and not face_pads[_gk].corridor_only
+                for _gk in signal_indices
+            )
+            if not _cor_hs_s:
+                _corr_len = FANOUT_DEPTH_CAP
+                _would_extend = True
+        if _is_pending and (not _v.corridor_only or not _would_extend):
+            continue  # non-corridor-only pending pad, or corridor_only suppressed by HS guard — placed loop handles
+        _sx2 = _v.pad_x + edx * _corr_len
+        _sy2 = _v.pad_y + edy * _corr_len
         _stub_only_segs.append((_v.pad_x, _v.pad_y, _sx2, _sy2,
                                  _v.neckdown_w_mm / 2.0, _v.net_name))
 
@@ -4374,6 +4422,30 @@ def _face_fanout(
                 blk = _check(v, vx, vy, placed)
                 if blk is None:
                     stub_segs = _cluster_segs(v, vx, vy)
+                    if v.corridor_only and v.net_name not in _skip_nets:
+                        # Extend corridor to FANOUT_DEPTH_CAP only when no HS signal
+                        # pad is (a) laterally within blocking distance AND (b) closer
+                        # to face center (processed after this pad in the outside-in
+                        # order).  HS pads have fixed geometry requirements — if one is
+                        # present and needs to be placed after this pad, the extension
+                        # would force it into keepout and must be suppressed.
+                        _cor_thr = v.via_drill_mm / 2.0 + ca + v.neckdown_w_mm / 2.0 + CLEARANCE
+                        _cor_vlat = v.pad_x * ldx + v.pad_y * ldy
+                        _cor_vdist = abs(_cor_vlat - face_center)
+                        _cor_hs = any(
+                            abs(face_pads[_gk].pad_x * ldx + face_pads[_gk].pad_y * ldy
+                                - _cor_vlat) < _cor_thr
+                            and abs(face_pads[_gk].pad_x * ldx + face_pads[_gk].pad_y * ldy
+                                    - face_center) <= _cor_vdist
+                            and face_pads[_gk].priority == PRIORITY_HS
+                            and not face_pads[_gk].corridor_only
+                            for _gk in signal_indices
+                            if _gk != global_i and _gk not in keepout_set
+                        )
+                        if not _cor_hs:
+                            _cx2 = v.pad_x + edx * FANOUT_DEPTH_CAP
+                            _cy2 = v.pad_y + edy * FANOUT_DEPTH_CAP
+                            stub_segs = list(stub_segs) + [(v.pad_x, v.pad_y, _cx2, _cy2)]
                     placed.append({
                         'vx':      vx,
                         'vy':      vy,
@@ -6406,10 +6478,20 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _co_ref  = _fkey_co[0]
         _co_edx  = _fkey_co[1]
         _co_edy  = _fkey_co[2]
+        # Build skip-net PVs before the trigger check so that skip-corridor
+        # conflicts (a signal pad's lateral position too close to a skip-net
+        # pad's escape axis) can trigger co-opt even when pad pitch alone would
+        # not.  This ensures every primary face that has skip-net corridor
+        # neighbors goes through _face_fanout for lateral-offset adjustment.
+        _co_skip_pvs = _build_skip_net_pvs(
+            _fp_by_ref.get(_co_ref), _face_grp_co, _co_edx, _co_edy, skip_nets
+        )
         if (not _face_needs_coopt(_face_grp_co, _coopt_sg_clr)
                 and not _fp_face_needs_coopt(
                     _fp_by_ref.get(_co_ref), _co_edx, _co_edy,
-                    _coopt_sg_clr, _face_grp_co)):
+                    _coopt_sg_clr, _face_grp_co)
+                and not _has_skip_corridor_conflict(
+                    _face_grp_co, _co_skip_pvs, _coopt_sg_clr, _co_edx, _co_edy)):
             continue
 
         # Build pending_set for this call: pads in pending that get a via, PLUS
@@ -6420,11 +6502,6 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _co_pending_set = {(_pv.ref, _pv.pad_num) for _pv in pending}
         # ca = annular ring for the first pad's via size
         _co_ca = _face_grp_co[0].via_annular_mm
-
-        # Augment face group with skip-net pads on this face.
-        _co_skip_pvs = _build_skip_net_pvs(
-            _fp_by_ref.get(_co_ref), _face_grp_co, _co_edx, _co_edy, skip_nets
-        )
         # Augment with corridor phantoms: face pads not in pending and not skip-net
         # that need on-layer routing through the fanout zone.  NOT added to
         # _co_pending_set — they must stay out of signal_indices.  Their
