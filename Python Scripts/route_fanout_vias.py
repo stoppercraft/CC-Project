@@ -5557,12 +5557,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                     continue
             drill, annular  = via_params(priority)
             floor, nl, mx   = neckdown_params(priority, net_name)
-            _pref: Optional[Tuple[float, float]] = None
-            if priority == PRIORITY_OTHER:
-                _ppx = pcbnew.ToMM(pad.GetPosition().x)
-                _ppy = pcbnew.ToMM(pad.GetPosition().y)
-                _pref = _nearest_dest_dir(net_name, ref, _ppx, _ppy)
-            dx, dy          = escape_direction(fp, pad, nl, preferred_dir=_pref)
+            dx, dy          = escape_direction(fp, pad, nl)
             pw              = pcbnew.ToMM(pad.GetSizeX())
             ph              = pcbnew.ToMM(pad.GetSizeY())
             _net_obj  = pad.GetNet()
