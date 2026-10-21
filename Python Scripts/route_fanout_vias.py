@@ -5563,18 +5563,6 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                 _ppy = pcbnew.ToMM(pad.GetPosition().y)
                 _pref = _nearest_dest_dir(net_name, ref, _ppx, _ppy)
             dx, dy          = escape_direction(fp, pad, nl, preferred_dir=_pref)
-            if priority == PRIORITY_HS:
-                _ppx = pcbnew.ToMM(pad.GetPosition().x)
-                _ppy = pcbnew.ToMM(pad.GetPosition().y)
-                _pref_hs = _nearest_dest_dir(net_name, ref, _ppx, _ppy)
-                if _pref_hs is not None and _pref_hs[0]*dx + _pref_hs[1]*dy < 0:
-                    # Re-run with a 3mm lookahead.  A sibling row in the
-                    # preferred direction within 3mm AND within 0.5mm laterally
-                    # (same column) blocks that direction — this catches tight
-                    # board-to-board connectors (≤2.7mm inter-row pitch) where
-                    # the corridor must stay clear, while allowing wide-pitch
-                    # connectors (≥3.5mm) whose far row doesn't block within 3mm.
-                    dx, dy = escape_direction(fp, pad, 3.0, preferred_dir=_pref_hs)
             pw              = pcbnew.ToMM(pad.GetSizeX())
             ph              = pcbnew.ToMM(pad.GetSizeY())
             _net_obj  = pad.GetNet()
@@ -5637,6 +5625,11 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         """Align N's escape direction to P's and update its initial via position."""
         if (pv_p.escape_dx == pv_n.escape_dx and
                 pv_p.escape_dy == pv_n.escape_dy):
+            return
+        # Anti-parallel: P and N are on opposite faces of the connector, each
+        # already escaping outward.  Their stubs go away from each other — no
+        # crossing risk.  Leave both directions as-is.
+        if pv_p.escape_dx == -pv_n.escape_dx and pv_p.escape_dy == -pv_n.escape_dy:
             return
         pv_n.escape_dx = pv_p.escape_dx
         pv_n.escape_dy = pv_p.escape_dy
