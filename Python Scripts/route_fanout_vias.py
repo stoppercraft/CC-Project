@@ -5172,40 +5172,6 @@ def _face_fanout(
         if not _7c_any_changed:
             break
 
-    # DEBUG: check skip-net stub proximity after all compaction
-    import sys as _dbgsys2
-    # Print positions of ALL LT_AUX pads in final_placed for tracing
-    for _gi_all in signal_indices:
-        _pv_all = face_pads[_gi_all]
-        if _pv_all.net_name not in ('LT_AUX_N', 'LT_AUX_P'):
-            continue
-        if _gi_all not in final_placed:
-            print(f"  [DBG-FP] {_pv_all.net_name} NOT in final_placed", file=_dbgsys2.stderr)
-            continue
-        _vx_all, _vy_all = final_placed[_gi_all]
-        _segs_all = _cluster_segs(_pv_all, _vx_all, _vy_all)
-        print(f"  [DBG-FP] {_pv_all.net_name} at ({_vx_all:.3f},{_vy_all:.3f}) segs={_segs_all}",
-              file=_dbgsys2.stderr)
-    # Pair check for all skip-nets
-    _dbg_skip2 = [gi for gi in signal_indices if gi in final_placed
-                  and face_pads[gi].net_name in _skip_nets]
-    for _dbi2 in range(len(_dbg_skip2)):
-        for _dbj2 in range(_dbi2 + 1, len(_dbg_skip2)):
-            _gi3, _gj3 = _dbg_skip2[_dbi2], _dbg_skip2[_dbj2]
-            _pi3, _pj3 = face_pads[_gi3], face_pads[_gj3]
-            _vxi3, _vyi3 = final_placed[_gi3]
-            _vxj3, _vyj3 = final_placed[_gj3]
-            _d3 = math.hypot(_vxi3 - _vxj3, _vyi3 - _vyj3)
-            _si3 = _cluster_segs(_pi3, _vxi3, _vyi3)
-            _sj3 = _cluster_segs(_pj3, _vxj3, _vyj3)
-            _msd3 = min((_seg_to_seg_dist(*s1, *s2) for s1 in _si3 for s2 in _sj3),
-                        default=float('inf'))
-            _thr3 = _pi3.neckdown_w_mm / 2.0 + _pj3.neckdown_w_mm / 2.0 + CLEARANCE
-            if _msd3 < _thr3:
-                print(f"  [DBG-POST-COMPACT] skip-stub SHORT: {_pi3.net_name} vs {_pj3.net_name}"
-                      f" via_d={_d3:.4f} stub_d={_msd3:.4f} thr={_thr3:.4f}"
-                      f" A=({_vxi3:.3f},{_vyi3:.3f}) B=({_vxj3:.3f},{_vyj3:.3f})",
-                      file=_dbgsys2.stderr)
 
     # ------------------------------------------------------------------
     # Post-processing: HS partner suppression
