@@ -4403,6 +4403,27 @@ def _face_fanout(
 
         if first_fail_si is None:
             final_placed = pass_result
+            # DEBUG: check skip-net stub proximity in successful main-loop iteration
+            import sys as _dbgsys
+            _dbg_skip = [gi for gi in signal_indices if gi in final_placed
+                         and face_pads[gi].net_name in _skip_nets]
+            for _dbi in range(len(_dbg_skip)):
+                for _dbj in range(_dbi + 1, len(_dbg_skip)):
+                    _gi2, _gj2 = _dbg_skip[_dbi], _dbg_skip[_dbj]
+                    _pi2, _pj2 = face_pads[_gi2], face_pads[_gj2]
+                    _vxi2, _vyi2 = final_placed[_gi2]
+                    _vxj2, _vyj2 = final_placed[_gj2]
+                    _d2 = math.hypot(_vxi2 - _vxj2, _vyi2 - _vyj2)
+                    _si2 = _cluster_segs(_pi2, _vxi2, _vyi2)
+                    _sj2 = _cluster_segs(_pj2, _vxj2, _vyj2)
+                    _msd2 = min((_seg_to_seg_dist(*s1, *s2) for s1 in _si2 for s2 in _sj2),
+                                default=float('inf'))
+                    _thr2 = _pi2.neckdown_w_mm / 2.0 + _pj2.neckdown_w_mm / 2.0 + CLEARANCE
+                    if _msd2 < _thr2:
+                        print(f"  [DBG-MAIN-LOOP] skip-stub SHORT: {_pi2.net_name} vs {_pj2.net_name}"
+                              f" via_d={_d2:.4f} stub_d={_msd2:.4f} thr={_thr2:.4f}"
+                              f" A=({_vxi2:.3f},{_vyi2:.3f}) B=({_vxj2:.3f},{_vyj2:.3f})",
+                              file=_dbgsys.stderr)
             break
 
         # Blocker analysis
@@ -4630,8 +4651,7 @@ def _face_fanout(
                 # while blocking divergent movement (e.g. pad47 going further from pad48).
                 for _lsn in range(1, 21):
                     lat_D = -_lsn * STEP_MM
-                    df_D  = max(v.neckdown_len_mm, _own_depth_floor(lat_D),
-                                _partner_depth_1p)
+                    df_D  = max(v.neckdown_len_mm, _own_depth_floor(lat_D))
                     if math.hypot(abs(lat_D), df_D) >= best_cost - 1e-9:
                         break
                     depth_D = df_D
@@ -4971,6 +4991,10 @@ def _face_fanout(
                         break
 
                 if best_cost < cur_cost - 1e-9:
+                    if v.net_name in ('LT_AUX_N', 'LT_AUX_P'):
+                        import sys as _dbg7a2_sys
+                        print(f"  [DBG-7A2] {v.net_name} ({vx_cur:.3f},{vy_cur:.3f})→({best_vx:.3f},{best_vy:.3f})"
+                              f" cost {cur_cost:.3f}→{best_cost:.3f}", file=_dbg7a2_sys.stderr)
                     final_placed[gi] = (best_vx, best_vy)
                     _improved = True
 
@@ -5131,10 +5155,13 @@ def _face_fanout(
 
             # Update final_placed if depth changed (deepen or shallow to _req_d7c)
             if abs(_ext_d7c - _cur_d7c) > 1e-9:
-                final_placed[_gi7c] = (
-                    _pv7c.pad_x + _ls7c * _lo7c * ldx + edx * _ext_d7c,
-                    _pv7c.pad_y + _ls7c * _lo7c * ldy + edy * _ext_d7c,
-                )
+                _new7c_vx = _pv7c.pad_x + _ls7c * _lo7c * ldx + edx * _ext_d7c
+                _new7c_vy = _pv7c.pad_y + _ls7c * _lo7c * ldy + edy * _ext_d7c
+                import sys as _dbg7c_sys
+                print(f"  [DBG-7C] {_pv7c.net_name} depth {_cur_d7c:.3f}→{_ext_d7c:.3f}"
+                      f" pos ({_vx7c:.3f},{_vy7c:.3f})→({_new7c_vx:.3f},{_new7c_vy:.3f})",
+                      file=_dbg7c_sys.stderr)
+                final_placed[_gi7c] = (_new7c_vx, _new7c_vy)
                 _7c_any_changed = True
 
             # Store lateral extension endpoint
@@ -5144,6 +5171,41 @@ def _face_fanout(
 
         if not _7c_any_changed:
             break
+
+    # DEBUG: check skip-net stub proximity after all compaction
+    import sys as _dbgsys2
+    # Print positions of ALL LT_AUX pads in final_placed for tracing
+    for _gi_all in signal_indices:
+        _pv_all = face_pads[_gi_all]
+        if _pv_all.net_name not in ('LT_AUX_N', 'LT_AUX_P'):
+            continue
+        if _gi_all not in final_placed:
+            print(f"  [DBG-FP] {_pv_all.net_name} NOT in final_placed", file=_dbgsys2.stderr)
+            continue
+        _vx_all, _vy_all = final_placed[_gi_all]
+        _segs_all = _cluster_segs(_pv_all, _vx_all, _vy_all)
+        print(f"  [DBG-FP] {_pv_all.net_name} at ({_vx_all:.3f},{_vy_all:.3f}) segs={_segs_all}",
+              file=_dbgsys2.stderr)
+    # Pair check for all skip-nets
+    _dbg_skip2 = [gi for gi in signal_indices if gi in final_placed
+                  and face_pads[gi].net_name in _skip_nets]
+    for _dbi2 in range(len(_dbg_skip2)):
+        for _dbj2 in range(_dbi2 + 1, len(_dbg_skip2)):
+            _gi3, _gj3 = _dbg_skip2[_dbi2], _dbg_skip2[_dbj2]
+            _pi3, _pj3 = face_pads[_gi3], face_pads[_gj3]
+            _vxi3, _vyi3 = final_placed[_gi3]
+            _vxj3, _vyj3 = final_placed[_gj3]
+            _d3 = math.hypot(_vxi3 - _vxj3, _vyi3 - _vyj3)
+            _si3 = _cluster_segs(_pi3, _vxi3, _vyi3)
+            _sj3 = _cluster_segs(_pj3, _vxj3, _vyj3)
+            _msd3 = min((_seg_to_seg_dist(*s1, *s2) for s1 in _si3 for s2 in _sj3),
+                        default=float('inf'))
+            _thr3 = _pi3.neckdown_w_mm / 2.0 + _pj3.neckdown_w_mm / 2.0 + CLEARANCE
+            if _msd3 < _thr3:
+                print(f"  [DBG-POST-COMPACT] skip-stub SHORT: {_pi3.net_name} vs {_pj3.net_name}"
+                      f" via_d={_d3:.4f} stub_d={_msd3:.4f} thr={_thr3:.4f}"
+                      f" A=({_vxi3:.3f},{_vyi3:.3f}) B=({_vxj3:.3f},{_vyj3:.3f})",
+                      file=_dbgsys2.stderr)
 
     # ------------------------------------------------------------------
     # Post-processing: HS partner suppression
