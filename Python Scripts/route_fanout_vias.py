@@ -3939,6 +3939,7 @@ def _face_fanout(
     edy: float,
     step_mm: float = 0.050,
     max_iter: int = 200,
+    skip_nets: set = None,
 ) -> list:
     """Co-optimized multi-pass outside-in fanout for a single dense IC face.
 
@@ -4055,7 +4056,8 @@ def _face_fanout(
     #    lat_off is pushed past neighbor vias; a stub is emitted but no via.
     #    Sorted outside-in (descending lateral distance from face center).
     # ------------------------------------------------------------------
-    _skip_nets = set(getattr(cfg, "FANOUT_VIA_SKIP_NETS", []))
+    _skip_nets = (set(skip_nets) if skip_nets is not None
+                  else set(getattr(cfg, "FANOUT_VIA_SKIP_NETS", [])))
     signal_indices = [
         i for i in range(n)
         if (face_pads[i].ref, face_pads[i].pad_num) in pending_set
@@ -6452,6 +6454,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _co_assignments = _face_fanout(
             _face_grp_aug, _pad_obs_early, _co_pending_set,
             _coopt_sg_clr, _co_ca, _co_edx, _co_edy,
+            skip_nets=skip_nets,
         )
 
         # Collect bus stubs and keepout set from side-effect storage
@@ -6565,6 +6568,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             _sg_assignments = _face_fanout(
                 _sg_pads_aug, _pad_obs_early, _sg_pending_set,
                 _coopt_sg_clr, _sg_ca, _sub_edx, _sub_edy,
+                skip_nets=skip_nets,
             )
             _sg_bus_stubs = getattr(_face_fanout, '_last_bus_stubs', [])
 
@@ -6687,6 +6691,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             _of_assignments = _face_fanout(
                 _of_pads_aug, _pad_obs_early, _of_sg_pending_set,
                 _coopt_sg_clr, _of_sg_ca, _of_edx, _of_edy,
+                skip_nets=skip_nets,
             )
             _of_bus_stubs = getattr(_face_fanout, '_last_bus_stubs', [])
 
