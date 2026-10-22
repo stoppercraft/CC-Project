@@ -520,10 +520,10 @@ def find_pad_via(px, py, pad_layer_id, net_name):
     else None.  Checks both board objects and _run_obs (vias placed this run).
 
     Accepted as "this pad's via":
-      (a) a non-via track on pad_layer_id/net_name has one endpoint within
-          PAD_STUB_TOL of (px,py) AND its other endpoint within _VIA_CONN_TOL
-          of any via on net_name; OR
-      (b) a via on net_name sits within _VIA_CONN_TOL of (px,py) directly.
+      (a) a via on net_name sits within _VIA_CONN_TOL of (px,py) directly; OR
+      (b) BFS along same-net same-layer stubs reachable from (px,py) finds a
+          via on net_name within _VIA_CONN_TOL of any visited node — handles
+          fanout bus-stub chains where the cluster via is several hops away.
     """
     all_vias = []
     for t in board.GetTracks():
@@ -534,37 +534,46 @@ def find_pad_via(px, py, pad_layer_id, net_name):
         if rnet == net_name and rx1 == rx2 and ry1 == ry2:
             all_vias.append((rx1, ry1))
 
+    # (a) via directly at pad
     for vx, vy in all_vias:
         if math.hypot(vx - px, vy - py) <= _VIA_CONN_TOL:
             return (vx, vy)
 
-    def _check_stub(sx, sy, ex, ey):
-        near_s = math.hypot(sx - px, sy - py) <= PAD_STUB_TOL
-        near_e = math.hypot(ex - px, ey - py) <= PAD_STUB_TOL
-        if not near_s and not near_e:
-            return None
-        ox, oy = (ex, ey) if near_s else (sx, sy)
-        for vx, vy in all_vias:
-            if math.hypot(ox - vx, oy - vy) <= _VIA_CONN_TOL:
-                return (vx, vy)
-        return None
-
+    # Collect all same-net same-layer stubs (board + this run)
+    stubs = []
     for t in board.GetTracks():
         if t.GetClass() == "PCB_VIA" or t.GetNetname() != net_name:
             continue
         if t.GetLayer() != pad_layer_id:
             continue
-        result = _check_stub(tomm(t.GetStart().x), tomm(t.GetStart().y),
-                              tomm(t.GetEnd().x),   tomm(t.GetEnd().y))
-        if result is not None:
-            return result
-
+        stubs.append((tomm(t.GetStart().x), tomm(t.GetStart().y),
+                      tomm(t.GetEnd().x),   tomm(t.GetEnd().y)))
     for rx1, ry1, rx2, ry2, _hw, rlyr, rnet in _run_obs:
         if rnet != net_name or rlyr != pad_layer_id or (rx1 == rx2 and ry1 == ry2):
             continue
-        result = _check_stub(rx1, ry1, rx2, ry2)
-        if result is not None:
-            return result
+        stubs.append((rx1, ry1, rx2, ry2))
+
+    # (b) BFS: start from pad position, traverse stub graph, stop at a via
+    visited = set()
+    frontier = [(px, py)]
+    while frontier:
+        cx, cy = frontier.pop()
+        key = (round(cx, 3), round(cy, 3))
+        if key in visited:
+            continue
+        visited.add(key)
+        for vx, vy in all_vias:
+            if math.hypot(vx - cx, vy - cy) <= _VIA_CONN_TOL:
+                return (vx, vy)
+        for sx, sy, ex, ey in stubs:
+            if math.hypot(sx - cx, sy - cy) <= PAD_STUB_TOL:
+                ekey = (round(ex, 3), round(ey, 3))
+                if ekey not in visited:
+                    frontier.append((ex, ey))
+            elif math.hypot(ex - cx, ey - cy) <= PAD_STUB_TOL:
+                skey = (round(sx, 3), round(sy, 3))
+                if skey not in visited:
+                    frontier.append((sx, sy))
 
     return None
 
@@ -584,18 +593,40 @@ def via_exists_at(x, y, net_name, tol=0.10):
     return False
 
 
+def _find_nearest_via(px, py, net_name, radius):
+    """
+    Return (vx, vy) of the nearest existing via on net_name within radius mm,
+    or None.  Checks board objects and _run_obs.
+    """
+    best_d, best_pos = radius, None
+    for t in board.GetTracks():
+        if t.GetClass() != "PCB_VIA" or t.GetNetname() != net_name:
+            continue
+        vx = tomm(t.GetPosition().x); vy = tomm(t.GetPosition().y)
+        d = math.hypot(vx - px, vy - py)
+        if d < best_d:
+            best_d, best_pos = d, (vx, vy)
+    for rx1, ry1, rx2, ry2, _hw, _lyr, rnet in _run_obs:
+        if rnet != net_name or rx1 != rx2 or ry1 != ry2:
+            continue
+        d = math.hypot(rx1 - px, ry1 - py)
+        if d < best_d:
+            best_d, best_pos = d, (rx1, ry1)
+    return best_pos
+
+
 def get_pad_anchor(ref, pad, net_name, route_layer_id, via_pad, via_drill, stub_w,
                    require_offset=False):
     """
     Return (x, y) routing anchor on route_layer_id, or None if unreachable.
-    Priority: nearby fanout via (with confirmed stub) > pad on layer > new via.
-
-    A nearby via is only accepted as this pad's anchor when a track endpoint
-    on the pad's own layer exists within PAD_STUB_TOL of the pad centre —
-    confirming that the pad has a stub connecting it to the via.  Without this
-    check, a different component's via on the same net (within
-    4mm radius) would be misidentified as this pad's anchor, causing
-    the pad to be marked connected when it has no copper to the routed network.
+    Priority:
+      1. Existing via confirmed by stub (find_pad_via)
+      2. Pad already on routing layer
+      3. Cluster-shared via within fanout sharing radius — fanout suppresses
+         per-pad vias for adjacent same-net pads without emitting connecting
+         bus stubs; detect and reuse the cluster via rather than placing a new
+         one.  The suppressed pad's physical connection is left to FreeRouting.
+      4. New via via place_pad_via
 
     When require_offset=True, returns None instead of a blocked pad-center
     anchor (used by route_net_full to skip truly unreachable pads).
@@ -608,6 +639,11 @@ def get_pad_anchor(ref, pad, net_name, route_layer_id, via_pad, via_drill, stub_
     if pad_on_layer(ls, route_layer_id):
         return (px, py)
     if via_pad is not None:
+        cluster_r = cfg.CLEARANCE_AUDIT.get("via_share_proximity_mm", 5.5)
+        nearby = _find_nearest_via(px, py, net_name, cluster_r)
+        if nearby is not None:
+            log.append(f"    [cluster-via] {ref}: reuse nearby via ({nearby[0]:.3f},{nearby[1]:.3f})")
+            return nearby
         return place_pad_via(ref, px, py, pad.GetLayer(), net_name,
                              route_layer_id, via_pad, via_drill, stub_w,
                              require_offset=require_offset)
