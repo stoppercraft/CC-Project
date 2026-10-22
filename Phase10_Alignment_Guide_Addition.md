@@ -993,3 +993,85 @@ belongs in `routing_config.py`, not in the script. This includes:
 ---
 
 *End of Phase 10 Part A insert. Continue with existing Part B — HS differential pairs.*
+
+---
+
+## SECTION 5 — Phase 5 Power Netclass Setup (new insert)
+
+*Inserts in Phase 5 (Compliance Design Rules Setup), after the existing HighSpeed netclass bullet and before the DRC rules bullet.*
+
+---
+
+**Power netclass — KiCad Board Setup → Net Classes.**
+
+Define a `Power` netclass and assign every supply rail net to it. This is a one-time setup step performed in KiCad's Board Setup dialog before any routing begins. It has no equivalent in a config file — KiCad stores netclass membership in the `.kicad_pcb` file.
+
+**Why this step matters:**
+
+- KiCad enforces Power netclass trace widths, via sizes, and clearances during DRC. Without a Power netclass, all supply rail nets fall into `Default` and are subject only to the default minimum rules — they receive no width or via enforcement.
+- `route_fanout_vias.py` reads netclass membership at runtime. Pads whose net is in the `Power` netclass receive VIPPO (via-in-pad) treatment when the pad geometry qualifies, instead of an offset escape stub. Without the netclass, the script cannot distinguish supply pads from signal pads.
+- `width_audit.py` (Phase 10 Part 0.5) uses netclass to cross-check trace widths against power budgets. Without the netclass, width auditing falls back to the `Default` rules for all power traces.
+
+**How to set up the Power netclass:**
+
+1. Open the PCB in KiCad. Go to **Board Setup → Design Rules → Net Classes**.
+2. Add a new netclass named exactly `Power` (capital P — KiCad netclass names are case-sensitive).
+3. Set its trace width, via drill, and clearance to match your power design rules (typical starting values: `width = 0.5 mm`, `via_drill = 0.4 mm`, `clearance = 0.2 mm`). These can be tuned later when trace widths are finalized.
+4. In the **Nets** panel, assign every supply rail net to the `Power` netclass. Do not assign GND — it is handled separately by the ground plane (copper fill zone).
+
+**Which nets to assign to Power:**
+
+Assign nets that carry supply current at board scale — rails that an LDO, regulator, or power entry connector outputs or distributes. Exclude nets that sense, carry signals, or are referenced to a supply but do not carry significant current.
+
+| Net type | Assign to Power? | Notes |
+|---|---|---|
+| Output rails of regulators and converters (e.g. `+5V`, `VMAIN`, `LT_3V3`, `LT_1V8`, `LT_1V2`) | **Yes** | Carry full load current |
+| Raw input power before regulators (e.g. `PWR_IN_RAW`, `PWR_IN`, `USBC_VBUS`) | **Yes** | Entry current — same current budget as output rails |
+| GND | **No** | Copper fill zone handles GND return; no per-net via or width rule needed |
+| Switching node nets (e.g. `BUCK_SW`) | **No** — leave in `Default` | `route_critical.py` and `SWITCHING_LOOPS` config handle these; a Power netclass width constraint conflicts with the neckdown logic |
+| Bootstrap and control nets (e.g. `BUCK_BOOT`) | **No** — leave in `Default` | Low-current control signal; does not need power rules |
+| Sense divider nets (e.g. `VDET_H`, `VDET_L`, `FB`) | **No** | Signal/sense, not current-carrying |
+| High-speed pair nets | **No** — declare in `HS_PAIRS` | HS net rules come from `routing_config.py::HS_PAIRS` |
+
+When in doubt, apply this test: if the net's trace could carry the peak current of the supply it belongs to, it belongs in `Power`. If it only carries a fraction of that current (divider, sense, bootstrap), it does not.
+
+**Add a `_load_power_nets()` helper to routing_config.py:**
+
+After assigning nets in KiCad, add this helper to `routing_config.py`. It reads the Power netclass membership from the `.kicad_pcb` file at runtime, so scripts always use the current netclass state rather than a hardcoded list.
+
+```python
+def _load_power_nets(pcb_file: str, kicad_site_pkgs: str) -> list[str]:
+    """Return all net names assigned to the 'Power' netclass in the PCB file."""
+    import sys
+    sys.path.insert(0, kicad_site_pkgs)
+    import pcbnew
+    board  = pcbnew.LoadBoard(pcb_file)
+    nc_map = board.GetNetInfo().NetsByName()
+    return [
+        name for name, net in nc_map.items()
+        if net.GetNetClass().GetName() == "Power"
+    ]
+
+# Derive POWER_NETS from the board's netclass assignments.
+# Populated at import time — requires PCB_FILE and KICAD_SITE_PKGS to be set first.
+POWER_NETS: list[str] = _load_power_nets(PCB_FILE, KICAD_SITE_PKGS)
+```
+
+Place `_load_power_nets` and the `POWER_NETS` assignment after the `PCB_FILE` and `KICAD_SITE_PKGS` lines and before `SWITCHING_LOOPS`. Scripts that previously required a manually maintained `POWER_NETS` list can import it from `routing_config` and will automatically reflect any netclass changes made in KiCad without editing `routing_config.py`.
+
+**Verification — confirm the assignment is correct before routing:**
+
+```python
+import sys; sys.path.insert(0, r"C:\Program Files\KiCad\10.0\bin\Lib\site-packages")
+import pcbnew
+board = pcbnew.LoadBoard(r"[FULL_PATH_TO_PROJECT].kicad_pcb")
+nc_map = board.GetNetInfo().NetsByName()
+power = sorted(n for n, net in nc_map.items() if net.GetNetClass().GetName() == "Power")
+print(f"{len(power)} Power nets: {power}")
+```
+
+Expected: every supply rail you identified is in the list. GND, switching node nets, and signal nets are absent. If any net is missing or misclassified, return to Board Setup and correct the assignment before proceeding.
+
+---
+
+*End of Phase 5 Power Netclass insert.*

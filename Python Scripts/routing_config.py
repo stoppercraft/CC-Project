@@ -192,6 +192,23 @@ LAYER_SCHEME = {
     "gnd_ref":   "GND",    # GND reference net name for return via pairing
 }
 
+# ── Power netclass helper ─────────────────────────────────────────────────────
+def _load_power_nets(pcb_file: str, kicad_site_pkgs: str) -> list:
+    """Return all net names assigned to the 'Power' netclass in the PCB file."""
+    import sys as _sys
+    _sys.path.insert(0, kicad_site_pkgs)
+    import pcbnew as _pcbnew
+    _board = _pcbnew.LoadBoard(pcb_file)
+    _ns    = _board.GetDesignSettings().m_NetSettings
+    _ns.RecomputeEffectiveNetclasses()
+    return sorted(
+        str(name)
+        for name in _board.GetNetInfo().NetsByName().keys()
+        if _ns.GetEffectiveNetClass(str(name)).GetName() == "Power"
+    )
+
+POWER_NETS: list = _load_power_nets(PCB_FILE, KICAD_SITE_PKGS)
+
 # ── Fanout via skip nets ──────────────────────────────────────────────────────
 # Nets listed here are excluded from fanout via generation entirely.
 # Nets that must never receive fanout vias regardless of topology.
