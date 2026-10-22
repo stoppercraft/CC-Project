@@ -4094,8 +4094,12 @@ def _face_fanout(
                 # Suppress axial stub only when signal_indices will route the pad.
                 # Skip-net pads (not in pending_set) never enter signal_indices, so
                 # they must always get their axial stub or they go unconnected.
+                # Cluster primaries are also suppressed: their centroid is synthetic
+                # (not a real pad), so an axial stub from that position creates a
+                # dangling trace.  Section 6b emits proper escapes from the real pads.
                 _in_pending = (face_pads[i].ref, face_pads[i].pad_num) in pending_set
-                if i not in bus_escape_indices or not _in_pending:
+                _is_cluster = bool(face_pads[i].cluster_real_pads)
+                if (i not in bus_escape_indices or not _in_pending) and not _is_cluster:
                     bus_stubs_to_write.append((px_i, py_i, px_i, bus_esc, nw, bnet))
         else:  # E/W face — escape is X
             bus_esc = v0.pad_x + edx * bus_depth
@@ -4123,7 +4127,8 @@ def _face_fanout(
                                        'x2': bus_esc, 'y2': py_i,
                                        'hw': bus_hw, 'net': bnet})
                 _in_pending = (face_pads[i].ref, face_pads[i].pad_num) in pending_set
-                if i not in bus_escape_indices or not _in_pending:
+                _is_cluster = bool(face_pads[i].cluster_real_pads)
+                if (i not in bus_escape_indices or not _in_pending) and not _is_cluster:
                     bus_stubs_to_write.append((px_i, py_i, bus_esc, py_i, nw, bnet))
 
     # ------------------------------------------------------------------
