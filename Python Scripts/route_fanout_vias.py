@@ -84,6 +84,7 @@ class PendingVia:
     cluster_real_pads:     list  = None  # [(pad_x, pad_y, neckdown_w_mm), ...] for herringbone cluster primaries
     sandwiched:            bool  = False  # True → non-HS pad between HS pairs on same face; escaped inward
     face_fanout_assigned:  bool  = False  # True → via position assigned by _face_fanout; skip 1g/1g-2d/run_passes search
+    boundary_anchor_only:  bool  = False  # True → pad included in adjacent-face fanout as obstacle only; suppress stub emission
 
 
 @dataclass
@@ -3655,7 +3656,8 @@ def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
             continue
         sk_px  = pcbnew.ToMM(sk_pad.GetPosition().x)
         sk_py  = pcbnew.ToMM(sk_pad.GetPosition().y)
-        if abs(sk_px * edx + sk_py * edy - face_axial) > 1.0:
+        sk_axial_dev = abs(sk_px * edx + sk_py * edy - face_axial)
+        if sk_axial_dev > 1.0:
             continue
         sk_num = sk_pad.GetNumber()
         if sk_num in existing_nums:
@@ -3666,28 +3668,33 @@ def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
         sk_ph  = pcbnew.ToMM(sk_pad.GetSizeY())
         sk_nw  = neckdown_stub_width(sk_floor, sk_pw, sk_ph, sk_net, PRIORITY_OTHER)
         sk_bb  = sk_pad.GetBoundingBox()
+        # Pads with axial deviation > 0.5mm are corner pads that belong to an
+        # adjacent face.  Include them as obstacles in this face's fanout but
+        # suppress stub emission so only the true-face stub is written to the board.
+        _sk_anchor_only = sk_axial_dev > 0.5
         skip_pvs.append(PendingVia(
-            net_name        = sk_net,
-            ref             = fp.GetReference(),
-            pad_num         = sk_num,
-            pad_x           = sk_px,
-            pad_y           = sk_py,
-            pad_layer_id    = sk_pad.GetLayer(),
-            target_layer_id = tgt_layer,
-            escape_dx       = edx,
-            escape_dy       = edy,
-            priority        = PRIORITY_OTHER,
-            via_drill_mm    = sk_drill,
-            via_annular_mm  = sk_ann,
-            neckdown_w_mm   = sk_nw,
-            neckdown_len_mm = sk_nl,
-            max_search_mm   = sk_mx,
-            pad_w_mm        = sk_pw,
-            pad_h_mm        = sk_ph,
-            pad_bbox        = (pcbnew.ToMM(sk_bb.GetLeft()),
-                               pcbnew.ToMM(sk_bb.GetTop()),
-                               pcbnew.ToMM(sk_bb.GetRight()),
-                               pcbnew.ToMM(sk_bb.GetBottom())),
+            net_name             = sk_net,
+            ref                  = fp.GetReference(),
+            pad_num              = sk_num,
+            pad_x                = sk_px,
+            pad_y                = sk_py,
+            pad_layer_id         = sk_pad.GetLayer(),
+            target_layer_id      = tgt_layer,
+            escape_dx            = edx,
+            escape_dy            = edy,
+            priority             = PRIORITY_OTHER,
+            via_drill_mm         = sk_drill,
+            via_annular_mm       = sk_ann,
+            neckdown_w_mm        = sk_nw,
+            neckdown_len_mm      = sk_nl,
+            max_search_mm        = sk_mx,
+            pad_w_mm             = sk_pw,
+            pad_h_mm             = sk_ph,
+            pad_bbox             = (pcbnew.ToMM(sk_bb.GetLeft()),
+                                    pcbnew.ToMM(sk_bb.GetTop()),
+                                    pcbnew.ToMM(sk_bb.GetRight()),
+                                    pcbnew.ToMM(sk_bb.GetBottom())),
+            boundary_anchor_only = _sk_anchor_only,
         ))
     return skip_pvs
 
@@ -7417,7 +7424,8 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                     if pv.face_fanout_assigned
                     and hasattr(pv, 'stub_only_vx') and hasattr(pv, 'stub_only_vy')]
                    + [pv for pv in getattr(_run, '_all_skip_net_pvs', [])
-                      if hasattr(pv, 'stub_only_vx') and hasattr(pv, 'stub_only_vy')])
+                      if hasattr(pv, 'stub_only_vx') and hasattr(pv, 'stub_only_vy')
+                      and not pv.boundary_anchor_only])
     _so_emit_count = 0
     for _so_pv in _so_all_pvs:
         if not (hasattr(_so_pv, 'stub_only_vx') and hasattr(_so_pv, 'stub_only_vy')):
