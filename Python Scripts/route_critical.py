@@ -51,7 +51,6 @@ BOARD_EDGE_CLEARANCE  = 0.50   # mm — copper-to-edge DRC minimum
 MAZE_RES_MM           = 0.1
 MAZE_MARGIN           = 16.0
 BEND_COST             = 4
-FANOUT_VIA_PROXIMITY  = 4.0    # mm — search radius for fanout vias near a pad
 ANCHOR_CONN_TOL       = 0.05   # mm — tolerance for "already has a track endpoint here"
 COMP_KEEPOUT_MM       = 0.5    # mm — margin around component bboxes for trunk routing
 
@@ -510,54 +509,78 @@ def anchor_accessible(ax, ay, net_name, layer_id, width_mm):
             return True
     return False
 
-def find_nearby_via(px, py, net_name):
-    """Return (vx, vy) of nearest via on net_name within FANOUT_VIA_PROXIMITY, or None."""
-    best_dist = FANOUT_VIA_PROXIMITY
-    best = None
-    for track in board.GetTracks():
-        if track.GetClass() != "PCB_VIA" or track.GetNetname() != net_name:
+
+
+PAD_STUB_TOL  = 0.25   # mm — stub endpoint must be this close to pad centre
+_VIA_CONN_TOL = 0.10   # mm — stub's far end must be this close to via centre
+
+def find_pad_via(px, py, pad_layer_id, net_name):
+    """
+    Return (vx, vy) if pad at (px, py) already has a stub+via on net_name,
+    else None.  Checks both board objects and _run_obs (vias placed this run).
+
+    Accepted as "this pad's via":
+      (a) a non-via track on pad_layer_id/net_name has one endpoint within
+          PAD_STUB_TOL of (px,py) AND its other endpoint within _VIA_CONN_TOL
+          of any via on net_name; OR
+      (b) a via on net_name sits within _VIA_CONN_TOL of (px,py) directly.
+    """
+    all_vias = []
+    for t in board.GetTracks():
+        if t.GetClass() != "PCB_VIA" or t.GetNetname() != net_name:
             continue
-        vx = tomm(track.GetPosition().x); vy = tomm(track.GetPosition().y)
-        d = math.hypot(vx - px, vy - py)
-        if d < best_dist:
-            best_dist = d; best = (vx, vy)
+        all_vias.append((tomm(t.GetPosition().x), tomm(t.GetPosition().y)))
     for rx1, ry1, rx2, ry2, _hw, _lyr, rnet in _run_obs:
-        if rnet != net_name or rx1 != rx2 or ry1 != ry2:
-            continue
-        d = math.hypot(rx1 - px, ry1 - py)
-        if d < best_dist:
-            best_dist = d; best = (rx1, ry1)
-    return best
+        if rnet == net_name and rx1 == rx2 and ry1 == ry2:
+            all_vias.append((rx1, ry1))
 
+    for vx, vy in all_vias:
+        if math.hypot(vx - px, vy - py) <= _VIA_CONN_TOL:
+            return (vx, vy)
 
-PAD_STUB_TOL = 0.25   # mm — how close a track endpoint must be to a pad centre
-                       # to count as "this pad has a stub connecting it to its via"
+    def _check_stub(sx, sy, ex, ey):
+        near_s = math.hypot(sx - px, sy - py) <= PAD_STUB_TOL
+        near_e = math.hypot(ex - px, ey - py) <= PAD_STUB_TOL
+        if not near_s and not near_e:
+            return None
+        ox, oy = (ex, ey) if near_s else (sx, sy)
+        for vx, vy in all_vias:
+            if math.hypot(ox - vx, oy - vy) <= _VIA_CONN_TOL:
+                return (vx, vy)
+        return None
 
-def pad_has_stub(px, py, pad_layer_id, net_name):
-    """
-    True if a track endpoint on pad_layer_id/net_name lies within PAD_STUB_TOL
-    of (px, py).  Used to verify that a nearby via is actually this pad's own
-    transition point rather than a different component's via that happens to
-    share the same net and be within FANOUT_VIA_PROXIMITY.
-    """
-    for track in board.GetTracks():
-        if track.GetClass() == "PCB_VIA" or track.GetNetname() != net_name:
+    for t in board.GetTracks():
+        if t.GetClass() == "PCB_VIA" or t.GetNetname() != net_name:
             continue
-        if track.GetLayer() != pad_layer_id:
+        if t.GetLayer() != pad_layer_id:
             continue
-        sx = tomm(track.GetStart().x); sy = tomm(track.GetStart().y)
-        ex = tomm(track.GetEnd().x);   ey = tomm(track.GetEnd().y)
-        if (math.hypot(sx - px, sy - py) <= PAD_STUB_TOL or
-                math.hypot(ex - px, ey - py) <= PAD_STUB_TOL):
-            return True
+        result = _check_stub(tomm(t.GetStart().x), tomm(t.GetStart().y),
+                              tomm(t.GetEnd().x),   tomm(t.GetEnd().y))
+        if result is not None:
+            return result
+
     for rx1, ry1, rx2, ry2, _hw, rlyr, rnet in _run_obs:
-        if rnet != net_name or rlyr != pad_layer_id:
+        if rnet != net_name or rlyr != pad_layer_id or (rx1 == rx2 and ry1 == ry2):
             continue
-        if rx1 == rx2 and ry1 == ry2:
-            continue  # point obstacle — via, not a stub
-        if (math.hypot(rx1 - px, ry1 - py) <= PAD_STUB_TOL or
-                math.hypot(rx2 - px, ry2 - py) <= PAD_STUB_TOL):
+        result = _check_stub(rx1, ry1, rx2, ry2)
+        if result is not None:
+            return result
+
+    return None
+
+
+def via_exists_at(x, y, net_name, tol=0.10):
+    """True if a via on net_name already exists within tol mm of (x, y)."""
+    for t in board.GetTracks():
+        if t.GetClass() != "PCB_VIA" or t.GetNetname() != net_name:
+            continue
+        if math.hypot(tomm(t.GetPosition().x) - x,
+                      tomm(t.GetPosition().y) - y) <= tol:
             return True
+    for rx1, ry1, rx2, ry2, _hw, _lyr, rnet in _run_obs:
+        if rnet == net_name and rx1 == rx2 and ry1 == ry2:
+            if math.hypot(rx1 - x, ry1 - y) <= tol:
+                return True
     return False
 
 
@@ -571,15 +594,15 @@ def get_pad_anchor(ref, pad, net_name, route_layer_id, via_pad, via_drill, stub_
     on the pad's own layer exists within PAD_STUB_TOL of the pad centre —
     confirming that the pad has a stub connecting it to the via.  Without this
     check, a different component's via on the same net (within
-    FANOUT_VIA_PROXIMITY) would be misidentified as this pad's anchor, causing
+    4mm radius) would be misidentified as this pad's anchor, causing
     the pad to be marked connected when it has no copper to the routed network.
 
     When require_offset=True, returns None instead of a blocked pad-center
     anchor (used by route_net_full to skip truly unreachable pads).
     """
     px = tomm(pad.GetPosition().x); py = tomm(pad.GetPosition().y)
-    via = find_nearby_via(px, py, net_name)
-    if via is not None and pad_has_stub(px, py, pad.GetLayer(), net_name):
+    via = find_pad_via(px, py, pad.GetLayer(), net_name)
+    if via is not None:
         return via
     ls = pad.GetLayerSet()
     if pad_on_layer(ls, route_layer_id):
@@ -657,9 +680,11 @@ def route_between(x1, y1, x2, y2, net_name, width_mm, layer_id,
                    route_maze(ex1, ey1, ex2, ey2, width_mm, alt_obs))
         if alt_wp is not None:
             log.append(f"    [via-detour] → {board.GetLayerName(ALT_LAYER)}")
-            add_via(ex1, ey1, net_name, via_pad, via_drill)
+            if not via_exists_at(ex1, ey1, net_name):
+                add_via(ex1, ey1, net_name, via_pad, via_drill)
             waypoints = alt_wp; used_layer = ALT_LAYER
-            add_via(ex2, ey2, net_name, via_pad, via_drill)
+            if not via_exists_at(ex2, ey2, net_name):
+                add_via(ex2, ey2, net_name, via_pad, via_drill)
 
     if waypoints is None:
         region = (min(ex1,ex2)-2, min(ey1,ey2)-2, max(ex1,ex2)+2, max(ey1,ey2)+2)
@@ -720,7 +745,7 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
             # fine-pitch connector / SOM pads from being rejected by an
             # anchor_accessible check that would require a 2.5mm corridor
             # directly out of a 0.6mm via.
-            if find_nearby_via(px, py, net_name) is not None:
+            if find_pad_via(px, py, pad.GetLayer(), net_name) is not None:
                 eff_w = min(via_pad, width_mm)
             elif pad_on_layer(pad.GetLayerSet(), layer_id):
                 eff_w = min(tomm(pad.GetSize().x), tomm(pad.GetSize().y), width_mm)
@@ -863,13 +888,21 @@ def route_connection(ref_a, ref_b, net_name, width_mm, layer_id,
 
     # Layer transition if pad not on the routing layer.
     if not pad_on_layer(ls_a, layer_id) and via_pad is not None:
-        x1, y1 = place_pad_via(ref_a, x1, y1, layer_a, net_name, layer_id,
-                                via_pad, via_drill, stub_w)
+        existing_a = find_pad_via(x1, y1, layer_a, net_name)
+        if existing_a is not None:
+            x1, y1 = existing_a
+        else:
+            x1, y1 = place_pad_via(ref_a, x1, y1, layer_a, net_name, layer_id,
+                                    via_pad, via_drill, stub_w)
         pad_w_a = via_pad
 
     if not pad_on_layer(ls_b, layer_id) and via_pad is not None:
-        x2, y2 = place_pad_via(ref_b, x2, y2, layer_b, net_name, layer_id,
-                                via_pad, via_drill, stub_w)
+        existing_b = find_pad_via(x2, y2, layer_b, net_name)
+        if existing_b is not None:
+            x2, y2 = existing_b
+        else:
+            x2, y2 = place_pad_via(ref_b, x2, y2, layer_b, net_name, layer_id,
+                                    via_pad, via_drill, stub_w)
         pad_w_b = via_pad
 
     # Neckdown at exit points
@@ -901,10 +934,12 @@ def route_connection(ref_a, ref_b, net_name, width_mm, layer_id,
                   route_maze(ex1, ey1, ex2, ey2, width_mm, alt_obs)
         if alt_wp is not None:
             log.append(f"    [via-detour] → {board.GetLayerName(ALT_LAYER)}")
-            add_via(ex1, ey1, net_name, via_pad, via_drill)
+            if not via_exists_at(ex1, ey1, net_name):
+                add_via(ex1, ey1, net_name, via_pad, via_drill)
             waypoints = alt_wp
             used_layer = ALT_LAYER
-            add_via(ex2, ey2, net_name, via_pad, via_drill)
+            if not via_exists_at(ex2, ey2, net_name):
+                add_via(ex2, ey2, net_name, via_pad, via_drill)
 
     if waypoints is None:
         region = (min(ex1, ex2) - 2, min(ey1, ey2) - 2,
