@@ -2005,7 +2005,16 @@ def _suppress_proximity_via_sharing(pending: List["PendingVia"],
 
     # Only non-HS pads are eligible. Sandwiched pads (between HS pairs) are excluded —
     # they get inward escape vias and must not be merged with a distant shared via.
-    eligible = [pv for pv in pending if pv.priority != PRIORITY_HS and not pv.sandwiched]
+    # VIPPO-eligible switching loop pads are also excluded: each gets its own via-in-pad
+    # at its own pad centre, so proximity sharing has no meaning for them.
+    def _sw_vippo_eligible(pv: "PendingVia") -> bool:
+        return (pv.priority == PRIORITY_SW
+                and min(pv.pad_w_mm, pv.pad_h_mm) >= pv.via_drill_mm + 2.0 * pv.via_annular_mm)
+
+    eligible = [pv for pv in pending
+                if pv.priority != PRIORITY_HS
+                and not pv.sandwiched
+                and not _sw_vippo_eligible(pv)]
 
     # Group by (net_name, pad_layer_id).
     by_group: dict = defaultdict(list)
