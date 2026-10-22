@@ -3679,10 +3679,10 @@ def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
             continue
         sk_drill, sk_ann        = via_params(PRIORITY_OTHER)
         sk_floor, sk_nl, sk_mx  = neckdown_params(PRIORITY_OTHER, sk_net)
-        sk_pw  = pcbnew.ToMM(sk_pad.GetSizeX())
-        sk_ph  = pcbnew.ToMM(sk_pad.GetSizeY())
-        sk_nw  = neckdown_stub_width(sk_floor, sk_pw, sk_ph, sk_net, PRIORITY_OTHER)
         sk_bb  = sk_pad.GetBoundingBox()
+        sk_pw  = pcbnew.ToMM(sk_bb.GetWidth())
+        sk_ph  = pcbnew.ToMM(sk_bb.GetHeight())
+        sk_nw  = neckdown_stub_width(sk_floor, sk_pw, sk_ph, sk_net, PRIORITY_OTHER)
         # Pads with axial deviation > 0.5mm are corner pads that belong to an
         # adjacent face.  Include them as obstacles in this face's fanout but
         # suppress stub emission so only the true-face stub is written to the board.
@@ -3758,10 +3758,10 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
             continue  # in pending on a different face — via-bearing, not a phantom
         drill, ann = via_params(PRIORITY_OTHER)
         floor, nl, mx = neckdown_params(PRIORITY_OTHER, net)
-        pw  = pcbnew.ToMM(pad.GetSizeX())
-        ph  = pcbnew.ToMM(pad.GetSizeY())
-        nw  = neckdown_stub_width(floor, pw, ph, net, PRIORITY_OTHER)
         bb   = pad.GetBoundingBox()
+        pw  = pcbnew.ToMM(bb.GetWidth())
+        ph  = pcbnew.ToMM(bb.GetHeight())
+        nw  = neckdown_stub_width(floor, pw, ph, net, PRIORITY_OTHER)
         bb_l = pcbnew.ToMM(bb.GetLeft())
         bb_t = pcbnew.ToMM(bb.GetTop())
         bb_r = pcbnew.ToMM(bb.GetRight())
@@ -5561,8 +5561,9 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             drill, annular  = via_params(priority)
             floor, nl, mx   = neckdown_params(priority, net_name)
             dx, dy          = escape_direction(fp, pad, nl)
-            pw              = pcbnew.ToMM(pad.GetSizeX())
-            ph              = pcbnew.ToMM(pad.GetSizeY())
+            _bb  = pad.GetBoundingBox()
+            pw              = pcbnew.ToMM(_bb.GetWidth())
+            ph              = pcbnew.ToMM(_bb.GetHeight())
             _net_obj  = pad.GetNet()
             _nc_name  = ""
             try:
@@ -5570,7 +5571,6 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             except Exception:
                 pass
             nw   = neckdown_stub_width(floor, pw, ph, net_name, priority)
-            _bb  = pad.GetBoundingBox()
             _bbox = (pcbnew.ToMM(_bb.GetLeft()),
                      pcbnew.ToMM(_bb.GetTop()),
                      pcbnew.ToMM(_bb.GetRight()),
