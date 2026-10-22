@@ -2421,8 +2421,6 @@ def _place_group(group: List[PendingVia],
 
     def is_valid_pos(via: PendingVia, vx: float, vy: float,
                      placed: List[PendingVia]) -> bool:
-        _dbg = (via.ref == "R_TSCL1" and via.pad_num == "2"
-                and 151.0 < vy < 155.0)
         r = _via_r(via, clearance)
         # Exclude via's own pad from the circular obstacle check — the stub
         # trace connects them so no DRC clearance is required.  A separate
@@ -2435,46 +2433,22 @@ def _place_group(group: List[PendingVia],
                               via_copper=_via_copper,
                               via_net=via.net_name, via_netclass=via.netclass,
                               via_ref=via.ref):
-            if _dbg and 151.85 < vy < 153.5:
-                for _o in all_obs:
-                    if (_o.ref == via.ref and abs(_o.cx - via.pad_x) < 1e-3
-                            and abs(_o.cy - via.pad_y) < 1e-3):
-                        continue
-                    if via.net_name and _o.net_name and _o.net_name == via.net_name:
-                        continue
-                    _cl2 = _pair_clearance(via.net_name, via.netclass, via.ref,
-                                           _o.net_name, _o.netclass, _o.ref)
-                    _chk2 = _via_copper + _cl2
-                    if _o.bbox is not None:
-                        _d2 = _dist_point_to_bbox(vx, vy, _o.bbox)
-                        if _d2 < _chk2:
-                            print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) F1 BLOCKER pad {_o.ref}/{getattr(_o,'pad_num','?')} net={_o.net_name} d={_d2:.4f} need>={_chk2:.4f}")
-                    else:
-                        _dist2 = math.hypot(vx - _o.cx, vy - _o.cy)
-                        _need2 = _chk2 + _o.r
-                        if _dist2 < _need2:
-                            print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) F1 BLOCKER via ({_o.cx:.3f},{_o.cy:.3f}) net={_o.net_name} r={_o.r:.3f} dist={_dist2:.4f} need>={_need2:.4f}")
-            if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F1 _clear_of_obs")
             return False
         # Via copper (drill + annular) must not overlap source pad copper.
         # No DRC gap needed (same net), but physical overlap = via-in-pad.
         if via.pad_bbox is not None:
             if _dist_point_to_bbox(vx, vy, via.pad_bbox) < (
                     via.via_drill_mm / 2.0 + via.via_annular_mm):
-                if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F2 pad_bbox")
                 return False
         if not ig_circles_ok(vx, vy, r, placed):
-            if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F3 ig_circles")
             return False
         # Board edge clearance for via copper.
         if edge_segs and not _clears_edges(
                 vx, vy, r + _BOARD_EDGE_CLEARANCE, edge_segs):
-            if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F3b edge")
             return False
         all_stubs = ext_stubs + _ig_stubs(placed)
         if not _clear_of_stub_segs(vx, vy, r, all_stubs, via.ref, via.pad_num,
                                     excl_net=via.net_name, clearance=clearance):
-            if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F4 stub_segs")
             return False
         via.via_x, via.via_y = vx, vy
         # Use the actual 45° stub waypoint — _via_corner gives the old
@@ -2482,9 +2456,7 @@ def _place_group(group: List[PendingVia],
         _segs45 = _route_45deg_stub(via.pad_x, via.pad_y, vx, vy,
                                      via.escape_dx, via.escape_dy)
         cx, cy = (_segs45[0][2], _segs45[0][3]) if _segs45 else (vx, vy)
-        if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) segs={len(_segs45)} cx={cx:.3f} cy={cy:.3f} nw={via.neckdown_w_mm:.3f}")
         if not _stub_clear(via, cx, cy, pad_obs, clearance, all_stubs, edge_segs):
-            if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F5 _stub_clear")
             return False
         # Check BOTH stub segments against in-group placed via circles.
         # _stub_clear checks stub segments vs pad obstacles and stub segments,
@@ -2515,12 +2487,10 @@ def _place_group(group: List[PendingVia],
                 # pad→waypoint leg vs placed via circle
                 if _dist_to_segment(other.via_x, other.via_y,
                                      via.pad_x, via.pad_y, cx, cy) < threshold:
-                    if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F6 other={other.ref}/{other.pad_num} net={other.net_name} via=({other.via_x:.3f},{other.via_y:.3f}) thr={threshold:.3f} pad_dist={_other_pad_dist:.3f}")
                     return False
             # waypoint→via leg vs placed via circle (only when stub is bent)
             if bent and _dist_to_segment(other.via_x, other.via_y,
                                           cx, cy, vx, vy) < threshold:
-                if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F6b-bent other={other.ref}/{other.pad_num}")
                 return False
         # Cross-group via circles: all_obs entries with bbox=None are via circles
         # (other_obs constructed from pending vias).  obs.r = copper_r + clearance,
@@ -2542,13 +2512,10 @@ def _place_group(group: List[PendingVia],
             if _obs_pad_dist >= threshold:
                 if _dist_to_segment(obs.cx, obs.cy,
                                      via.pad_x, via.pad_y, cx, cy) < threshold:
-                    if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F7 obs=({obs.cx:.3f},{obs.cy:.3f}) net={obs.net_name} r={obs.r:.3f} thr={threshold:.3f} pad_dist={_obs_pad_dist:.3f}")
                     return False
             if bent and _dist_to_segment(obs.cx, obs.cy,
                                           cx, cy, vx, vy) < threshold:
-                if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) FAIL F7b-bent obs=({obs.cx:.3f},{obs.cy:.3f})")
                 return False
-        if _dbg: print(f"  DBG TSCL1/2 ({vx:.3f},{vy:.3f}) PASS all checks")
         return True
 
     def is_valid_pos_no_stubs(via: PendingVia, vx: float, vy: float,
@@ -2863,8 +2830,6 @@ def _place_group(group: List[PendingVia],
             #      pad's own level (axial offset 0) moves far enough away from the
             #      row that the perpendicular clearance check succeeds.
             if not found_clean and multi_pad_face:
-                if via.ref == 'R_TSCL1' and via.pad_num == '2':
-                    print(f"  DBG 1dp ENTER R_TSCL1/2 pad=({via.pad_x:.3f},{via.pad_y:.3f}) neckdown={via.neckdown_len_mm:.3f} placed_n={len(placed)}")
                 _perp_dx_v2, _perp_dy_v2 = -edy, edx
                 _S2_STEP = STEP_MM * 5  # 0.25mm axial step
                 for _ax_sign2 in (1, -1):
@@ -4405,27 +4370,6 @@ def _face_fanout(
 
         if first_fail_si is None:
             final_placed = pass_result
-            # DEBUG: check skip-net stub proximity in successful main-loop iteration
-            import sys as _dbgsys
-            _dbg_skip = [gi for gi in signal_indices if gi in final_placed
-                         and face_pads[gi].net_name in _skip_nets]
-            for _dbi in range(len(_dbg_skip)):
-                for _dbj in range(_dbi + 1, len(_dbg_skip)):
-                    _gi2, _gj2 = _dbg_skip[_dbi], _dbg_skip[_dbj]
-                    _pi2, _pj2 = face_pads[_gi2], face_pads[_gj2]
-                    _vxi2, _vyi2 = final_placed[_gi2]
-                    _vxj2, _vyj2 = final_placed[_gj2]
-                    _d2 = math.hypot(_vxi2 - _vxj2, _vyi2 - _vyj2)
-                    _si2 = _cluster_segs(_pi2, _vxi2, _vyi2)
-                    _sj2 = _cluster_segs(_pj2, _vxj2, _vyj2)
-                    _msd2 = min((_seg_to_seg_dist(*s1, *s2) for s1 in _si2 for s2 in _sj2),
-                                default=float('inf'))
-                    _thr2 = _pi2.neckdown_w_mm / 2.0 + _pj2.neckdown_w_mm / 2.0 + CLEARANCE
-                    if _msd2 < _thr2:
-                        print(f"  [DBG-MAIN-LOOP] skip-stub SHORT: {_pi2.net_name} vs {_pj2.net_name}"
-                              f" via_d={_d2:.4f} stub_d={_msd2:.4f} thr={_thr2:.4f}"
-                              f" A=({_vxi2:.3f},{_vyi2:.3f}) B=({_vxj2:.3f},{_vyj2:.3f})",
-                              file=_dbgsys.stderr)
             break
 
         # Blocker analysis
@@ -4729,6 +4673,11 @@ def _face_fanout(
 
             vi = face_pads[_gi]
             vj = face_pads[_gj]
+            # Only equalize depth for true HS pairs.  Default-class _P/_N pairs
+            # (e.g. DP_AUX) must compact independently — equalizing them pushes
+            # skip-net stubs routing through the same gap into each other.
+            if vi.priority != PRIORITY_HS or vj.priority != PRIORITY_HS:
+                continue
             vxi_c, vyi_c = final_placed[_gi]
             vxj_c, vyj_c = final_placed[_gj]
             ls_i  = _lat_sign(vi)
@@ -4857,7 +4806,7 @@ def _face_fanout(
                     break
                 _d_try += DEPTH_STEP
 
-            if best_shared is not None and best_shared < d_max - DEPTH_STEP:
+            if best_shared is not None:
                 final_placed[_gi] = (vi.pad_x + ls_i * lat_i_w * ldx + edx * best_shared,
                                       vi.pad_y + ls_i * lat_i_w * ldy + edy * best_shared)
                 final_placed[_gj] = (vj.pad_x + ls_j * lat_j_w * ldx + edx * best_shared,
@@ -4993,10 +4942,6 @@ def _face_fanout(
                         break
 
                 if best_cost < cur_cost - 1e-9:
-                    if v.net_name in ('LT_AUX_N', 'LT_AUX_P'):
-                        import sys as _dbg7a2_sys
-                        print(f"  [DBG-7A2] {v.net_name} ({vx_cur:.3f},{vy_cur:.3f})→({best_vx:.3f},{best_vy:.3f})"
-                              f" cost {cur_cost:.3f}→{best_cost:.3f}", file=_dbg7a2_sys.stderr)
                     final_placed[gi] = (best_vx, best_vy)
                     _improved = True
 
@@ -5159,10 +5104,6 @@ def _face_fanout(
             if abs(_ext_d7c - _cur_d7c) > 1e-9:
                 _new7c_vx = _pv7c.pad_x + _ls7c * _lo7c * ldx + edx * _ext_d7c
                 _new7c_vy = _pv7c.pad_y + _ls7c * _lo7c * ldy + edy * _ext_d7c
-                import sys as _dbg7c_sys
-                print(f"  [DBG-7C] {_pv7c.net_name} depth {_cur_d7c:.3f}→{_ext_d7c:.3f}"
-                      f" pos ({_vx7c:.3f},{_vy7c:.3f})→({_new7c_vx:.3f},{_new7c_vy:.3f})",
-                      file=_dbg7c_sys.stderr)
                 final_placed[_gi7c] = (_new7c_vx, _new7c_vy)
                 _7c_any_changed = True
 
