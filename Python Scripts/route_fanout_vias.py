@@ -2623,6 +2623,12 @@ def _place_group(group: List[PendingVia],
                 placed.append(via)
                 continue
 
+            # VIPPO-first: switching loop pads large enough for a via-in-pad get
+            # VIPPO immediately, skipping side-exit search entirely.
+            if via.priority == PRIORITY_SW and _try_via_in_pad(via, min_annular_mm):
+                placed.append(via)
+                continue
+
             # Same-perp-coord pads share an escape column — they need a
             # perpendicular offset, so alt-direction is allowed for them.
             allow_alt = not multi_pad_face or id(via) in same_perp_ids
