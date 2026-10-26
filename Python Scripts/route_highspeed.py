@@ -2980,6 +2980,32 @@ def route_pair(pair_name):
                             log.append(f"    NOTE: A* found (board-only + exact run_obs, "
                                        f"{len(chosen)-1} seg(s))")
                     if chosen is None:
+                        # Neckdown-width fallback: use a reduced corridor width for
+                        # path finding only.  The path check tolerates tighter
+                        # passages; actual emitted tracks are still at width_mm.
+                        # May produce DRC clearance violations — last resort only.
+                        _w_neck = max(width_mm * 0.75 + cc, NECKDOWN_W_MM + cc)
+                        if _w_neck < w_full - 1e-6:
+                            if obs_no_sib is None:
+                                obs_no_sib = build_obstacles(layer_id, {net_p, net_n},
+                                                             include_sibling_reserves=False)
+                            for _nko, _nkl in [(obs_no_sib, ""), (_obs_bo, " board-only")]:
+                                for _nc in octilinear_paths(cx0, cy0, cx1, cy1):
+                                    if path_clear(_nc, _w_neck, _nko):
+                                        chosen = merge_collinear(_nc)
+                                        log.append(f"    NOTE: neckdown path found "
+                                                   f"(w={_w_neck:.3f}mm{_nkl}) — may DRC")
+                                        break
+                                if chosen is None:
+                                    _nk_a = _astar_centerline(cx0, cy0, cx1, cy1,
+                                                               _w_neck, _nko)
+                                    if _nk_a is not None:
+                                        chosen = _nk_a
+                                        log.append(f"    NOTE: neckdown A* found "
+                                                   f"(w={_w_neck:.3f}mm{_nkl}) — may DRC")
+                                if chosen is not None:
+                                    break
+                    if chosen is None:
                         # All paths blocked — skip this segment rather than emitting a
                         # straight diagonal that crosses adjacent pair routes.
                         # Option D rip-up pass will re-attempt after obstacle landscape
