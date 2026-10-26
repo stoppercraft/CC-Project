@@ -62,26 +62,30 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-# Updated 2026-10-26 (session 41).
+# Updated 2026-10-26 (session 41 — end).
 
-**route_fanout_vias.py:** COMPLETE. 114 vias (12 VIPPO, 102 side-exit), 0 keepouts.
-- pocket-push added: pushes sandwiched non-HS vias further along escape until trunk-width corridor clears.
-  J_USB_OUT1/A4 pushed 1.10mm → (135.850,138.070). J_DSI1/21 pushed 1.70mm → (154.167,150.413).
-- Latest commit: `015b30f`
+**route_fanout_vias.py:** COMPLETE. commit `015b30f`
+**route_critical.py:** COMPLETE. commits `bf77af2`, `836e1a5`
+**route_highspeed.py workflow:** ESTABLISHED. commit `fcee29f` / `ba66a44`
+- --pairs flag, wxWidgets fix, sys.exit, 3 DBG lines removed
+- debug_highspeed.py created with FULL_SETUP / fast-iteration modes
+- Route and Verify updated to 6-step full pipeline
+- CLAUDE.md, AGENT_RULES.md updated with all new triggers
 
-**route_critical.py:** COMPLETE. 0 conflicts, all power nets connected. Latest commit: `bf77af2` / `836e1a5`.
-- _relocate_anchor: stub width fallbacks (1.0→0.4→0.3mm) + trunk-width accessibility gate
-- wxWidgets fix: build_obstacles via fallback uses drill+annular instead of bare GetWidth()
-- J_USB_OUT1/A4: now routes automatically via pocket-push; A4 has exactly 1 via
-- STUSB_1V2 / STUSB_2V7: still unrouted — F.Cu-only local bypass caps (~1.25mm). Not route_critical scope.
-
-**Next: route_highspeed.py** — user approved moving to next phase.
+**STUSB_1V2 / STUSB_2V7:** still unrouted (~1.25mm F.Cu traces). Not blocking HS routing.
 
 ### What to do at next session start
 
 1. Read this file + project_phase10_routing.md + project_hs_routing_requirements.md
-2. Ask user if they want to start working on route_highspeed.py
-3. Do NOT run any scripts without explicit instruction
+2. Read route_highspeed.py (2845 lines — read before touching any code)
+3. Ask user what they want to work on in route_highspeed.py
+4. Do NOT run any scripts without explicit instruction
+
+### Debug workflow for route_highspeed.py
+
+- `debug_highspeed.py` with `FULL_SETUP = True` → clear all → fanout → critical → **lock all tracks/vias** → highspeed --pairs TARGET_PAIRS
+- `FULL_SETUP = False` → clear unlocked only → highspeed --pairs TARGET_PAIRS (fast iteration)
+- Never run DRC or Route and Verify after debug_highspeed.py — board is partial
 
 #### Unresolved fanout bug (deferred) — `last_blk` overwrite in `_face_fanout`
 In the depth-scan while loop, `last_blk = blk` overwrites on every failing depth. For U3/47:
