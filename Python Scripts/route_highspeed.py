@@ -2960,15 +2960,35 @@ def route_pair(pair_name):
                     log.append(f"    NOTE: A* centerline found ({len(chosen)-1} seg(s),"
                                f" sibling reserves relaxed)")
                 else:
-                    # All paths blocked — skip this segment rather than emitting a
-                    # straight diagonal that crosses adjacent pair routes.
-                    # Option D rip-up pass will re-attempt after obstacle landscape
-                    # changes from other pairs being ripped up.
-                    log.append("    NOTE: all paths blocked — skipping segment "
-                               "(Option D rip-up will retry)")
-                    _skipped_pairs.add(pair_name)
-                    _conflict_count += 1
-                    continue
+                    # Board-only + exact run_obs fallback: AABB of diagonal _run_obs
+                    # tracks can be over-conservative; retry with board-level obstacles
+                    # only and verify the candidate against exact segment distances.
+                    _obs_bo = build_obstacles_board_only(layer_id, {net_p, net_n})
+                    for _bc in octilinear_paths(cx0, cy0, cx1, cy1):
+                        if (path_clear(_bc, w_full, _obs_bo) and
+                                _path_clear_of_run_obs(_bc, w_full / 2.0, net_p, layer_id) and
+                                _path_clear_of_run_obs(_bc, w_full / 2.0, net_n, layer_id)):
+                            chosen = merge_collinear(_bc)
+                            log.append("    NOTE: octilinear path found (board-only + exact run_obs)")
+                            break
+                    if chosen is None:
+                        _astar_bo = _astar_centerline(cx0, cy0, cx1, cy1, w_full, _obs_bo)
+                        if (_astar_bo is not None and
+                                _path_clear_of_run_obs(_astar_bo, w_full / 2.0, net_p, layer_id) and
+                                _path_clear_of_run_obs(_astar_bo, w_full / 2.0, net_n, layer_id)):
+                            chosen = _astar_bo
+                            log.append(f"    NOTE: A* found (board-only + exact run_obs, "
+                                       f"{len(chosen)-1} seg(s))")
+                    if chosen is None:
+                        # All paths blocked — skip this segment rather than emitting a
+                        # straight diagonal that crosses adjacent pair routes.
+                        # Option D rip-up pass will re-attempt after obstacle landscape
+                        # changes from other pairs being ripped up.
+                        log.append("    NOTE: all paths blocked — skipping segment "
+                                   "(Option D rip-up will retry)")
+                        _skipped_pairs.add(pair_name)
+                        _conflict_count += 1
+                        continue
 
         # Via-clearance guard: when the chosen path's P or N track would physically
         # overlap a cross-net endpoint via (electrical short), first try alternate
