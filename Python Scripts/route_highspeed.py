@@ -548,30 +548,47 @@ def _hs_relocate_anchor(pad, ax, ay, net_name, pad_layer_id, route_layer_id,
         if _key not in _seen:
             _seen.add(_key); _dirs.append(_dv)
 
-    for _de, _dn in _dirs:
-        n = RELOC_STEP_MM
-        while n <= RELOC_MAX_MM + 1e-9:
-            cx = ax + _de * n
-            cy = ay + _dn * n
-            if not _anchor_accessible(cx, cy, net_name, route_layer_id, trunk_w):
-                n += RELOC_STEP_MM
-                continue
-            placed_sw = None
-            for sw in ext_stub_widths:
-                stub_r = seg_rect(ax, ay, cx, cy, sw)
-                if not any(rect_overlap(stub_r, o) for o in obs_pad):
-                    placed_sw = sw
-                    break
-            if placed_sw is None:
-                n += RELOC_STEP_MM
-                continue
-            add_track(ax, ay, cx, cy, placed_sw, pad_layer_id, net_name)
-            add_via(cx, cy, net_name, via_pad_mm, via_drill_mm)
-            neck = f" [stub {placed_sw}mm]" if placed_sw < stub_w else ""
-            dir_note = "" if (_de, _dn) == (edx, edy) else f" dir=({_de:.2f},{_dn:.2f})"
-            log.append(f"    [anchor-reloc] {pad['ref']} {net_name}: extended {n:.2f}mm"
-                       f"{dir_note}{neck} → ({cx:.3f},{cy:.3f})")
-            return (cx, cy)
+    # Via size ladder: standard first, then progressively smaller as a last resort.
+    # Smaller vias are only tried AFTER all directions exhaust with the standard size.
+    _via_ladder = [(via_pad_mm, via_drill_mm)]
+    for _vp, _vd in ((0.40, 0.20), (0.30, 0.10), (0.20, 0.10)):
+        if _vp < via_pad_mm - 1e-6:
+            _via_ladder.append((_vp, _vd))
+
+    for _cur_vp, _cur_vd in _via_ladder:
+        _cur_vr = _cur_vp / 2.0
+        for _de, _dn in _dirs:
+            n = RELOC_STEP_MM
+            while n <= RELOC_MAX_MM + 1e-9:
+                cx = ax + _de * n
+                cy = ay + _dn * n
+                if not _anchor_accessible(cx, cy, net_name, route_layer_id, trunk_w):
+                    n += RELOC_STEP_MM
+                    continue
+                placed_sw = None
+                for sw in ext_stub_widths:
+                    stub_r = seg_rect(ax, ay, cx, cy, sw)
+                    if not any(rect_overlap(stub_r, o) for o in obs_pad):
+                        placed_sw = sw
+                        break
+                if placed_sw is None:
+                    n += RELOC_STEP_MM
+                    continue
+                # For smaller vias, check that the via pad fits without overlapping obstacles.
+                if _cur_vp < via_pad_mm - 1e-6:
+                    _vbox = (cx - _cur_vr - CLEARANCE_MM, cy - _cur_vr - CLEARANCE_MM,
+                             cx + _cur_vr + CLEARANCE_MM, cy + _cur_vr + CLEARANCE_MM)
+                    if any(rect_overlap(_vbox, o) for o in obs_pad):
+                        n += RELOC_STEP_MM
+                        continue
+                add_track(ax, ay, cx, cy, placed_sw, pad_layer_id, net_name)
+                add_via(cx, cy, net_name, _cur_vp, _cur_vd)
+                neck = f" [stub {placed_sw}mm]" if placed_sw < stub_w else ""
+                via_note = f" [via {_cur_vp}mm]" if _cur_vp < via_pad_mm else ""
+                dir_note = "" if (_de, _dn) == (edx, edy) else f" dir=({_de:.2f},{_dn:.2f})"
+                log.append(f"    [anchor-reloc] {pad['ref']} {net_name}: extended {n:.2f}mm"
+                           f"{dir_note}{neck}{via_note} → ({cx:.3f},{cy:.3f})")
+                return (cx, cy)
     return None
 
 
