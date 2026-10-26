@@ -2238,6 +2238,7 @@ def route_pair(pair_name):
     _trunk_info = _corridor_trunk.get(pair_name)  # ('HV', x) or ('VH', None) or None
 
     total_p = total_n = 0.0
+    _seg_spine = []  # intermediate centerline waypoints from previous segment
     for seg in range(len(pairs) - 1):
         sub_pairs = [pairs[seg], pairs[seg + 1]]
         info = detect_crossing(sub_pairs, layer_id)
@@ -2776,6 +2777,34 @@ def route_pair(pair_name):
                         log.append("    NOTE: octilinear path found (sibling reserves relaxed)")
                         break
 
+        # Spine-waypoint search: for multi-segment pairs, try routing through
+        # intermediate waypoints from the previous segment's centerline.  This
+        # lets the router reuse the already-established corridor (e.g. a long
+        # horizontal trunk placed by seg 0) for seg 1 instead of finding an
+        # independent path — the HS-safe analog of route_critical.py's
+        # spine-waypoint tapping (no T-junctions; separate copper per segment).
+        if chosen is None and _seg_spine:
+            obs_no_sib = obs_no_sib or build_obstacles(layer_id, {net_p, net_n},
+                                                        include_sibling_reserves=False)
+            for _obs_sp, _sp_lbl in [(obs_layer, ""), (obs_no_sib, " (sibling relaxed)")]:
+                if chosen is not None:
+                    break
+                for _sx, _sy in _seg_spine:
+                    if chosen is not None:
+                        break
+                    for _l1 in octilinear_paths(cx0, cy0, _sx, _sy):
+                        if not path_clear(_l1, w_full, _obs_sp):
+                            continue
+                        for _l2 in octilinear_paths(_sx, _sy, cx1, cy1):
+                            if not path_clear(_l2, w_full, _obs_sp):
+                                continue
+                            chosen = merge_collinear(_l1[:-1] + _l2)
+                            log.append(f"    NOTE: spine-waypoint via "
+                                       f"({_sx:.3f},{_sy:.3f}){_sp_lbl}")
+                            break
+                        if chosen is not None:
+                            break
+
         if chosen is None:
             obs_no_sib = obs_no_sib or build_obstacles(layer_id, {net_p, net_n},
                                                         include_sibling_reserves=False)
@@ -2957,6 +2986,8 @@ def route_pair(pair_name):
         log.append(f"    seg emitted: {bends} bend(s)  Lp={lp:.3f}mm  Ln={ln:.3f}mm"
                    f"  Δ={abs(lp-ln):.3f}mm")
         total_p += lp;  total_n += ln
+        if len(pairs) > 2 and len(chosen) > 2:
+            _seg_spine = list(chosen[1:-1])
 
     if total_p > 0 or total_n > 0:
         delta = abs(total_p - total_n)
