@@ -153,6 +153,14 @@ def _find_fanout_via(pad_x, pad_y, net_name):
     return best
 
 
+def _is_fanout_via(ax, ay, net_name):
+    """Return True if (ax, ay) matches a pre-existing via in _fanout_via_index."""
+    for vnet, vx, vy in _fanout_via_index:
+        if vnet == net_name and math.hypot(vx - ax, vy - ay) < 0.01:
+            return True
+    return False
+
+
 # ── Geometry ──────────────────────────────────────────────────────────────────
 
 def mm(x):   return pcbnew.FromMM(x)
@@ -2452,31 +2460,35 @@ def route_pair(pair_name):
         for _va, _vv, _vp, _vn in _anchor_list:
             if _vv is None:
                 continue
-            if not _anchor_accessible(_vv[0], _vv[1], _vn, layer_id, _trunk_w):
-                _nr = _hs_relocate_anchor(_vp, _vv[0], _vv[1], _vn, _vp["layer"],
-                                          layer_id, VIA_PAD, VIA_DRILL, STUB_W_MM,
-                                          _trunk_w)
-                if _nr is not None:
-                    if   _va == 'vp0': vp0 = _nr
-                    elif _va == 'vn0': vn0 = _nr
-                    elif _va == 'vp1': vp1 = _nr
-                    else:              vn1 = _nr
-                    _relocated_in_p1.add(_va)
+            if (_is_fanout_via(_vv[0], _vv[1], _vn) or
+                    _anchor_accessible(_vv[0], _vv[1], _vn, layer_id, _trunk_w)):
+                continue
+            _nr = _hs_relocate_anchor(_vp, _vv[0], _vv[1], _vn, _vp["layer"],
+                                      layer_id, VIA_PAD, VIA_DRILL, STUB_W_MM,
+                                      _trunk_w)
+            if _nr is not None:
+                if   _va == 'vp0': vp0 = _nr
+                elif _va == 'vn0': vn0 = _nr
+                elif _va == 'vp1': vp1 = _nr
+                else:              vn1 = _nr
+                _relocated_in_p1.add(_va)
         # Pass 2: re-check vias not yet relocated (partner relocation may have blocked them)
         _anchor_list2 = [('vp0', vp0, p0, net_p), ('vn0', vn0, n0, net_n),
                          ('vp1', vp1, p1, net_p), ('vn1', vn1, n1, net_n)]
         for _va, _vv, _vp, _vn in _anchor_list2:
             if _va in _relocated_in_p1 or _vv is None:
                 continue
-            if not _anchor_accessible(_vv[0], _vv[1], _vn, layer_id, _trunk_w):
-                _nr = _hs_relocate_anchor(_vp, _vv[0], _vv[1], _vn, _vp["layer"],
-                                          layer_id, VIA_PAD, VIA_DRILL, STUB_W_MM,
-                                          _trunk_w)
-                if _nr is not None:
-                    if   _va == 'vp0': vp0 = _nr
-                    elif _va == 'vn0': vn0 = _nr
-                    elif _va == 'vp1': vp1 = _nr
-                    else:              vn1 = _nr
+            if (_is_fanout_via(_vv[0], _vv[1], _vn) or
+                    _anchor_accessible(_vv[0], _vv[1], _vn, layer_id, _trunk_w)):
+                continue
+            _nr = _hs_relocate_anchor(_vp, _vv[0], _vv[1], _vn, _vp["layer"],
+                                      layer_id, VIA_PAD, VIA_DRILL, STUB_W_MM,
+                                      _trunk_w)
+            if _nr is not None:
+                if   _va == 'vp0': vp0 = _nr
+                elif _va == 'vn0': vn0 = _nr
+                elif _va == 'vp1': vp1 = _nr
+                else:              vn1 = _nr
 
         # Verify P and N are on the same lateral side at both endpoints
         cx0 = (vp0[0] + vn0[0]) / 2;  cy0 = (vp0[1] + vn0[1]) / 2
