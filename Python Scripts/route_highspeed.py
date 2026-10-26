@@ -65,13 +65,22 @@ _args, _ = _parser.parse_known_args()
 APPLY            = _args.apply
 TARGET_PAIRS_ARG = {p.strip() for p in _args.pairs.split(",") if p.strip()}
 
-CLEARANCE_MM = 0.15
-STUB_W_MM    = 0.127  # narrow escape stub
+CLEARANCE_MM         = 0.15
+STUB_W_MM            = 0.127  # narrow escape stub
+BOARD_EDGE_CLEARANCE = 0.50   # mm — copper-to-edge DRC minimum
+RELOC_STEP_MM        = 0.10   # walk step for anchor relocation
+RELOC_MAX_MM         = 5.0    # max walk distance for anchor relocation
 
 board   = pcbnew.LoadBoard(cfg.PCB_FILE)
 F_CU    = board.GetLayerID("F.Cu")
 B_CU    = board.GetLayerID("B.Cu")
 GND_NET = cfg.LAYER_SCHEME.get("gnd_ref", "GND")
+
+_bbox   = board.GetBoardEdgesBoundingBox()
+_BRD_X0 = pcbnew.ToMM(_bbox.GetLeft())
+_BRD_X1 = pcbnew.ToMM(_bbox.GetRight())
+_BRD_Y0 = pcbnew.ToMM(_bbox.GetTop())
+_BRD_Y1 = pcbnew.ToMM(_bbox.GetBottom())
 
 ca_audit  = cfg.CLEARANCE_AUDIT
 VIA_PAD       = ca_audit["hs_via_drill_mm"] + 2 * ca_audit["hs_via_annular_ring_mm"]
@@ -288,6 +297,11 @@ def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None,
             r = via_r + c + sibling_extra
             obs.append((rx - r, ry - r, rx + r, ry + r))
 
+    ec = BOARD_EDGE_CLEARANCE; INF = 9999.0
+    obs.extend([(_BRD_X1 - ec, -INF,  INF,           INF),
+                (-INF,         -INF,  _BRD_X0 + ec,  INF),
+                (-INF,         -INF,  INF,            _BRD_Y0 + ec),
+                (-INF,          _BRD_Y1 - ec, INF,   INF)])
     return obs
 
 
@@ -326,6 +340,11 @@ def build_obstacles_board_only(layer_id, net_excl, track_excl=None):
             y0 = tomm(min(track.GetStart().y, track.GetEnd().y))
             y1 = tomm(max(track.GetStart().y, track.GetEnd().y))
             obs.append((x0 - tw - c, y0 - tw - c, x1 + tw + c, y1 + tw + c))
+    ec = BOARD_EDGE_CLEARANCE; INF = 9999.0
+    obs.extend([(_BRD_X1 - ec, -INF,  INF,           INF),
+                (-INF,         -INF,  _BRD_X0 + ec,  INF),
+                (-INF,         -INF,  INF,            _BRD_Y0 + ec),
+                (-INF,          _BRD_Y1 - ec, INF,   INF)])
     return obs
 
 
@@ -457,7 +476,55 @@ def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
             continue
         obs.append((min(rx1, rx2) - rhw - c, min(ry1, ry2) - rhw - c,
                     max(rx1, rx2) + rhw + c, max(ry1, ry2) + rhw + c))
+    ec = BOARD_EDGE_CLEARANCE; INF = 9999.0
+    obs.extend([(_BRD_X1 - ec, -INF,  INF,           INF),
+                (-INF,         -INF,  _BRD_X0 + ec,  INF),
+                (-INF,         -INF,  INF,            _BRD_Y0 + ec),
+                (-INF,          _BRD_Y1 - ec, INF,   INF)])
     return obs
+
+
+def _anchor_accessible(ax, ay, net_name, layer_id, width_mm):
+    """True if at least one cardinal direction from (ax,ay) is clear at width_mm."""
+    obs = build_obstacles(layer_id, {net_name})
+    step = 0.2
+    for dx, dy in ((step, 0), (-step, 0), (0, step), (0, -step)):
+        r = seg_rect(ax + dx, ay + dy, ax, ay, width_mm)
+        if not any(rect_overlap(r, o) for o in obs):
+            return True
+    return False
+
+
+def _hs_relocate_anchor(pad, ax, ay, net_name, pad_layer_id, route_layer_id,
+                        via_pad_mm, via_drill_mm, stub_w, trunk_w):
+    """
+    Walk the escape via outward from (ax,ay) along the pad→via direction until
+    the new position is accessible at trunk_w on the route layer.  Emits an
+    extension stub and a new via; returns (cx,cy) or None.
+    """
+    ddx = ax - pad["x"]; ddy = ay - pad["y"]
+    d = math.hypot(ddx, ddy)
+    if d < 1e-6:
+        return None
+    edx = ddx / d; edy = ddy / d
+    obs_pad = build_obstacles(pad_layer_id, {net_name})
+    n = RELOC_STEP_MM
+    while n <= RELOC_MAX_MM + 1e-9:
+        cx = ax + edx * n
+        cy = ay + edy * n
+        if not _anchor_accessible(cx, cy, net_name, route_layer_id, trunk_w):
+            n += RELOC_STEP_MM
+            continue
+        stub_r = seg_rect(ax, ay, cx, cy, stub_w)
+        if any(rect_overlap(stub_r, o) for o in obs_pad):
+            n += RELOC_STEP_MM
+            continue
+        add_track(ax, ay, cx, cy, stub_w, pad_layer_id, net_name)
+        add_via(cx, cy, net_name, via_pad_mm, via_drill_mm)
+        log.append(f"    [anchor-reloc] {pad['ref']} {net_name}: extended {n:.2f}mm "
+                   f"→ ({cx:.3f},{cy:.3f})")
+        return (cx, cy)
+    return None
 
 
 def identify_blockers(region, layer_id, net_excl_pads, net_excl_tracks=None):
@@ -2308,6 +2375,23 @@ def route_pair(pair_name):
             log.append("    SKIP seg: escape via placement failed for one or more pads")
             _conflict_count += 1
             continue
+
+        # Anchor accessibility — verify each via can be exited at full pair corridor
+        # width.  If not, walk outward along the stub direction and relocate the via.
+        _trunk_w = width_mm + cc
+        for _va, _vv, _vp, _vn in [('vp0', vp0, p0, net_p), ('vn0', vn0, n0, net_n),
+                                    ('vp1', vp1, p1, net_p), ('vn1', vn1, n1, net_n)]:
+            if _vv is None:
+                continue
+            if not _anchor_accessible(_vv[0], _vv[1], _vn, layer_id, _trunk_w):
+                _nr = _hs_relocate_anchor(_vp, _vv[0], _vv[1], _vn, _vp["layer"],
+                                          layer_id, VIA_PAD, VIA_DRILL, STUB_W_MM,
+                                          _trunk_w)
+                if _nr is not None:
+                    if   _va == 'vp0': vp0 = _nr
+                    elif _va == 'vn0': vn0 = _nr
+                    elif _va == 'vp1': vp1 = _nr
+                    else:              vn1 = _nr
 
         # Verify P and N are on the same lateral side at both endpoints
         cx0 = (vp0[0] + vn0[0]) / 2;  cy0 = (vp0[1] + vn0[1]) / 2

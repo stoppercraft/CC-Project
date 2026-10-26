@@ -43,7 +43,7 @@ TARGET_PAIRS = []   # empty = route all pairs (same as route_highspeed.py defaul
 
 # True  → rebuild from scratch (clear all → fanout → critical → lock → hs)
 # False → fast iteration (clear unlocked only → hs)
-FULL_SETUP = True
+FULL_SETUP = False
 
 # ─────────────────────────────────────────────────────────────────────────────
 
