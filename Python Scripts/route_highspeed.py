@@ -2896,8 +2896,11 @@ def route_pair(pair_name):
                 ]
                 _vc_base = list(build_obstacles(layer_id, {net_p, net_n},
                                                 include_sibling_reserves=False))
-                _vc_obs_p = _vc_base + _vc_np_boxes
-                _vc_obs_n = _vc_base + _vc_pp_boxes
+                _vc_base_bo = list(build_obstacles_board_only(layer_id, {net_p, net_n}))
+                _vc_obs_p    = _vc_base    + _vc_np_boxes
+                _vc_obs_n    = _vc_base    + _vc_pp_boxes
+                _vc_obs_p_bo = _vc_base_bo + _vc_np_boxes
+                _vc_obs_n_bo = _vc_base_bo + _vc_pp_boxes
                 _vc_pp = None
                 for _vc_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
                     if path_clear(_vc_c, width_mm, _vc_obs_p):
@@ -2905,6 +2908,17 @@ def route_pair(pair_name):
                 if _vc_pp is None:
                     _vc_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                width_mm, _vc_obs_p)
+                if _vc_pp is None:
+                    for _vc_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                        if (path_clear(_vc_c, width_mm, _vc_obs_p_bo) and
+                                _path_clear_of_run_obs(_vc_c, width_mm / 2.0, net_p, layer_id)):
+                            _vc_pp = merge_collinear(_vc_c); break
+                if _vc_pp is None:
+                    _vc_board = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                                  width_mm, _vc_obs_p_bo)
+                    if (_vc_board is not None and
+                            _path_clear_of_run_obs(_vc_board, width_mm / 2.0, net_p, layer_id)):
+                        _vc_pp = _vc_board
                 _vc_nr = None
                 for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
                     if path_clear(_vc_c, width_mm, _vc_obs_n):
@@ -2912,6 +2926,17 @@ def route_pair(pair_name):
                 if _vc_nr is None:
                     _vc_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                width_mm, _vc_obs_n)
+                if _vc_nr is None:
+                    for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                        if (path_clear(_vc_c, width_mm, _vc_obs_n_bo) and
+                                _path_clear_of_run_obs(_vc_c, width_mm / 2.0, net_n, layer_id)):
+                            _vc_nr = merge_collinear(_vc_c); break
+                if _vc_nr is None:
+                    _vc_board = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
+                                                  width_mm, _vc_obs_n_bo)
+                    if (_vc_board is not None and
+                            _path_clear_of_run_obs(_vc_board, width_mm / 2.0, net_n, layer_id)):
+                        _vc_nr = _vc_board
                 if _vc_pp is not None and _vc_nr is not None:
                     for _vc_i in range(len(_vc_pp) - 1):
                         add_track(_vc_pp[_vc_i][0], _vc_pp[_vc_i][1],
