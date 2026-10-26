@@ -48,6 +48,18 @@ PRIORITY_HS    = 0   # HS differential pairs — placed first, never displaced
 PRIORITY_SW    = 1   # switching loop power nets
 PRIORITY_OTHER = 2   # all other signal nets
 
+# Per-net minimum trunk routing width from routing_config switching loops.
+# Used by _pocket_push to determine how wide a corridor the via needs to have.
+# Nets not in this map use signal_trace_width_mm as the fallback.
+_TRUNK_WIDTHS: Dict[str, float] = {}
+for _tloop in cfg.SWITCHING_LOOPS:
+    _TRUNK_WIDTHS[_tloop['vin_net']]  = _tloop['vin_width_mm']
+    _TRUNK_WIDTHS[_tloop['sw_net']]   = _tloop['sw_width_mm']
+    _TRUNK_WIDTHS[_tloop['out_net']]  = _tloop['out_width_mm']
+    if _tloop.get('bootstrap_net'):
+        _TRUNK_WIDTHS[_tloop['bootstrap_net']] = _tloop['bootstrap_width_mm']
+del _tloop
+
 
 # ---------------------------------------------------------------------------
 # Data structures
@@ -5312,6 +5324,76 @@ def _stagger_vias(pending: List[PendingVia], ca: dict, clearance: float) -> None
 
 
 # ---------------------------------------------------------------------------
+# Pocket-push: ensure trunk-width corridor after face/sub-fanout assignment
+# ---------------------------------------------------------------------------
+
+def _pocket_push(assigned_pvs: list, edx: float, edy: float,
+                 net_trunk_w: dict, clearance: float,
+                 signal_w: float = 0.20) -> None:
+    """
+    After face-fanout or sub-fanout assigns via positions, check each non-HS
+    via for trunk-width corridor accessibility.  If all four cardinal 0.1mm
+    steps are blocked by flanking vias from the same group, walk the via
+    further along (edx, edy) until one step clears.
+
+    Uses only the via circles within assigned_pvs as obstacles — the directly
+    flanking neighbours from the same face group are the critical constraint.
+    Skips HS pads (PRIORITY_HS) to preserve differential-pair coherence.
+    Push direction is the already-snapped escape direction (PROHIBITED 3 safe).
+    Obstacle radius = via_copper_r + clearance, applied once (PROHIBITED 4 safe).
+    Via obstacles are circles, not bounding-circle pad approximations (P5 safe).
+    """
+    MAX_PUSH_MM = 5.0
+    PUSH_STEP   = 0.10
+
+    def _seg_rect(x1, y1, x2, y2, w):
+        hw = w / 2.0
+        return (min(x1, x2) - hw, min(y1, y2) - hw,
+                max(x1, x2) + hw, max(y1, y2) + hw)
+
+    def _rect_overlap(a, b):
+        return a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]
+
+    def _corridor_clear(vx, vy, trunk_w, obs_rects):
+        step = PUSH_STEP
+        for ddx, ddy in ((step, 0), (-step, 0), (0, step), (0, -step)):
+            r = _seg_rect(vx + ddx, vy + ddy, vx, vy, trunk_w)
+            if not any(_rect_overlap(r, o) for o in obs_rects):
+                return True
+        return False
+
+    for pv in assigned_pvs:
+        if pv.priority == PRIORITY_HS or pv.implicit_keepout:
+            continue
+        trunk_w = net_trunk_w.get(pv.net_name, signal_w)
+        # Build obstacle rectangles from other vias in this face group.
+        obs = []
+        for other in assigned_pvs:
+            if other is pv or other.implicit_keepout:
+                continue
+            r = other.via_drill_mm / 2.0 + other.via_annular_mm + clearance
+            obs.append((other.via_x - r, other.via_y - r,
+                        other.via_x + r, other.via_y + r))
+        if _corridor_clear(pv.via_x, pv.via_y, trunk_w, obs):
+            continue
+        # Push along the escape direction until corridor clears.
+        n = PUSH_STEP
+        while n <= MAX_PUSH_MM + 1e-9:
+            cx = pv.via_x + edx * n
+            cy = pv.via_y + edy * n
+            if _corridor_clear(cx, cy, trunk_w, obs):
+                old_x, old_y = pv.via_x, pv.via_y
+                pv.via_x          = cx
+                pv.via_y          = cy
+                pv.neckdown_len_mm = math.hypot(cx - pv.pad_x, cy - pv.pad_y)
+                print(f"  [pocket-push] {pv.ref}/{pv.pad_num} ({pv.net_name}):"
+                      f" {n:.2f}mm along escape"
+                      f" ({old_x:.3f},{old_y:.3f}) → ({cx:.3f},{cy:.3f})")
+                break
+            n += PUSH_STEP
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
@@ -6489,6 +6571,10 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             _pv_co.neckdown_len_mm = math.hypot(
                 _vx_co - _pv_co.pad_x, _vy_co - _pv_co.pad_y)
 
+        _pocket_push([pv for pv, _, _ in _co_assignments],
+                     _co_edx, _co_edy, _TRUNK_WIDTHS, _coopt_sg_clr,
+                     cfg.CLEARANCE_AUDIT.get("signal_trace_width_mm", 0.20))
+
         # Pads that were NOT placed and NOT keepout go through normal 1g/1g-2d stagger.
         # (These are sandwiched pads that _face_fanout classifies as obstacles only.)
         # face_fanout_assigned is set ONLY on placed pads and keepout pads here.
@@ -6603,6 +6689,10 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                 _pv_sg.neckdown_len_mm = math.hypot(
                     _vx_sg - _pv_sg.pad_x, _vy_sg - _pv_sg.pad_y)
 
+            _pocket_push([pv for pv, _, _ in _sg_assignments],
+                         _sub_edx, _sub_edy, _TRUNK_WIDTHS, _coopt_sg_clr,
+                         cfg.CLEARANCE_AUDIT.get("signal_trace_width_mm", 0.20))
+
             for _pv_sg in _sg_pads_aug:
                 if _pv_sg.implicit_keepout:
                     _pv_sg.face_fanout_assigned = True
@@ -6702,6 +6792,10 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                 _pv_of2.face_fanout_assigned = True
                 _pv_of2.neckdown_len_mm = math.hypot(
                     _vx_of - _pv_of2.pad_x, _vy_of - _pv_of2.pad_y)
+
+            _pocket_push([pv for pv, _, _ in _of_assignments],
+                         _of_edx, _of_edy, _TRUNK_WIDTHS, _coopt_sg_clr,
+                         cfg.CLEARANCE_AUDIT.get("signal_trace_width_mm", 0.20))
 
             for _pv_of2 in _of_pads_aug:
                 if _pv_of2.implicit_keepout:
