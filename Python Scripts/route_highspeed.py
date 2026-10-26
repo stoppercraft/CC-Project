@@ -3103,19 +3103,86 @@ def route_pair(pair_name):
                     if (_vc_board is not None and
                             _path_clear_of_run_obs(_vc_board, width_mm / 2.0, net_n, layer_id)):
                         _vc_nr = _vc_board
+                # Alternate-layer fallback for any failing leg.
+                _vc_pp_layer = layer_id;  _vc_nr_layer = layer_id
+                if _vc_pp is None or _vc_nr is None:
+                    _vc_alt_layers = []
+                    if layer_id != F_CU:
+                        _vc_alt_layers.append((F_CU, "F.Cu"))
+                    if layer_id != B_CU:
+                        _vc_alt_layers.append((B_CU, "B.Cu"))
+                    for _vcal, _vcaln in _vc_alt_layers:
+                        _vc_base_al  = list(build_obstacles(_vcal, {net_p, net_n},
+                                                             include_sibling_reserves=False))
+                        _vc_base_abo = list(build_obstacles_board_only(_vcal, {net_p, net_n}))
+                        if _vc_pp is None:
+                            _vc_obs_pal  = _vc_base_al  + _vc_np_boxes
+                            _vc_obs_pabo = _vc_base_abo + _vc_np_boxes
+                            for _vc_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                                if path_clear(_vc_c, width_mm, _vc_obs_pal):
+                                    _vc_pp = merge_collinear(_vc_c)
+                                    _vc_pp_layer = _vcal; break
+                            if _vc_pp is None:
+                                _r = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                                       width_mm, _vc_obs_pal)
+                                if _r is not None:
+                                    _vc_pp = _r; _vc_pp_layer = _vcal
+                            if _vc_pp is None:
+                                for _vc_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                                    if (path_clear(_vc_c, width_mm, _vc_obs_pabo) and
+                                            _path_clear_of_run_obs(_vc_c, width_mm/2.0,
+                                                                    net_p, _vcal)):
+                                        _vc_pp = merge_collinear(_vc_c)
+                                        _vc_pp_layer = _vcal; break
+                            if _vc_pp is None:
+                                _r = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                                       width_mm, _vc_obs_pabo)
+                                if (_r is not None and
+                                        _path_clear_of_run_obs(_r, width_mm/2.0, net_p, _vcal)):
+                                    _vc_pp = _r; _vc_pp_layer = _vcal
+                        if _vc_nr is None:
+                            _vc_obs_nal  = _vc_base_al  + _vc_pp_boxes
+                            _vc_obs_nabo = _vc_base_abo + _vc_pp_boxes
+                            for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                                if path_clear(_vc_c, width_mm, _vc_obs_nal):
+                                    _vc_nr = merge_collinear(_vc_c)
+                                    _vc_nr_layer = _vcal; break
+                            if _vc_nr is None:
+                                _r = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
+                                                       width_mm, _vc_obs_nal)
+                                if _r is not None:
+                                    _vc_nr = _r; _vc_nr_layer = _vcal
+                            if _vc_nr is None:
+                                for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                                    if (path_clear(_vc_c, width_mm, _vc_obs_nabo) and
+                                            _path_clear_of_run_obs(_vc_c, width_mm/2.0,
+                                                                    net_n, _vcal)):
+                                        _vc_nr = merge_collinear(_vc_c)
+                                        _vc_nr_layer = _vcal; break
+                            if _vc_nr is None:
+                                _r = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
+                                                       width_mm, _vc_obs_nabo)
+                                if (_r is not None and
+                                        _path_clear_of_run_obs(_r, width_mm/2.0, net_n, _vcal)):
+                                    _vc_nr = _r; _vc_nr_layer = _vcal
+                        if _vc_pp is not None and _vc_nr is not None:
+                            break
+
                 if _vc_pp is not None and _vc_nr is not None:
                     for _vc_i in range(len(_vc_pp) - 1):
                         add_track(_vc_pp[_vc_i][0], _vc_pp[_vc_i][1],
                                   _vc_pp[_vc_i+1][0], _vc_pp[_vc_i+1][1],
-                                  width_mm, layer_id, net_p)
+                                  width_mm, _vc_pp_layer, net_p)
                     for _vc_i in range(len(_vc_nr) - 1):
                         add_track(_vc_nr[_vc_i][0], _vc_nr[_vc_i][1],
                                   _vc_nr[_vc_i+1][0], _vc_nr[_vc_i+1][1],
-                                  width_mm, layer_id, net_n)
+                                  width_mm, _vc_nr_layer, net_n)
+                    _vc_pln = board.GetLayerName(_vc_pp_layer) if _vc_pp_layer != layer_id else layer_name
+                    _vc_nln = board.GetLayerName(_vc_nr_layer) if _vc_nr_layer != layer_id else layer_name
                     log.append(f"    VIA-CLEAR-SPLIT: P ({vp0[0]:.3f},{vp0[1]:.3f})"
-                               f"→({vp1[0]:.3f},{vp1[1]:.3f}),"
+                               f"→({vp1[0]:.3f},{vp1[1]:.3f}) on {_vc_pln},"
                                f" N ({vn0[0]:.3f},{vn0[1]:.3f})"
-                               f"→({vn1[0]:.3f},{vn1[1]:.3f}) on {layer_name}")
+                               f"→({vn1[0]:.3f},{vn1[1]:.3f}) on {_vc_nln}")
                 else:
                     log.append(f"    WARNING: via-clearance split failed "
                                f"(P={'ok' if _vc_pp else 'FAIL'} "
