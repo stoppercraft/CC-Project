@@ -162,8 +162,10 @@ def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None,
                 continue
             try:
                 vr = tomm(track.GetWidth(layer_id)) / 2
-            except TypeError:
-                vr = tomm(track.GetWidth()) / 2
+            except Exception:
+                # PCB_VIA::GetWidth() without a layer fires a wxWidgets assertion
+                # in KiCad 10 — never call it.  Fall back to drill + annular ring.
+                vr = tomm(track.GetDrill()) / 2 + 0.15
             vx = tomm(track.GetPosition().x)
             vy = tomm(track.GetPosition().y)
             obs.append((vx - vr - c, vy - vr - c, vx + vr + c, vy + vr + c))
@@ -391,9 +393,8 @@ def add_via(x, y, net_name, pad_mm, drill_mm):
         return
     v = pcbnew.PCB_VIA(board)
     v.SetPosition(pcbnew.VECTOR2I(mm(x), mm(y)))
-    v.SetWidth(mm(pad_mm))
     v.SetDrill(mm(drill_mm))
-    v.SetViaType(pcbnew.VIATYPE_THROUGH)
+    v.SetWidth(mm(pad_mm))
     v.SetNet(net)
     v.SetLayerPair(F_CU, B_CU)
     board.Add(v)
