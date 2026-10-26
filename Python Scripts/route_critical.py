@@ -514,13 +514,19 @@ def anchor_accessible(ax, ay, net_name, layer_id, width_mm):
 
 
 def _relocate_anchor(ref, ax, ay, px, py, net_name, pad_layer_id, route_layer_id,
-                     eff_w, via_pad, via_drill, stub_w):
+                     eff_w, via_pad, via_drill, stub_w, trunk_w=None):
     """
     When anchor (ax,ay) is unreachable for trunk routing, walk outward along
     the pad→via escape direction until anchor_accessible passes.  Extends the
     existing fanout stub by placing a new segment (ax,ay)→(cx,cy) on pad_layer_id
     and a via at (cx,cy).  Returns new (cx,cy) on success, None if no clear
     position found within RELOC_MAX_MM.
+
+    trunk_w: if provided, also require that a trace of this width (the full trunk
+    width) can exit the new via in at least one direction.  This prevents accepting
+    a position that is accessible at eff_w but whose endpoint bounding box still
+    clips nearby obstacles at full trunk width — which would make the trunk router
+    fail even after a successful relocation.
     """
     ddx = ax - px; ddy = ay - py
     d = math.hypot(ddx, ddy)
@@ -530,6 +536,15 @@ def _relocate_anchor(ref, ax, ay, px, py, net_name, pad_layer_id, route_layer_id
 
     obs_pad = build_obstacles(pad_layer_id, {net_name})
 
+    # Narrower fallbacks for the extension stub: a wide neck_w can prevent the
+    # stub from threading past flanking signal vias even when the destination is
+    # accessible.  Try progressively thinner widths (matching place_pad_via).
+    ext_stub_widths = [stub_w]
+    if stub_w > 0.4 + 1e-6:
+        ext_stub_widths.append(0.4)
+    if stub_w > 0.3 + 1e-6:
+        ext_stub_widths.append(0.3)
+
     n = RELOC_STEP_MM
     while n <= RELOC_MAX_MM + 1e-9:
         cx = ax + edx * n
@@ -538,13 +553,27 @@ def _relocate_anchor(ref, ax, ay, px, py, net_name, pad_layer_id, route_layer_id
             n += RELOC_STEP_MM
             continue
         # Verify the extension stub from old anchor to new position is clear.
-        stub_r = seg_rect(ax, ay, cx, cy, stub_w)
-        if any(rect_overlap(stub_r, o) for o in obs_pad):
+        # Try each width candidate; use the widest one that fits.
+        placed_sw = None
+        for sw in ext_stub_widths:
+            stub_r = seg_rect(ax, ay, cx, cy, sw)
+            if not any(rect_overlap(stub_r, o) for o in obs_pad):
+                placed_sw = sw
+                break
+        if placed_sw is None:
             n += RELOC_STEP_MM
             continue
-        add_track(ax, ay, cx, cy, stub_w, pad_layer_id, net_name)
+        # Also require the full trunk width to be accessible so the trunk
+        # router can reach this via without its endpoint rect clipping
+        # flanking signal vias.
+        if trunk_w and trunk_w > eff_w + 1e-6:
+            if not anchor_accessible(cx, cy, net_name, route_layer_id, trunk_w):
+                n += RELOC_STEP_MM
+                continue
+        add_track(ax, ay, cx, cy, placed_sw, pad_layer_id, net_name)
         add_via(cx, cy, net_name, via_pad, via_drill)
-        log.append(f"    [anchor-reloc] {ref}: extended stub {n:.2f}mm → ({cx:.3f},{cy:.3f})")
+        neck_note = f" [ext-stub {placed_sw}mm]" if placed_sw < stub_w else ""
+        log.append(f"    [anchor-reloc] {ref}: extended stub {n:.2f}mm → ({cx:.3f},{cy:.3f}){neck_note}")
         return (cx, cy)
     return None
 
@@ -829,7 +858,8 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
                 new_anchor = _relocate_anchor(
                     ref, ax, ay, px, py, net_name,
                     pad.GetLayer(), layer_id,
-                    eff_w, via_pad, via_drill, via_stub_w)
+                    eff_w, via_pad, via_drill, via_stub_w,
+                    trunk_w=width_mm)
                 if new_anchor is None:
                     log.append(f"  [full-net] SKIP {ref}: anchor ({ax:.3f},{ay:.3f})"
                                f" unreachable at {eff_w}mm width, relocation failed")
