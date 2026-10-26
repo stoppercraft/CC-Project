@@ -2711,6 +2711,75 @@ def route_pair(pair_name):
                         _pp_layer = _try_layer
                         _pp_name  = _try_name
                         break
+                # Swap fallback: if normal (N on layer_id/B.Cu, P on F.Cu/B.Cu) failed,
+                # try the reversed assignment — P on layer_id, N on outer layers.
+                # Helps when layer_id is blocked for N but open for P.
+                if _nr is None and layer_id != F_CU:
+                    _swap_p_boxes = [b for b in (_vp0_box, _vp1_box) if b is not None]
+                    _swap_n_pp = _swap_n_nr = _swap_n_ppl = _swap_n_nrl = None
+                    _swap_n_ppn = _swap_n_nrn = None
+                    # P on layer_id
+                    _swap_obs_p = (list(build_obstacles(layer_id, {net_p, net_n},
+                                                         include_sibling_reserves=True,
+                                                         sibling_extra=cc / 2.0))
+                                   + [b for b in (_vp0_box, _vp1_box) if b is not None])
+                    _swap_obs_pb = (list(build_obstacles_board_only(layer_id, {net_p, net_n}))
+                                    + [b for b in (_vp0_box, _vp1_box) if b is not None])
+                    for _sc in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                        if path_clear(_sc, _wf, _swap_obs_p):
+                            _swap_n_pp = merge_collinear(_sc); break
+                    if _swap_n_pp is None:
+                        _swap_n_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                                        _wf, _swap_obs_p)
+                    if _swap_n_pp is None:
+                        for _sc in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                            if (path_clear(_sc, _wf, _swap_obs_pb) and
+                                    _path_clear_of_run_obs(_sc, width_mm / 2.0,
+                                                           net_p, layer_id)):
+                                _swap_n_pp = merge_collinear(_sc); break
+                    if _swap_n_pp is None:
+                        _sb = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                                _wf, _swap_obs_pb)
+                        if (_sb is not None and
+                                _path_clear_of_run_obs(_sb, width_mm / 2.0, net_p, layer_id)):
+                            _swap_n_pp = _sb
+                    # N on outer layers (F.Cu, B.Cu)
+                    if _swap_n_pp is not None:
+                        _swap_p_boxes = [b for b in (_vp0_box, _vp1_box) if b is not None]
+                        for _snl, _snn in ((_F_CU, "F.Cu"), (B_CU, "B.Cu")):
+                            _swap_obs_n = (list(build_obstacles(_snl, {net_p, net_n}))
+                                           + _swap_p_boxes)
+                            _swap_obs_nb = (list(build_obstacles_board_only(_snl, {net_p, net_n}))
+                                            + _swap_p_boxes)
+                            for _sc in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                                if path_clear(_sc, _wf, _swap_obs_n):
+                                    _swap_n_nr = merge_collinear(_sc); break
+                            if _swap_n_nr is None:
+                                _swap_n_nr = _astar_centerline(
+                                    vn0[0], vn0[1], vn1[0], vn1[1], _wf, _swap_obs_n)
+                            if _swap_n_nr is None:
+                                for _sc in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                                    if (path_clear(_sc, _wf, _swap_obs_nb) and
+                                            _path_clear_of_run_obs(
+                                                _sc, width_mm / 2.0, net_n, _snl)):
+                                        _swap_n_nr = merge_collinear(_sc); break
+                            if _swap_n_nr is None:
+                                _sb = _astar_centerline(
+                                    vn0[0], vn0[1], vn1[0], vn1[1], _wf, _swap_obs_nb)
+                                if (_sb is not None and
+                                        _path_clear_of_run_obs(
+                                            _sb, width_mm / 2.0, net_n, _snl)):
+                                    _swap_n_nr = _sb
+                            if _swap_n_nr is not None:
+                                _swap_n_ppl = layer_id;  _swap_n_ppn = layer_name
+                                _swap_n_nrl = _snl;      _swap_n_nrn = _snn
+                                break
+                    if _swap_n_pp is not None and _swap_n_nr is not None:
+                        _pp = _swap_n_pp; _pp_layer = _swap_n_ppl; _pp_name = _swap_n_ppn
+                        _nr = _swap_n_nr; _nr_layer = _swap_n_nrl; _nr_name = _swap_n_nrn
+                        log.append(f"    NOTE: layer-split swapped "
+                                   f"(P on {_swap_n_ppn}, N on {_swap_n_nrn})")
+
                 if _nr is None or _pp is None:
                     log.append("    WARNING: layer-split routing failed "
                                f"(N={'ok' if _nr else 'FAIL'} "
