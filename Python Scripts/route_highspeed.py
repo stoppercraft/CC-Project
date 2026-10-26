@@ -3023,6 +3023,22 @@ def route_pair(pair_name):
                                 if chosen is not None:
                                     break
                     if chosen is None:
+                        # Reverse-direction A* retry: swapping start/end changes the
+                        # heuristic goal and heapq tie-breaking, potentially finding a
+                        # different path through congestion the forward search missed.
+                        # Also try reverse neckdown if the corridor is tight.
+                        _rev_a = _astar_centerline(cx1, cy1, cx0, cy0, w_full, _obs_bo)
+                        if (_rev_a is not None and
+                                _path_clear_of_run_obs(_rev_a, w_full / 2.0, net_p, layer_id) and
+                                _path_clear_of_run_obs(_rev_a, w_full / 2.0, net_n, layer_id)):
+                            chosen = list(reversed(_rev_a))
+                            log.append("    NOTE: A* found (reverse direction, board-only)")
+                    if chosen is None and _w_neck < w_full - 1e-6:
+                        _rev_nk = _astar_centerline(cx1, cy1, cx0, cy0, _w_neck, _obs_bo)
+                        if _rev_nk is not None:
+                            chosen = list(reversed(_rev_nk))
+                            log.append(f"    NOTE: neckdown A* found (reverse dir, w={_w_neck:.3f}mm) — may DRC")
+                    if chosen is None:
                         # All paths blocked — skip this segment rather than emitting a
                         # straight diagonal that crosses adjacent pair routes.
                         # Option D rip-up pass will re-attempt after obstacle landscape
