@@ -116,7 +116,15 @@ Execute exactly four steps in order:
 
 Never skip the upstream steps — HS routing uses fanout vias as endpoints and power vias from route_critical as obstacles.
 
-**To debug a specific pair** (algorithm verification, no board write): run `debug_highspeed.py` with `TARGET_PAIRS` set to the pair name(s). Do NOT run --apply, DRC, or board inspection after the debug script — the board shows partial HS routing only and the incomplete state is misleading.
+**To debug a specific pair** (algorithm verification): run `debug_highspeed.py`.
+
+Two modes — set `FULL_SETUP` at the top of the file:
+- `FULL_SETUP = True` (first run): clear all → fanout → critical → **lock all current tracks/vias** → highspeed --pairs TARGET_PAIRS. Locked upstream tracks survive all future clears.
+- `FULL_SETUP = False` (fast iteration): clear **unlocked only** (removes previous HS routes, locked fanout/critical survive) → highspeed --pairs TARGET_PAIRS.
+
+Workflow: run once with `FULL_SETUP = True`, inspect, change algorithm, switch to `FULL_SETUP = False`, iterate quickly without re-running fanout/critical.
+
+Do NOT run DRC or Route and Verify after debug_highspeed.py — the board shows only TARGET_PAIRS routed, not the full HS set.
 
 ---
 
