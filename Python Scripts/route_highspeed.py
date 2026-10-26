@@ -2427,10 +2427,31 @@ def route_pair(pair_name):
 
         # Anchor accessibility — verify each via can be exited at full pair corridor
         # width.  If not, walk outward along the stub direction and relocate the via.
+        # Two passes: pass 1 relocates initially inaccessible vias; pass 2 re-checks
+        # any vias NOT relocated in pass 1, since a partner's relocation via may now
+        # block a previously-accessible anchor.
         _trunk_w = width_mm + cc
-        for _va, _vv, _vp, _vn in [('vp0', vp0, p0, net_p), ('vn0', vn0, n0, net_n),
-                                    ('vp1', vp1, p1, net_p), ('vn1', vn1, n1, net_n)]:
+        _anchor_list = [('vp0', vp0, p0, net_p), ('vn0', vn0, n0, net_n),
+                        ('vp1', vp1, p1, net_p), ('vn1', vn1, n1, net_n)]
+        _relocated_in_p1 = set()
+        for _va, _vv, _vp, _vn in _anchor_list:
             if _vv is None:
+                continue
+            if not _anchor_accessible(_vv[0], _vv[1], _vn, layer_id, _trunk_w):
+                _nr = _hs_relocate_anchor(_vp, _vv[0], _vv[1], _vn, _vp["layer"],
+                                          layer_id, VIA_PAD, VIA_DRILL, STUB_W_MM,
+                                          _trunk_w)
+                if _nr is not None:
+                    if   _va == 'vp0': vp0 = _nr
+                    elif _va == 'vn0': vn0 = _nr
+                    elif _va == 'vp1': vp1 = _nr
+                    else:              vn1 = _nr
+                    _relocated_in_p1.add(_va)
+        # Pass 2: re-check vias not yet relocated (partner relocation may have blocked them)
+        _anchor_list2 = [('vp0', vp0, p0, net_p), ('vn0', vn0, n0, net_n),
+                         ('vp1', vp1, p1, net_p), ('vn1', vn1, n1, net_n)]
+        for _va, _vv, _vp, _vn in _anchor_list2:
+            if _va in _relocated_in_p1 or _vv is None:
                 continue
             if not _anchor_accessible(_vv[0], _vv[1], _vn, layer_id, _trunk_w):
                 _nr = _hs_relocate_anchor(_vp, _vv[0], _vv[1], _vn, _vp["layer"],
