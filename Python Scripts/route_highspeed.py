@@ -70,6 +70,7 @@ STUB_W_MM            = 0.127  # narrow escape stub
 BOARD_EDGE_CLEARANCE = 0.50   # mm — copper-to-edge DRC minimum
 RELOC_STEP_MM        = 0.10   # walk step for anchor relocation
 RELOC_MAX_MM         = 5.0    # max walk distance for anchor relocation
+COMP_KEEPOUT_MM      = 0.5    # footprint bbox keepout margin for trunk routes
 
 board   = pcbnew.LoadBoard(cfg.PCB_FILE)
 F_CU    = board.GetLayerID("F.Cu")
@@ -230,7 +231,8 @@ _build_fanout_via_index()
 
 
 def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None,
-                    include_sibling_reserves=False, sibling_extra=0.0):
+                    include_sibling_reserves=False, sibling_extra=0.0,
+                    comp_keepout_mm=0.0):
     """
     Return forbidden rectangles on layer_id (clearance-expanded).
       net_excl_pads   : nets whose pads are NOT obstacles.
@@ -296,6 +298,22 @@ def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None,
                 continue  # our own net — no need to reserve against ourselves
             r = via_r + c + sibling_extra
             obs.append((rx - r, ry - r, rx + r, ry + r))
+
+    if comp_keepout_mm > 0:
+        excl = set(net_excl_pads)
+        for fp in board.GetFootprints():
+            if any(pad.GetNetname() in excl for pad in fp.Pads()):
+                continue
+            try:
+                bbox = fp.GetBoundingBox()
+            except Exception:
+                continue
+            bx0 = tomm(bbox.GetLeft())   - comp_keepout_mm
+            by0 = tomm(bbox.GetTop())    - comp_keepout_mm
+            bx1 = tomm(bbox.GetRight())  + comp_keepout_mm
+            by1 = tomm(bbox.GetBottom()) + comp_keepout_mm
+            if bx1 > bx0 and by1 > by0:
+                obs.append((bx0, by0, bx1, by1))
 
     ec = BOARD_EDGE_CLEARANCE; INF = 9999.0
     obs.extend([(_BRD_X1 - ec, -INF,  INF,           INF),
