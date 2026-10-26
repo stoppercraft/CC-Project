@@ -21,9 +21,9 @@ or layer names — the same scripts must work on any project.
 | 0 | `routing_config.py`          | Project-specific config — imported by all scripts below | CC Project Folder/Python Scripts/ | Complete |
 | 1 | `route_prep_align.py`        | Pre-route placement alignment — columns, rows, rotation optimization | CC Project Folder/Python Scripts/ | Complete |
 | 1.5 | `route_clearance_audit.py` | Routing clearance analysis and correction — corridors, via keepout, HS paths, diff-pair sep, neckdowns, board edge, type gap | CC Project Folder/Python Scripts/ | Complete — all 5 dry-run fixes applied 2026-08-07 |
-| 1.75 | `route_fanout_vias.py`    | Fanout via placement — places layer-transition vias at every pad that needs to reach a different copper layer, for all nets, before any trace routing begins. Uses `routing_config.py::ROUTING_LAYER_PRIORITY` for layer assignment. | CC Project Folder/Python Scripts/ | In development |
-| 2 | `route_critical.py`          | Switching converter loop pre-routing (SW, VIN, OUT + PGND vias) | V2/Python Scripts/ | Written — not behaving satisfactorily |
-| 3 | `route_highspeed.py`         | HS differential pair routing, centerline + offset algorithm | V2/Python Scripts/ | Written — not behaving satisfactorily |
+| 1.75 | `route_fanout_vias.py`    | Fanout via placement — places layer-transition vias at every pad that needs to reach a different copper layer, for all nets, before any trace routing begins. Uses `routing_config.py::ROUTING_LAYER_PRIORITY` for layer assignment. Includes pocket-push to ensure trunk-width corridor clearance at each via. | CC Project Folder/Python Scripts/ | Complete |
+| 2 | `route_critical.py`          | Switching converter loop routing (loop connections + full-net Prim's MST on each power net; tap routing for sense/test-point refs; via relocation for sandwiched fanout vias) | CC Project Folder/Python Scripts/ | Complete — 0 conflicts, all power nets connected |
+| 3 | `route_highspeed.py`         | HS differential pair routing, centerline + offset algorithm | CC Project Folder/Python Scripts/ | In progress |
 | 4 | `verify_hs_sandwich.py`      | Verify HS reference planes | CC Project Folder/Python Scripts/ | Existing |
 | 5 | `verify_highspeed.py`        | Verify HS layer, mid-via, skew, inter-lane spread | CC Project Folder/Python Scripts/ | Existing |
 | 6 | `lock_highspeed_nets.py`     | Lock HS segments before FreeRouting | CC Project Folder/Python Scripts/ | Existing |
@@ -33,9 +33,9 @@ or layer names — the same scripts must work on any project.
 **Script directories:**
 - Generalized scripts: `E:\Claude Projects\CC Project Folder\Python Scripts\`
 - V2 project scripts: `E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Python Scripts\`
-- `route_critical.py` and `route_highspeed.py` currently live in the V2 project directory and
-  contain hardcoded paths and references that should be eliminated in favor of importing from
-  `routing_config.py`. This is a known issue to fix, not a completed migration.
+- `route_critical.py` lives in CC Project Folder/Python Scripts/ and imports all project data
+  from `routing_config.py` — zero hardcoded refs, nets, or layer constants.
+- `route_highspeed.py` lives in CC Project Folder/Python Scripts/ and imports from `routing_config.py`.
 
 ---
 
@@ -66,7 +66,7 @@ Frameline_Compute_V2_HS_ROUTED_YYYYMMDD.kicad_pcb     — after route_critical +
 
 **Rules:**
 - Never touch named backup files — only the main PCB file is modified by scripts.
-- `route_critical.py` and `route_highspeed.py` always run together in order.
+- Execution order: clear board → `route_fanout_vias.py --apply` → `route_critical.py --apply`. These three steps run together every time. `route_highspeed.py` runs separately after route_critical is complete.
 - All proposed script changes are discussed before applying.
 - Locked components (KiCad LOCKED flag, `fp.IsLocked()`) are never moved or rotated.
 
@@ -95,8 +95,8 @@ names. Do not proceed until you can.
 | 3 | `E:\Claude Projects\CC Project Folder\Python Scripts\proximity_rules_config.py` | Full RULES list (all entries), POWER_NET_EXACT, FACE_OVERRIDES, NO_FORCE_REFS, NO_NORMALIZE_REFS |
 | 4 | `E:\Claude Projects\CC Project Folder\Python Scripts\routing_config.py` | ROTATION_SYMMETRY (per-component symmetry class), HS_PAIRS (all interface names, layers, net names), HS_NETS, LANE_GROUPS, SWITCHING_LOOPS, ALIGNMENT_GROUPS |
 | 5 | `E:\Claude Projects\CC Project Folder\Python Scripts\route_prep_align.py` | Current implementation — group types supported, overlap-check layers, what config keys it reads |
-| 6 | `E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Python Scripts\route_critical.py` | Current implementation — what nets and refs are hardcoded vs read from config |
-| 7 | `E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Python Scripts\route_highspeed.py` | Current implementation — HS_PAIRS definition, layer references (check for numeric layer constants vs runtime lookups), centerline algorithm |
+| 6 | `E:\Claude Projects\CC Project Folder\Python Scripts\route_critical.py` | Current implementation — loop connections, route_net_full MST, tap refs, via relocation (_relocate_anchor), pocket-push awareness |
+| 7 | `E:\Claude Projects\CC Project Folder\Python Scripts\route_highspeed.py` | Current implementation — HS_PAIRS definition, layer references (check for numeric layer constants vs runtime lookups), centerline algorithm |
 
 **Note on component_geometry.json:**
 The file at `Frameline Generator PCB Version 2\component_geometry.json` is 330 KB and
@@ -115,11 +115,12 @@ Phase 8 placement is signed off. Phase 9 zones are complete. We are in Phase 10.
 HS_PAIRS, HS_NETS, LANE_GROUPS, SWITCHING_LOOPS, and ALIGNMENT_GROUPS. Scripts should
 import from it rather than defining these structures inline.
 
-**route_critical.py and route_highspeed.py** currently live in the V2 project scripts
-directory and still hardcode paths, net names, and KiCad layer constants that must be
-eliminated. Known API issue: the V2 `route_highspeed.py` uses `pcbnew.B_Cu` (a numeric
-constant) instead of `board.GetLayerID("B.Cu")` — this is a bug per the KiCad API rules
-below.
+**route_critical.py** is complete and generalized — all project data from `routing_config.py`,
+zero hardcoded refs or net names. Runs loop connections + full-net Prim's MST on each power net.
+Via relocation (`_relocate_anchor`) handles sandwiched fanout vias automatically.
+
+**route_highspeed.py** is in progress. Check for `pcbnew.B_Cu` (numeric constant) — must
+be replaced with `board.GetLayerID("B.Cu")` per the KiCad API rules below.
 
 ---
 
@@ -146,8 +147,9 @@ below.
 - SW net: `BUCK_SW`, VIN net: `VMAIN`, OUT net: `+5V`, GND: `GND`
 - Bootstrap: `BUCK_BOOT`, soft-start: `BUCK_SS`, comp: `BUCK_COMP`/`COMP_MID`
 - Input caps: `C_VIN1`, output caps: `C_OUT1`, bootstrap cap: `C_BOOT1`
-- Layer: F.Cu, power trace widths: 1.5–2.5mm, control: 0.3mm
-- Loop C target: enclosed SW loop area ≤ 50 mm²
+- Layer: **In4.Cu** (power planes), bootstrap on F.Cu; power trace widths: 2.0–2.5mm, control: 0.3mm
+- Tap refs (narrow connection off spine, not full trunk): `R_TOP1`, `R_VDET_H1`, `TP_5V1`, `J_DSI1`
+- Loop C target: enclosed SW loop area ≤ 50 mm² (current: 7.8 mm² ✓)
 
 ### High-Speed Interfaces (all in routing_config.py::HS_PAIRS)
 | Interface | Layer | Impedance | Intra-pair skew limit |

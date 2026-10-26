@@ -731,6 +731,7 @@ print(f"Vias: {len(vias)}  Traces: {len(traces)}")
 | `[auto-skip]` header | Printed first — lists every net detected as local single-layer at runtime. Review the net list: all entries should be nets whose pads genuinely stay on one layer and don't need a layer transition. If an expected-via net appears here, see iteration loop below. |
 | Pad summary | Rows with `skip-net` — confirm all crystal/GND nets are in the skip list |
 | Via placement report | Any pad reporting `BLOCKED` — via could not be placed without clearance violation |
+| `[pocket-push] REF/pad (net): Xmm along escape (ox,oy) → (nx,ny)` | Informational — via was sandwiched between flanking signal vias; pushed further along escape direction until trunk-width corridor is clear. Expected for power pads on tight-pitch connectors. Not a failure. |
 | Compaction report | `MAX_ROUNDS reached` — compaction did not converge; may need component position adjustment |
 | Skip-net stub report | Stubs emitted for skip-net pads — verify crystal net pads show stub-only, no via |
 | DRC result | Non-zone violations only — zone fill artifacts are not a stop condition |
@@ -775,6 +776,7 @@ print(f"Vias: {len(vias)}  Traces: {len(traces)}")
 | Zero non-zone DRC violations | No copper-to-copper clearance violations |
 | All crystal nets stub-only | No via placed on any net in `FANOUT_VIA_SKIP_NETS` |
 | Auto-skip list reviewed | Every net in the `[auto-skip]` output is genuinely local single-layer; no expected-via net was silently suppressed |
+| `[pocket-push]` lines reviewed | Informational only — each push is expected for sandwiched power pads on tight-pitch connectors. Verify each pushed via ended at a sensible position (open space south/north of the connector face). Not a stop condition. |
 | Board inspection PASS | Escape traces start at pads, end dangling, no pad has both via + trace |
 | Via count matches script report | Via count in PCB equals the count the script reported emitting |
 
@@ -871,10 +873,30 @@ SWITCHING_LOOPS = [
         # The script walks from the pad center outward until a full-width trace would
         # clear all adjacent pins on the same footprint. Set neckdown_width_mm to the
         # widest trace that fits between the two closest IC pins. Set neckdown_max_mm
-        # to the IC body half-width plus clearance — a good starting value is 2.0 mm.
+        # generously (e.g. 15 mm) — the script stops as soon as full width clears.
         # Omit both keys (or set to None) if the IC pads are wider than the trace width.
         "neckdown_width_mm":  1.0,
-        "neckdown_max_mm":    2.0,
+        "neckdown_max_mm":    15.0,
+
+        # bootstrap_layer: layer for the bootstrap trace. If the bootstrap cap and IC
+        # are both SMD on F.Cu and the trace is short/narrow, route on F.Cu to avoid
+        # vias and keep the In4.Cu power plane clear.
+        "bootstrap_layer":    "F.Cu",
+
+        # Via-detour: when direct routing is blocked, allow a layer change via
+        # LAYER_SCHEME["power_alt"]. Set True for connections where a detour is
+        # physically acceptable (e.g. SW node can take a short B.Cu detour);
+        # set False for bootstrap (must be directly at IC, no via).
+        "sw_via_allowed":     True,
+        "vin_via_allowed":    True,
+        "out_via_allowed":    True,
+        "boot_via_allowed":   False,
+
+        # full_net_taps: refs on this loop's power nets that carry only small/sense
+        # currents (sense resistors, test points, low-current connectors). Tap nodes
+        # connect via a narrow trace off the spine instead of at full trunk width.
+        # All other nodes connect at full trunk width via Prim's MST.
+        "full_net_taps":      ["R_TOP1", "R_VDET_H1", "TP_5V1"],
     },
 ]
 ```
@@ -895,14 +917,38 @@ at full `width_mm`. The neckdown is emitted at both endpoints of each connection
 
 **What the script routes per loop:**
 
+The script runs in two phases per loop:
+
+**Phase 1 — Loop connections** (point-to-point between the named refs):
+
 | Connection | Net | Layer | Notes |
 |---|---|---|---|
 | `ic_ref` → `inductor_ref` | `sw_net` | `layer` | Switching node — minimize length and area |
 | `inductor_ref` → each `output_caps` | `out_net` | `layer` | Output rail |
 | `ic_ref` → each `input_caps` | `vin_net` | `layer` | Input rail |
-| `ic_ref` → `bootstrap_cap` | `bootstrap_net` | `layer` | Control signal — narrow trace |
-| GND via beside each `output_caps` | `gnd_net` | `layer` | Short stub + via; via sized from `CLEARANCE_AUDIT` |
-| GND via beside each `input_caps` | `gnd_net` | `layer` | Same |
+| `ic_ref` → `bootstrap_cap` | `bootstrap_net` | `bootstrap_layer` | Control signal — narrow trace |
+
+**Phase 2 — Full-net MST pass** (connects every remaining pad on each net):
+
+After the loop connections, `route_net_full` runs Prim's MST on every net in the loop
+(`vin_net`, `sw_net`, `out_net`, `bootstrap_net`). It collects one routing anchor per pad
+(reusing fanout vias as anchors for fine-pitch pads on SOM/BGA footprints), then greedily
+connects all unconnected anchors to the growing spine.
+
+Key behaviors:
+- **Spine waypoints**: intermediate waypoints from routed trunk segments are added to the
+  candidate pool so subsequent branches form T-junctions rather than re-traversing the
+  same initial segment.
+- **Tap refs**: pads on refs listed in `full_net_taps` connect via a narrow trace off the
+  nearest spine waypoint, not at full trunk width. Use for sense resistors, test points,
+  and low-current connectors.
+- **Via relocation** (`_relocate_anchor`): if a fanout via is sandwiched between signal
+  vias (no trunk-width approach corridor), the script walks the via further along the
+  original escape direction until a clear corridor exists, extends the F.Cu stub, and
+  places a new via at the clear position. Logs `[anchor-reloc]`.
+- **Component keepout**: trunk traces avoid populated component areas by default
+  (`COMP_KEEPOUT_MM = 0.5 mm`), with automatic fallback when keepout makes the route
+  impossible.
 
 **Step A2 — Run the dry run and iterate.**
 
@@ -916,14 +962,15 @@ The dry run output has one section per loop connection. Each connection reports:
 
 | Output line | Meaning |
 |---|---|
-| `neckdown A: stub Xmm for Y.YYmm` | Neckdown stub emitted at source pad; Y.YY is stub length |
-| `neckdown B: stub Xmm for Y.YYmm` | Neckdown stub emitted at destination pad |
-| `[rectilinear] N segment(s)` | H-V or V-H path found — preferred; check KiCad that route looks sensible |
-| `[rectilinear blocked] → maze` | Both L-shapes blocked; falling back to A* |
-| `[maze] N segment(s)` | A* found a path; more segments = more turns; inspect in KiCad |
-| `CONFLICT: no path for NET REF→REF` | Neither router found a clear path; connection skipped |
-| `WARNING: REF pad is on B.Cu, routing on F.Cu` | Pad layer mismatch — a via is needed at that endpoint |
-| `WARNING: no clear GND via position near REF` | No cardinal-direction clearance found for GND via |
+| `pad-via REF: stub→(x,y)` | Pad transition via placed; stub emitted on pad layer |
+| `[cluster-via] REF: reuse nearby via (x,y)` | Pad reuses an adjacent same-net fanout via instead of placing its own |
+| `[manhattan blocked] → maze` | Both L-shapes blocked; falling back to A* |
+| `[keepout blocked] → retry without component keepout` | Trunk route blocked by component bodies; retrying without keepout margin |
+| `[trunk W mm] SRC → DEST  d=Xmm` | Full-width trunk segment routed between MST nodes |
+| `[tap W mm] SRC → DEST  d=Xmm` | Narrow tap from spine to a `full_net_taps` ref |
+| `[anchor-reloc] REF: extended stub Xmm → (x,y) [ext-stub Wmm]` | Fanout via was sandwiched; relocated outward to a clear corridor position |
+| `[full-net] SKIP REF: anchor unreachable, relocation failed` | Via was sandwiched and relocation could not find a clear position within 5 mm — investigate fanout via placement |
+| `CONFLICT: no path NET (x,y)→(x,y)` | Neither router found a clear path; connection skipped — check blocker list |
 | `SKIP loop — already routed: NET, NET` | Tracks already exist on those nets; loop was skipped |
 
 **CONFLICT diagnosis:**
@@ -947,10 +994,9 @@ blocking failure — do not proceed to Part B until all connections route cleanl
 | Condition | What it means |
 |---|---|
 | Exit code 0 | No CONFLICT lines — every connection routed successfully |
-| Zero layer mismatch warnings | All pads are on the declared routing layer (or vias added) |
-| Zero GND via warnings | GND return vias placed beside every cap |
+| Zero `[full-net] SKIP` lines | Every pad anchor was reachable; relocation succeeded for any sandwiched via |
 | SW loop area PASS | Switching node pad bounding-box area ≤ 50 mm² (informational heuristic) |
-| DRC clean | No copper-to-copper clearance violations after `--apply` |
+| DRC clean (non-zone) | No copper-to-copper clearance violations after `--apply`; zone-fill artifacts against GND fill are not a stop condition — they clear after Fill All Zones in KiCad |
 
 **Loop C — switching loop area:**
 
