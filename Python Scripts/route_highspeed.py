@@ -2909,6 +2909,29 @@ def route_pair(pair_name):
                     break
 
         if chosen is None:
+            # Progressive sibling-reserve relaxation: try sibling_extra=0 (pad
+            # clearance only, no half_cc margin) before dropping reserves entirely.
+            _obs_mid = build_obstacles(layer_id, {net_p, net_n},
+                                       include_sibling_reserves=True, sibling_extra=0.0)
+            if _trunk_info is not None:
+                if _style == 'HV' and _trunk_x is not None:
+                    _cp = merge_collinear([(cx0, cy0), (_trunk_x, cy0),
+                                           (_trunk_x, cy1), (cx1, cy1)])
+                else:
+                    _cp = merge_collinear([(cx0, cy0), (cx0, cy1), (cx1, cy1)])
+                if path_clear(_cp, w_full, _obs_mid):
+                    chosen = _cp
+                    _label = f"x={_trunk_x:.3f}mm" if _trunk_x is not None else f"VH src_x={cx0:.3f}mm"
+                    log.append(f"    NOTE: corridor {_style} trunk {_label} "
+                               f"(sibling extra relaxed)")
+            if chosen is None:
+                for cand in octilinear_paths(cx0, cy0, cx1, cy1):
+                    if path_clear(cand, w_full, _obs_mid):
+                        chosen = merge_collinear(cand)
+                        log.append("    NOTE: octilinear path found (sibling extra relaxed)")
+                        break
+
+        if chosen is None:
             obs_no_sib = build_obstacles(layer_id, {net_p, net_n},
                                          include_sibling_reserves=False)
             # Retry corridor trunk without sibling reserves
@@ -2961,20 +2984,21 @@ def route_pair(pair_name):
         if chosen is None:
             obs_no_sib = obs_no_sib or build_obstacles(layer_id, {net_p, net_n},
                                                         include_sibling_reserves=False)
-            # A* grid search WITH sibling reserves
-            astar_path = _astar_centerline(cx0, cy0, cx1, cy1, w_full, obs_layer)
-            if astar_path is not None:
-                chosen = astar_path
-                log.append(f"    NOTE: A* centerline found ({len(chosen)-1} seg(s),"
-                           f" sibling reserves included)")
-            else:
-                # A* without sibling reserves
-                astar_path = _astar_centerline(cx0, cy0, cx1, cy1, w_full, obs_no_sib)
+            # A* with progressive sibling-reserve relaxation:
+            #   1. full reserves (sibling_extra=half_cc)
+            #   2. partial reserves (sibling_extra=0 — pad clearance only)
+            #   3. no reserves
+            for _aobs, _albl in [
+                    (obs_layer,  "sibling reserves included"),
+                    (_obs_mid,   "sibling extra relaxed"),
+                    (obs_no_sib, "sibling reserves relaxed")]:
+                astar_path = _astar_centerline(cx0, cy0, cx1, cy1, w_full, _aobs)
                 if astar_path is not None:
                     chosen = astar_path
                     log.append(f"    NOTE: A* centerline found ({len(chosen)-1} seg(s),"
-                               f" sibling reserves relaxed)")
-                else:
+                               f" {_albl})")
+                    break
+            if chosen is None:
                     # Board-only + exact run_obs fallback: AABB of diagonal _run_obs
                     # tracks can be over-conservative; retry with board-level obstacles
                     # only and verify the candidate against exact segment distances.
