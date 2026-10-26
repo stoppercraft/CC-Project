@@ -517,8 +517,10 @@ def _hs_relocate_anchor(pad, ax, ay, net_name, pad_layer_id, route_layer_id,
                         via_pad_mm, via_drill_mm, stub_w, trunk_w):
     """
     Walk the escape via outward from (ax,ay) along the pad→via direction until
-    the new position is accessible at trunk_w on the route layer.  Emits an
-    extension stub and a new via; returns (cx,cy) or None.
+    the new position is accessible at trunk_w on the route layer.  If the outward
+    direction is exhausted, tries 8 canonical directions as a second pass.
+    Uses a narrower stub width (NECKDOWN_W_MM) as a fallback if stub_w is blocked.
+    Emits an extension stub and a new via; returns (cx,cy) or None.
     """
     ddx = ax - pad["x"]; ddy = ay - pad["y"]
     d = math.hypot(ddx, ddy)
@@ -526,22 +528,50 @@ def _hs_relocate_anchor(pad, ax, ay, net_name, pad_layer_id, route_layer_id,
         return None
     edx = ddx / d; edy = ddy / d
     obs_pad = build_obstacles(pad_layer_id, {net_name})
-    n = RELOC_STEP_MM
-    while n <= RELOC_MAX_MM + 1e-9:
-        cx = ax + edx * n
-        cy = ay + edy * n
-        if not _anchor_accessible(cx, cy, net_name, route_layer_id, trunk_w):
-            n += RELOC_STEP_MM
-            continue
-        stub_r = seg_rect(ax, ay, cx, cy, stub_w)
-        if any(rect_overlap(stub_r, o) for o in obs_pad):
-            n += RELOC_STEP_MM
-            continue
-        add_track(ax, ay, cx, cy, stub_w, pad_layer_id, net_name)
-        add_via(cx, cy, net_name, via_pad_mm, via_drill_mm)
-        log.append(f"    [anchor-reloc] {pad['ref']} {net_name}: extended {n:.2f}mm "
-                   f"→ ({cx:.3f},{cy:.3f})")
-        return (cx, cy)
+
+    # Narrower fallback for the extension stub (HS traces are already 0.127mm,
+    # so neckdown is the only further reduction available).
+    ext_stub_widths = [stub_w]
+    if NECKDOWN_W_MM < stub_w - 1e-6:
+        ext_stub_widths.append(NECKDOWN_W_MM)
+
+    # Primary pass: walk along the original escape direction.
+    # Secondary pass: try 8 canonical directions when primary is exhausted.
+    _S2 = 1.0 / math.sqrt(2.0)
+    _all_dirs = [(edx, edy),
+                 (1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0),
+                 (_S2,  _S2), (_S2, -_S2), (-_S2,  _S2), (-_S2, -_S2)]
+    # Deduplicate while preserving order
+    _seen = set(); _dirs = []
+    for _dv in _all_dirs:
+        _key = (round(_dv[0], 6), round(_dv[1], 6))
+        if _key not in _seen:
+            _seen.add(_key); _dirs.append(_dv)
+
+    for _de, _dn in _dirs:
+        n = RELOC_STEP_MM
+        while n <= RELOC_MAX_MM + 1e-9:
+            cx = ax + _de * n
+            cy = ay + _dn * n
+            if not _anchor_accessible(cx, cy, net_name, route_layer_id, trunk_w):
+                n += RELOC_STEP_MM
+                continue
+            placed_sw = None
+            for sw in ext_stub_widths:
+                stub_r = seg_rect(ax, ay, cx, cy, sw)
+                if not any(rect_overlap(stub_r, o) for o in obs_pad):
+                    placed_sw = sw
+                    break
+            if placed_sw is None:
+                n += RELOC_STEP_MM
+                continue
+            add_track(ax, ay, cx, cy, placed_sw, pad_layer_id, net_name)
+            add_via(cx, cy, net_name, via_pad_mm, via_drill_mm)
+            neck = f" [stub {placed_sw}mm]" if placed_sw < stub_w else ""
+            dir_note = "" if (_de, _dn) == (edx, edy) else f" dir=({_de:.2f},{_dn:.2f})"
+            log.append(f"    [anchor-reloc] {pad['ref']} {net_name}: extended {n:.2f}mm"
+                       f"{dir_note}{neck} → ({cx:.3f},{cy:.3f})")
+            return (cx, cy)
     return None
 
 
