@@ -39,7 +39,7 @@ PCB = cfg.PCB_FILE
 # ── Configure here ────────────────────────────────────────────────────────────
 
 # Pair names from routing_config.HS_PAIRS to route and inspect.
-TARGET_PAIRS = ['HDMI0_CLK']
+TARGET_PAIRS = []   # empty = route all pairs (same as route_highspeed.py default)
 
 # True  → rebuild from scratch (clear all → fanout → critical → lock → hs)
 # False → fast iteration (clear unlocked only → hs)

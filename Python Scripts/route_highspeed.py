@@ -610,6 +610,57 @@ def merge_collinear(pts):
     return result
 
 
+def _route_45deg_stub(pad_x, pad_y, via_x, via_y, edx, edy, axial_first=True):
+    """Decompose pad→via into 1 or 2 segments each on a valid 45° angle.
+    Copied from route_fanout_vias.py — single source of truth for canonical stubs.
+    edx/edy must be a canonical unit direction (0/45/90°).
+    Returns list of (x1, y1, x2, y2) tuples; empty if pad == via.
+    """
+    dx = via_x - pad_x
+    dy = via_y - pad_y
+    if math.hypot(dx, dy) < 1e-6:
+        return []
+    escape_comp = dx * edx  + dy * edy
+    lat_comp    = dx * (-edy) + dy * edx
+    abs_ec = abs(escape_comp)
+    abs_lc = abs(lat_comp)
+    if abs_lc < 1e-4 or abs_ec < 1e-4 or abs(abs_ec - abs_lc) < 1e-4:
+        return [(pad_x, pad_y, via_x, via_y)]
+    ec_sign = 1 if escape_comp > 0 else -1
+    lc_sign = 1 if lat_comp    > 0 else -1
+    lat_dx  = -edy
+    lat_dy  =  edx
+    if axial_first and abs_ec >= abs_lc:
+        wx = pad_x + ec_sign * edx * (abs_ec - abs_lc)
+        wy = pad_y + ec_sign * edy * (abs_ec - abs_lc)
+    elif abs_ec >= abs_lc:
+        wx = pad_x + ec_sign * edx * abs_lc + lc_sign * lat_dx * abs_lc
+        wy = pad_y + ec_sign * edy * abs_lc + lc_sign * lat_dy * abs_lc
+    else:
+        wx = pad_x + ec_sign * edx * abs_ec + lc_sign * lat_dx * abs_ec
+        wy = pad_y + ec_sign * edy * abs_ec + lc_sign * lat_dy * abs_ec
+    return [(pad_x, pad_y, wx, wy), (wx, wy, via_x, via_y)]
+
+
+def _stub_pts(px, py, vx, vy, edx, edy):
+    """Return _route_45deg_stub result as a list of (x, y) points."""
+    segs = _route_45deg_stub(px, py, vx, vy, edx, edy)
+    if not segs:
+        return [(px, py), (vx, vy)]
+    pts = [(segs[0][0], segs[0][1])]
+    for s in segs:
+        pts.append((s[2], s[3]))
+    return pts
+
+
+def _snap_canonical(ux, uy):
+    """Snap a unit vector to the nearest of 8 canonical directions."""
+    _S2 = 1.0 / math.sqrt(2.0)
+    _CANON = [(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0),
+              (_S2, _S2), (_S2, -_S2), (-_S2, _S2), (-_S2, -_S2)]
+    return max(_CANON, key=lambda d: d[0] * ux + d[1] * uy)
+
+
 def octilinear_paths(x1, y1, x2, y2):
     """Return candidate H/V waypoint lists between the two points.
     Main run uses only horizontal and vertical segments — no diagonals.
@@ -688,9 +739,9 @@ def _astar_centerline(cx0, cy0, cx1, cy1, w_full, obs_layer):
             while cur in came_from:
                 path.append((cur[0] * gp, cur[1] * gp))
                 cur = came_from[cur]
-            path.append((cx0, cy0))
+            path.append((sx * gp, sy * gp))  # snapped grid start (canonical)
             path.reverse()
-            path[-1] = (cx1, cy1)
+            path[-1] = (ex * gp, ey * gp)    # snapped grid end (canonical)
             return merge_collinear(path)
         for ddx, ddy in ((0,1),(0,-1),(1,0),(-1,0)):
             nx, ny = cx + ddx, cy + ddy
@@ -861,7 +912,14 @@ def _astar_escape(pad, net_name, partner_net, route_layer_id,
                 _stub_ok = (not _sb or _stub_clear_of_run_obs(
                     pad["x"], pad["y"], wx, wy, STUB_W_MM, net_name, pad["layer"]))
                 if _stub_ok:
-                    add_track(pad["x"], pad["y"], wx, wy, STUB_W, pad["layer"], net_name)
+                    _sd = math.hypot(wx - pad["x"], wy - pad["y"])
+                    _edx_s, _edy_s = _snap_canonical(
+                        (wx - pad["x"]) / _sd, (wy - pad["y"]) / _sd)
+                    for _seg in (_route_45deg_stub(pad["x"], pad["y"], wx, wy,
+                                                   _edx_s, _edy_s) or
+                                 [(pad["x"], pad["y"], wx, wy)]):
+                        add_track(_seg[0], _seg[1], _seg[2], _seg[3],
+                                  STUB_W, pad["layer"], net_name)
                     add_via(wx, wy, net_name, VIA_PAD, VIA_DRILL)
                     log.append(f"    A*-escape {pad['ref']} net={net_name}: "
                                f"({pad['x']:.3f},{pad['y']:.3f})→({wx:.3f},{wy:.3f})")
@@ -940,9 +998,13 @@ def _astar_crossing_escape(pad, net_name, partner_net, route_layer_id,
             path.reverse()
             # Prepend actual pad start
             full_path = [(pad["x"], pad["y"])] + path[1:]
-            # Try straight stub first
-            straight = [(pad["x"], pad["y"]), (wx, wy)]
-            use_path = straight if not stub_blocked_pts(straight) else full_path
+            # Canonical stub via _route_45deg_stub; fall back to BFS path if blocked
+            _dc = math.hypot(wx - pad["x"], wy - pad["y"])
+            _edx_c, _edy_c = (_snap_canonical((wx - pad["x"]) / _dc,
+                                               (wy - pad["y"]) / _dc)
+                               if _dc > 1e-9 else (cs_ux, cs_uy))
+            _pts45 = _stub_pts(pad["x"], pad["y"], wx, wy, _edx_c, _edy_c)
+            use_path = _pts45 if not stub_blocked_pts(_pts45) else full_path
             if stub_blocked_pts(use_path):
                 # Skip — path itself has issues; keep searching
                 pass
@@ -1083,33 +1145,34 @@ def place_escape_via(pad, net_name, partner_net, route_layer_id,
     obs_pad_solid = build_obstacles_fine(pad_layer, pad_excl, own_ref=pad["ref"], pads_only=True)
     obs_route     = build_obstacles(route_layer_id, {net_name})
 
-    # Direct outward escape: sweep angles around the outward direction (±90°)
-    # and distances from 0.6 to 3.5mm. Prefer smallest distance and closest to
-    # the primary outward direction.
+    # Direct outward escape: try all 8 canonical directions (0/45/90°) sorted by
+    # proximity to the outward direction, at distances from 0.6 to 3.5mm.
+    # Stubs must always be at 0°, 45°, or 90° — no arbitrary angles.
     if cross_side is None:
+        _S2 = 1.0 / math.sqrt(2.0)
+        _CANON_DIRS = [
+            (1.0, 0.0), (0.0, 1.0), (-1.0, 0.0), (0.0, -1.0),
+            (_S2,  _S2), (_S2, -_S2), (-_S2,  _S2), (-_S2, -_S2),
+        ]
         base_angle = math.atan2(out_uy, out_ux) if (abs(out_ux) + abs(out_uy)) > 0.01 else 0.0
-        angle_offsets = [0.0,
-                          math.radians(20),  math.radians(-20),
-                          math.radians(40),  math.radians(-40),
-                          math.radians(60),  math.radians(-60),
-                          math.radians(90),  math.radians(-90),
-                          math.radians(120), math.radians(-120),
-                          math.radians(150), math.radians(-150),
-                          math.radians(180)]
-        # If avoid_pad given, penalize offsets that rotate toward the avoid pad
+        def _ang_dist_base(dx, dy):
+            a = math.atan2(dy, dx) - base_angle
+            return abs(math.atan2(math.sin(a), math.cos(a)))
+        sorted_dirs = sorted(_CANON_DIRS, key=lambda xy: _ang_dist_base(xy[0], xy[1]))
+
+        # If avoid_pad given, re-sort to prefer directions furthest from it
         if avoid_pad is not None:
             ax = avoid_pad["x"] - px; ay = avoid_pad["y"] - py
             aL = math.hypot(ax, ay)
             if aL > 0.05:
                 avoid_ang = math.atan2(ay, ax)
-                def _ang_score(off):
-                    # Angle of via direction after offset
-                    va = base_angle + off
-                    # Angular distance to avoid direction (want LARGE distance)
-                    d = abs(math.atan2(math.sin(va - avoid_ang), math.cos(va - avoid_ang)))
-                    # Prefer larger d (further from avoid). Break ties: smaller |off|.
-                    return (-d, abs(off))
-                angle_offsets = sorted(angle_offsets, key=_ang_score)
+                def _dir_score(xy):
+                    va = math.atan2(xy[1], xy[0])
+                    d_avoid = abs(math.atan2(math.sin(va - avoid_ang),
+                                             math.cos(va - avoid_ang)))
+                    return (-d_avoid, _ang_dist_base(xy[0], xy[1]))
+                sorted_dirs = sorted(sorted_dirs, key=_dir_score)
+
         best = None
         best_d = float('inf')
         used_stub_w = STUB_W_MM
@@ -1124,10 +1187,9 @@ def place_escape_via(pad, net_name, partner_net, route_layer_id,
             distances = [min_distance_mm]
         for try_stub_w in (STUB_W_MM, NECKDOWN_W_MM):
             for d in distances:
-                for aoff in angle_offsets:
-                    ang = base_angle + aoff
-                    vx = px + math.cos(ang) * d
-                    vy = py + math.sin(ang) * d
+                for cdx, cdy in sorted_dirs:
+                    vx = px + cdx * d
+                    vy = py + cdy * d
                     if avoid_pad is not None:
                         if math.hypot(vx - avoid_pad["x"], vy - avoid_pad["y"]) < min_partner_gap:
                             continue
@@ -1148,19 +1210,20 @@ def place_escape_via(pad, net_name, partner_net, route_layer_id,
                                net_name=net_name, route_layer_id=route_layer_id,
                                pad_layer_id=pad_layer, obs_pad_solid=obs_pad_solid):
                         if d < best_d:
-                            best_d = d; best = (vx, vy, ang, aoff); used_stub_w = try_stub_w
+                            best_d = d; best = (vx, vy, cdx, cdy); used_stub_w = try_stub_w
                             break
                 if best is not None:
                     break
             if best is not None:
                 break
         if best is not None:
-            vx, vy, ang, aoff = best
+            vx, vy, best_dx, best_dy = best
             add_track(px, py, vx, vy, used_stub_w, pad_layer, net_name)
             add_via(vx, vy, net_name, VIA_PAD, VIA_DRILL)
             log.append(f"    escape {pad['ref']} net={net_name}: "
                        f"({px:.3f},{py:.3f})→({vx:.3f},{vy:.3f})"
-                       f"  d={best_d:.2f}mm  Δang={math.degrees(aoff):+.0f}°"
+                       f"  d={best_d:.2f}mm"
+                       f"  dir={math.degrees(math.atan2(best_dy, best_dx)):.0f}°"
                        f"  stub={used_stub_w:.3f}mm")
             return vx, vy
         # Angle sweep failed — try A* maze escape as fallback
@@ -1239,10 +1302,12 @@ def place_escape_via(pad, net_name, partner_net, route_layer_id,
 
     # Use neckdown width for crossing stubs — tight threading past partner pad.
     cross_stub_w = NECKDOWN_W_MM
+    _cout_ux, _cout_uy = _snap_canonical(out_ux, out_uy)
+    _ccsx, _ccsy = _snap_canonical(csx, csy)
     for outward in (0.4, 0.6, 0.8, 1.0, 1.3, 1.6, 2.0):
-        # Intermediate point: outward from own pad along (out_ux, out_uy)
-        mx = px + out_ux * outward
-        my = py + out_uy * outward
+        # Intermediate point: outward from own pad along canonical direction
+        mx = px + _cout_ux * outward
+        my = py + _cout_uy * outward
         for along in (pp_size + via_r + c + 0.10,
                       pp_size + via_r + c + 0.20,
                       pp_size + via_r + c + 0.35,
@@ -1250,10 +1315,10 @@ def place_escape_via(pad, net_name, partner_net, route_layer_id,
                       pp_size + via_r + c + 0.70,
                       pp_size + via_r + c + 1.0,
                       pp_size + via_r + c + 1.4):
-            proj_from_partner = (mx - ppx) * csx + (my - ppy) * csy
+            proj_from_partner = (mx - ppx) * _ccsx + (my - ppy) * _ccsy
             shift = along - proj_from_partner
-            vx = mx + csx * shift
-            vy = my + csy * shift
+            vx = mx + _ccsx * shift
+            vy = my + _ccsy * shift
             stub1 = seg_rect(px, py, mx, my, cross_stub_w + 2 * c)
             stub2 = seg_rect(mx, my, vx, vy, cross_stub_w + 2 * c)
             via_box  = (vx - via_r - c, vy - via_r - c, vx + via_r + c, vy + via_r + c)
@@ -1706,8 +1771,11 @@ def emit_diffpair(poly, vpa, vna, vpb, vnb, width_mm, cc, layer_id, net_p, net_n
     n_start = (poly[0][0] - cur_p_sign *  px0 * half, poly[0][1] - cur_p_sign *  py0 * half)
 
     # Stub from via → H/V anchor, then miter corners, then H/V anchor → via
-    p_pts = [vpa, p_start]
-    n_pts = [vna, n_start]
+    _s0dx = poly[1][0] - poly[0][0]; _s0dy = poly[1][1] - poly[0][1]
+    _s0L = math.hypot(_s0dx, _s0dy) or 1.0
+    _edx0, _edy0 = _s0dx / _s0L, _s0dy / _s0L
+    p_pts = _stub_pts(vpa[0], vpa[1], p_start[0], p_start[1], _edx0, _edy0)
+    n_pts = _stub_pts(vna[0], vna[1], n_start[0], n_start[1], _edx0, _edy0)
     for i in range(1, len(poly) - 1):
         prev, cur, nxt = poly[i - 1], poly[i], poly[i + 1]
         p1x, p1y = _perp_of(*prev, *cur)
@@ -1739,10 +1807,11 @@ def emit_diffpair(poly, vpa, vna, vpb, vnb, width_mm, cc, layer_id, net_p, net_n
     p_end = (poly[-1][0] + cur_p_sign *  pxl * half, poly[-1][1] + cur_p_sign *  pyl * half)
     n_end = (poly[-1][0] - cur_p_sign *  pxl * half, poly[-1][1] - cur_p_sign *  pyl * half)
 
-    p_pts.append(p_end)
-    p_pts.append(vpb)
-    n_pts.append(n_end)
-    n_pts.append(vnb)
+    _sLdx = poly[-1][0] - poly[-2][0]; _sLdy = poly[-1][1] - poly[-2][1]
+    _sLL = math.hypot(_sLdx, _sLdy) or 1.0
+    _edxL, _edyL = _sLdx / _sLL, _sLdy / _sLL
+    p_pts.extend(_stub_pts(p_end[0], p_end[1], vpb[0], vpb[1], _edxL, _edyL))
+    n_pts.extend(_stub_pts(n_end[0], n_end[1], vnb[0], vnb[1], _edxL, _edyL))
 
     p_pts = merge_collinear(p_pts)
     n_pts = merge_collinear(n_pts)
