@@ -830,19 +830,17 @@ def _segs_cross(x1, y1, x2, y2, x3, y3, x4, y4):
     return 0.0 < t < 1.0 and 0.0 < u < 1.0
 
 
-def _astar_centerline(cx0, cy0, cx1, cy1, w_full, obs_layer):
+def _astar_centerline(cx0, cy0, cx1, cy1, w_full, obs_layer, grid_pitch=0.6):
     """
     A* grid search for a clear centerline path when all octilinear candidates fail.
     Returns a merged octilinear polyline or None if no path found within budget.
-    Uses 0.6mm grid with H/V steps.
+    Uses H/V steps on a square grid at grid_pitch mm.
 
-    Grid pitch 0.6mm is required to prevent P/N copper shorts from the staircase
-    pattern produced by H/V-only A*.  Adjacent southward centerline columns must be
-    >= cc + width + clearance apart so that P from column A and N from column B
-    never overlap (cc = 0.227mm, width = 0.127mm, clearance = 0.15mm → min 0.504mm;
-    0.6mm provides 0.096mm margin).
+    Minimum safe grid_pitch to prevent P/N copper shorts from the H/V staircase
+    pattern: cc + width + clearance (per-pair).  Default 0.6mm covers most pairs;
+    a caller may pass a finer pitch computed as math.ceil(min_safe/0.05)*0.05.
     """
-    gp = 0.6
+    gp = grid_pitch
     sx = round(cx0 / gp)
     sy = round(cy0 / gp)
     ex = round(cx1 / gp)
@@ -3038,6 +3036,38 @@ def route_pair(pair_name):
                         if _rev_nk is not None:
                             chosen = list(reversed(_rev_nk))
                             log.append(f"    NOTE: neckdown A* found (reverse dir, w={_w_neck:.3f}mm) — may DRC")
+                    if chosen is None:
+                        # Finer-grid A* retry: per-pair minimum safe grid pitch is
+                        # cc + width + CLEARANCE (prevents P/N copper shorts in
+                        # H/V staircase patterns).  Rounded up to 0.05mm, this is
+                        # often smaller than the default 0.6mm, giving the search
+                        # more routing options in tight areas.
+                        _gp_min  = cc + width_mm + CLEARANCE_MM
+                        _gp_fine = math.ceil(_gp_min / 0.05) * 0.05
+                        if _gp_fine < 0.6 - 1e-6:
+                            for _fgo, _fgl in [(_obs_bo, "board-only"),
+                                               (obs_no_sib, "no-sib") if obs_no_sib else (None, None)]:
+                                if _fgo is None:
+                                    continue
+                                _fg_a = _astar_centerline(cx0, cy0, cx1, cy1,
+                                                          w_full, _fgo, _gp_fine)
+                                if (_fg_a is not None and
+                                        _path_clear_of_run_obs(_fg_a, w_full / 2.0, net_p, layer_id) and
+                                        _path_clear_of_run_obs(_fg_a, w_full / 2.0, net_n, layer_id)):
+                                    chosen = _fg_a
+                                    log.append(f"    NOTE: A* found (finer grid gp={_gp_fine:.2f}mm, {_fgl})")
+                                    break
+                                if chosen is None:
+                                    _fg_ar = _astar_centerline(cx1, cy1, cx0, cy0,
+                                                               w_full, _fgo, _gp_fine)
+                                    if (_fg_ar is not None and
+                                            _path_clear_of_run_obs(_fg_ar, w_full / 2.0, net_p, layer_id) and
+                                            _path_clear_of_run_obs(_fg_ar, w_full / 2.0, net_n, layer_id)):
+                                        chosen = list(reversed(_fg_ar))
+                                        log.append(f"    NOTE: A* found (finer grid gp={_gp_fine:.2f}mm, {_fgl}, rev)")
+                                        break
+                                if chosen is not None:
+                                    break
                     if chosen is None:
                         # All paths blocked — skip this segment rather than emitting a
                         # straight diagonal that crosses adjacent pair routes.
