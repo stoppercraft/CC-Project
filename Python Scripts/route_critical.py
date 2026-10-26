@@ -53,6 +53,8 @@ MAZE_MARGIN           = 16.0
 BEND_COST             = 4
 ANCHOR_CONN_TOL       = 0.05   # mm — tolerance for "already has a track endpoint here"
 COMP_KEEPOUT_MM       = 0.5    # mm — margin around component bboxes for trunk routing
+RELOC_STEP_MM         = 0.10   # walk increment when searching for a clear via position
+RELOC_MAX_MM          = 5.0    # max distance to walk along escape direction before giving up
 
 board     = pcbnew.LoadBoard(cfg.PCB_FILE)
 F_CU      = board.GetLayerID("F.Cu")
@@ -511,6 +513,42 @@ def anchor_accessible(ax, ay, net_name, layer_id, width_mm):
 
 
 
+def _relocate_anchor(ref, ax, ay, px, py, net_name, pad_layer_id, route_layer_id,
+                     eff_w, via_pad, via_drill, stub_w):
+    """
+    When anchor (ax,ay) is unreachable for trunk routing, walk outward along
+    the pad→via escape direction until anchor_accessible passes.  Extends the
+    existing fanout stub by placing a new segment (ax,ay)→(cx,cy) on pad_layer_id
+    and a via at (cx,cy).  Returns new (cx,cy) on success, None if no clear
+    position found within RELOC_MAX_MM.
+    """
+    ddx = ax - px; ddy = ay - py
+    d = math.hypot(ddx, ddy)
+    if d < 1e-6:
+        return None
+    edx = ddx / d; edy = ddy / d
+
+    obs_pad = build_obstacles(pad_layer_id, {net_name})
+
+    n = RELOC_STEP_MM
+    while n <= RELOC_MAX_MM + 1e-9:
+        cx = ax + edx * n
+        cy = ay + edy * n
+        if not anchor_accessible(cx, cy, net_name, route_layer_id, eff_w):
+            n += RELOC_STEP_MM
+            continue
+        # Verify the extension stub from old anchor to new position is clear.
+        stub_r = seg_rect(ax, ay, cx, cy, stub_w)
+        if any(rect_overlap(stub_r, o) for o in obs_pad):
+            n += RELOC_STEP_MM
+            continue
+        add_track(ax, ay, cx, cy, stub_w, pad_layer_id, net_name)
+        add_via(cx, cy, net_name, via_pad, via_drill)
+        log.append(f"    [anchor-reloc] {ref}: extended stub {n:.2f}mm → ({cx:.3f},{cy:.3f})")
+        return (cx, cy)
+    return None
+
+
 PAD_STUB_TOL  = 0.25   # mm — stub endpoint must be this close to pad centre
 _VIA_CONN_TOL = 0.10   # mm — stub's far end must be this close to via centre
 
@@ -788,9 +826,15 @@ def route_net_full(net_name, width_mm, layer_id, via_pad, via_drill,
             else:
                 eff_w = min(via_pad, width_mm)
             if not anchor_accessible(ax, ay, net_name, layer_id, eff_w):
-                log.append(f"  [full-net] SKIP {ref}: anchor ({ax:.3f},{ay:.3f})"
-                           f" unreachable at {eff_w}mm width")
-                continue
+                new_anchor = _relocate_anchor(
+                    ref, ax, ay, px, py, net_name,
+                    pad.GetLayer(), layer_id,
+                    eff_w, via_pad, via_drill, via_stub_w)
+                if new_anchor is None:
+                    log.append(f"  [full-net] SKIP {ref}: anchor ({ax:.3f},{ay:.3f})"
+                               f" unreachable at {eff_w}mm width, relocation failed")
+                    continue
+                ax, ay = new_anchor
             key = (round(ax, 3), round(ay, 3))
             if key in seen:
                 continue
