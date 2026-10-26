@@ -14,52 +14,53 @@ A subagent prompt that does not include AGENT_RULES.md content is a protocol vio
 
 ---
 
-## Route and Verify Workflow — EXECUTE ALL FOUR STEPS EVERY TIME, IN ORDER, WITHOUT EXCEPTION
+## Route and Verify Workflow — EXECUTE ALL SIX STEPS EVERY TIME, IN ORDER, WITHOUT EXCEPTION
 
 **Trigger:** Only the exact phrase "Route and Verify" from the user starts this workflow. No other phrasing ("run the script", "apply it", "run route_fanout_vias.py on the board", etc.) triggers it.
 
----
-
-## "Run route_fanout_vias.py on the entire board"
-
-When the user says this (or equivalent phrasing like "run the script on the board"), execute exactly two steps and nothing more:
-
-1. Clear all unlocked tracks and vias (Step 1 command above)
-2. Run the script with --apply (Step 2 command above)
-
-Do NOT run DRC. Do NOT inspect the board. Do NOT add any steps beyond what was asked. This is a literal instruction, not the Route and Verify workflow.
-
 ### CRITICAL BEHAVIOR RULES — VIOLATION OF ANY OF THESE IS A FAILURE
 
-1. **DO NOT ask the user to do anything.** The user saying "Route and Verify" is the only input required. Every step from that point is Claude's responsibility. Asking the user to clear the board, run DRC, confirm anything, or do any other step is WRONG.
-2. **DO NOT skip Step 1 (clear).** Running the script on a board that still has tracks from a previous run produces meaningless results. Step 1 is not optional under any circumstance, including dry runs.
-3. **DO NOT run Step 2 twice.** Run the script once, capture all output in that single command. Never re-run to filter output.
-4. **DO NOT present results without completing Steps 3 AND 4.** The script completing without errors does not mean the board is correct. DRC alone is not sufficient — a passing DRC does not catch logical errors like a pad getting both a placed via AND a spurious escape trace. Always inspect the board programmatically after DRC.
-5. **DO NOT narrate the steps.** Do not say "I'll clear the board now" or "Running DRC..." — just execute. Report results when all three steps are done.
+1. **DO NOT ask the user to do anything.** Every step is Claude's responsibility.
+2. **DO NOT skip Step 1 (clear).** Never route on a board with leftover tracks.
+3. **DO NOT run any script more than once.** Run each once, capture full output.
+4. **DO NOT present results without completing Steps 4 AND 5.** DRC alone is insufficient.
+5. **DO NOT narrate the steps.** Execute silently, report when done.
 
 ### WHAT TO DO WHEN "Route and Verify" IS SAID
 
-Execute steps 1, 2, 3, and 4 in sequence immediately. No confirmation. No pausing. No asking.
+Execute steps 1–6 in sequence immediately. No confirmation. No pausing. No asking.
 
 ---
 
-**Step 1 — Clear all unlocked tracks and vias from the PCB**
+**Step 1 — Clear all unlocked tracks and vias**
 
 ```
-"C:\Program Files\KiCad\10.0\bin\python.exe" -c "import sys; sys.path.insert(0,'C:/Program Files/KiCad/10.0/bin/Lib/site-packages'); import pcbnew; board=pcbnew.LoadBoard(r'E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Frameline_Compute_V2.kicad_pcb'); [board.Remove(t) for t in list(board.GetTracks()) if not t.IsLocked()]; board.Save(board.GetFileName())"
+"C:\Program Files\KiCad\10.0\bin\python.exe" -c "import sys; sys.path.insert(0,'C:/Program Files/KiCad/10.0/bin/Lib/site-packages'); import pcbnew; board=pcbnew.LoadBoard(r'E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Frameline_Compute_V2.kicad_pcb'); to_remove=[t for t in board.GetTracks() if not t.IsLocked()]; [board.Remove(t) for t in to_remove]; board.Save(board.GetFileName())"
 ```
-
-If this command fails, diagnose and fix it. Do not proceed to Step 2 until the board is confirmed cleared.
 
 ---
 
-**Step 2 — Run the routing script with --apply (once, full output captured)**
+**Step 2a — Run route_fanout_vias.py --apply (once)**
 
 ```
 "C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_fanout_vias.py" --apply 2>&1
 ```
 
-Run this command exactly once. Capture and retain the full output. Do not re-run it.
+---
+
+**Step 2b — Run route_critical.py --apply (once)**
+
+```
+"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_critical.py" --apply 2>&1
+```
+
+---
+
+**Step 2c — Run route_highspeed.py --apply (once)**
+
+```
+"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_highspeed.py" --apply 2>&1
+```
 
 ---
 
@@ -69,29 +70,55 @@ Run this command exactly once. Capture and retain the full output. Do not re-run
 "C:\Program Files\KiCad\10.0\bin\kicad-cli.exe" pcb drc --output "C:/Temp/drc_fanout.json" --format json "E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Frameline_Compute_V2.kicad_pcb"
 ```
 
-Parse `C:/Temp/drc_fanout.json` and report violation counts grouped by type. If there are new non-zone violations (compared to baseline), investigate and fix before proceeding.
+Parse `C:/Temp/drc_fanout.json` and report violation counts grouped by type. Zone-fill artifacts (track vs GND zone) are expected and not a stop condition. New copper-to-copper or shorting violations are blocking.
 
 ---
 
 **Step 4 — Inspect the board programmatically**
 
-After DRC, inspect the board to confirm the script placed exactly what was intended. DRC alone is insufficient — it does not catch logical errors.
+**"Inspect the board" means execute Python that reads the actual `.kicad_pcb` file. Never reason from script output, memory, or what the script "should" have done.**
 
-**CRITICAL: "Inspect the board" means execute Python code that reads the actual `.kicad_pcb` file and reports facts from it. It does NOT mean:**
-- Reasoning from script output text
-- Consulting memory files or the known-good reference
-- Recalling what the script "should" have done
+Run pcbnew API Python. At minimum verify:
+- Via and track counts match script output
+- Every fanout escape trace starts at a pad (not free space) and ends dangling
+- No pad has both a via AND an escape trace
+- HS pair tracks are on In2.Cu only — no segments on F.Cu or B.Cu
+- No HS net has a via between its fanout anchor and its destination anchor (no mid-trace vias)
 
-If the user asks "does pad X have a via?" — run Python to check the board, then answer. Never answer from memory.
+Only after passing both DRC and board inspection may results be presented.
 
-Run a Python one-liner or short script using the pcbnew API. At minimum, verify:
+---
 
-- Every escape trace starts at the intended pad (not in free space)
-- Every escape trace ends dangling (not on a wrong-net pad/via — that would be a short DRC might miss)
-- No pad has both a placed via AND an escape trace (redundant/conflicting placement)
-- Track counts match what the script reported emitting
+## "Run route_fanout_vias.py on the entire board"
 
-Only after passing both DRC and board inspection may results be presented to the user.
+Execute exactly two steps: (1) clear, (2) fanout --apply. No DRC, no inspection.
+
+---
+
+## "Run route_critical.py" (or equivalent phrasing)
+
+Execute exactly three steps in order:
+1. Clear all unlocked tracks and vias
+2. `route_fanout_vias.py --apply`
+3. `route_critical.py --apply`
+
+Never run route_critical.py alone — it needs fanout vias as routing anchors.
+
+---
+
+## "Run route_highspeed.py" (or equivalent phrasing)
+
+Execute exactly four steps in order:
+1. Clear all unlocked tracks and vias
+2. `route_fanout_vias.py --apply`
+3. `route_critical.py --apply`
+4. `route_highspeed.py --apply`
+
+Never skip the upstream steps — HS routing uses fanout vias as endpoints and power vias from route_critical as obstacles.
+
+**To debug a specific pair** (algorithm verification, no board write): run `debug_highspeed.py` with `TARGET_PAIRS` set to the pair name(s). Do NOT run --apply, DRC, or board inspection after the debug script — the board shows partial HS routing only and the incomplete state is misleading.
+
+---
 
 ---
 

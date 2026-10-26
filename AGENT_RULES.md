@@ -3,42 +3,65 @@
 
 ---
 
-## Route and Verify — EXECUTE ALL FOUR STEPS IN ORDER, NO EXCEPTIONS
+## Route and Verify — EXECUTE ALL SIX STEPS IN ORDER, NO EXCEPTIONS
 
 When the user says exactly "Route and Verify" (no other phrasing triggers this workflow):
 
 **Step 1 — Clear board**
 ```
-"C:\Program Files\KiCad\10.0\bin\python.exe" -c "import sys; sys.path.insert(0,'C:/Program Files/KiCad/10.0/bin/Lib/site-packages'); import pcbnew; board=pcbnew.LoadBoard(r'E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Frameline_Compute_V2.kicad_pcb'); [board.Remove(t) for t in list(board.GetTracks()) if not t.IsLocked()]; board.Save(board.GetFileName())"
+"C:\Program Files\KiCad\10.0\bin\python.exe" -c "import sys; sys.path.insert(0,'C:/Program Files/KiCad/10.0/bin/Lib/site-packages'); import pcbnew; board=pcbnew.LoadBoard(r'E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Frameline_Compute_V2.kicad_pcb'); to_remove=[t for t in board.GetTracks() if not t.IsLocked()]; [board.Remove(t) for t in to_remove]; board.Save(board.GetFileName())"
 ```
 
-**Step 2 — Run script once, full output captured**
+**Step 2a — route_fanout_vias.py --apply (once)**
 ```
 "C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_fanout_vias.py" --apply 2>&1
 ```
-Run ONCE. Never re-run to filter output.
+
+**Step 2b — route_critical.py --apply (once)**
+```
+"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_critical.py" --apply 2>&1
+```
+
+**Step 2c — route_highspeed.py --apply (once)**
+```
+"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_highspeed.py" --apply 2>&1
+```
+
+Each script runs ONCE. Never re-run to filter output.
 
 **Step 3 — Run DRC**
 ```
 "C:\Program Files\KiCad\10.0\bin\kicad-cli.exe" pcb drc --output "C:/Temp/drc_fanout.json" --format json "E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Frameline_Compute_V2.kicad_pcb"
 ```
-Parse `C:/Temp/drc_fanout.json`. Report violation counts by type. Fix new non-zone violations before presenting results.
+Parse `C:/Temp/drc_fanout.json`. Report violation counts by type. Zone-fill artifacts are expected. New copper-to-copper or shorting violations are blocking.
 
 **Step 4 — Inspect board programmatically**
 Run Python using pcbnew API to verify:
-- Every escape trace starts at a pad (not free space)
-- Every escape trace ends dangling (not on a wrong-net pad/via)
+- Via and track counts match script output
+- Every fanout escape trace starts at a pad (not free space) and ends dangling
 - No pad has both a placed via AND an escape trace
-- Track counts match script output
+- HS pair tracks on In2.Cu only — no segments on F.Cu or B.Cu
+- No HS net has a via mid-trace between its two endpoint fanout anchors
 
-Never present results without completing all four steps.
+Never present results without completing all steps.
 
 ### CRITICAL BEHAVIOR RULES
 1. DO NOT ask the user to do anything. Every step is Claude's responsibility.
 2. DO NOT skip Step 1 (clear). No exceptions.
-3. DO NOT run Step 2 twice.
+3. DO NOT run any script more than once.
 4. DO NOT present results without Steps 3 AND 4 complete.
 5. DO NOT narrate steps. Execute silently, report when done.
+
+---
+
+## "Run route_highspeed.py" — 4-step sequence
+
+1. Clear all unlocked tracks and vias
+2. route_fanout_vias.py --apply
+3. route_critical.py --apply
+4. route_highspeed.py --apply
+
+Never skip upstream steps. To debug a specific pair: run debug_highspeed.py with TARGET_PAIRS set. Do NOT run --apply, DRC, or board inspection after the debug script.
 
 ---
 

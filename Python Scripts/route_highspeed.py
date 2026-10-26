@@ -56,7 +56,15 @@ os.environ["PATH"] = KICAD_BIN + os.pathsep + os.environ.get("PATH", "")
 sys.path.insert(0, cfg.KICAD_SITE_PKGS)
 import pcbnew
 
-APPLY        = "--apply" in sys.argv
+import argparse as _ap
+_parser = _ap.ArgumentParser(add_help=False)
+_parser.add_argument("--apply",  action="store_true")
+_parser.add_argument("--pairs",  default="",
+                     help="comma-separated pair names to route; default routes all pairs")
+_args, _ = _parser.parse_known_args()
+APPLY            = _args.apply
+TARGET_PAIRS_ARG = {p.strip() for p in _args.pairs.split(",") if p.strip()}
+
 CLEARANCE_MM = 0.15
 STUB_W_MM    = 0.127  # narrow escape stub
 
@@ -251,8 +259,10 @@ def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None,
                 continue
             try:
                 vr = tomm(track.GetWidth(layer_id)) / 2
-            except TypeError:
-                vr = tomm(track.GetWidth()) / 2
+            except Exception:
+                # PCB_VIA::GetWidth() without a layer fires a wxWidgets assertion
+                # in KiCad 10 — never call it; fall back to drill + annular ring.
+                vr = tomm(track.GetDrill()) / 2 + 0.15
             vx = tomm(track.GetPosition().x)
             vy = tomm(track.GetPosition().y)
             obs.append((vx - vr - c, vy - vr - c, vx + vr + c, vy + vr + c))
@@ -302,8 +312,10 @@ def build_obstacles_board_only(layer_id, net_excl, track_excl=None):
                 continue
             try:
                 vr = tomm(track.GetWidth(layer_id)) / 2
-            except TypeError:
-                vr = tomm(track.GetWidth()) / 2
+            except Exception:
+                # PCB_VIA::GetWidth() without a layer fires a wxWidgets assertion
+                # in KiCad 10 — never call it; fall back to drill + annular ring.
+                vr = tomm(track.GetDrill()) / 2 + 0.15
             vx2 = tomm(track.GetPosition().x)
             vy2 = tomm(track.GetPosition().y)
             obs.append((vx2 - vr - c, vy2 - vr - c, vx2 + vr + c, vy2 + vr + c))
@@ -425,8 +437,10 @@ def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
                 continue
             try:
                 vr = tomm(track.GetWidth(layer_id)) / 2
-            except TypeError:
-                vr = tomm(track.GetWidth()) / 2
+            except Exception:
+                # PCB_VIA::GetWidth() without a layer fires a wxWidgets assertion
+                # in KiCad 10 — never call it; fall back to drill + annular ring.
+                vr = tomm(track.GetDrill()) / 2 + 0.15
             vx = tomm(track.GetPosition().x)
             vy = tomm(track.GetPosition().y)
             obs.append((vx - vr - c, vy - vr - c, vx + vr + c, vy + vr + c))
@@ -1191,11 +1205,9 @@ def place_escape_via(pad, net_name, partner_net, route_layer_id,
                                 _via_fits = True
                     break
                 if not _via_fits:
-                    log.append(f"    DBG fallback {_fpad:.2f}mm {pad['ref']} net={net_name}: via_r={_fvr:.3f} > pad_half → skip")
                     continue
                 # Check clearance on route layer (exact for session vias)
                 if not _via_clear_of_run_obs(px, py, net_name, route_layer_id):
-                    log.append(f"    DBG fallback {_fpad:.2f}mm {pad['ref']} net={net_name}: blocked by run_obs")
                     continue
                 # Check board obstacles on route layer
                 _vbox = (px - _fvr - CLEARANCE_MM, py - _fvr - CLEARANCE_MM,
@@ -1206,7 +1218,6 @@ def place_escape_via(pad, net_name, partner_net, route_layer_id,
                            if (_pd3.GetNetname() != net_name and
                                _pd3.GetLayerSet().Contains(route_layer_id))]
                 if any(rect_overlap(_vbox, o) for o in _obs_rl):
-                    log.append(f"    DBG fallback {_fpad:.2f}mm {pad['ref']} net={net_name}: blocked by board pad on route layer")
                     continue
                 add_via(px, py, net_name, _fpad, _fdrill)
                 log.append(f"    via-in-pad (fallback {_fpad:.2f}mm) {pad['ref']} "
@@ -2808,8 +2819,16 @@ log.append(f"route_highspeed.py — {mode}")
 log.append("=" * 70)
 log.append(f"Via: pad={VIA_PAD}mm  drill={VIA_DRILL}mm  GND_NET={GND_NET!r}")
 order = routing_order()
+if TARGET_PAIRS_ARG:
+    order = [p for p in order if p in TARGET_PAIRS_ARG]
+    unknown = TARGET_PAIRS_ARG - set(cfg.HS_ROUTE_WIDTHS)
+    if unknown:
+        log.append(f"WARNING: --pairs requested unknown pair(s): {', '.join(sorted(unknown))}")
 log.append(f"Pairs to route ({len(order)}): {', '.join(order)}")
-log.append("(pairs not in HS_ROUTE_WIDTHS are deferred to FreeRouting by config)")
+if TARGET_PAIRS_ARG:
+    log.append(f"(filtered by --pairs; full set has {len(routing_order())} pairs)")
+else:
+    log.append("(pairs not in HS_ROUTE_WIDTHS are deferred to FreeRouting by config)")
 
 # Option C — pre-assign corridor trunk x-coordinates for parallel pair groups
 _assign_corridor_trunks(order)
@@ -2841,5 +2860,8 @@ except FileNotFoundError:
     existing = ""
 report_path.write_text(existing + "\n" + "\n".join(log) + "\n", encoding="utf-8")
 print("\n".join(log))
+
+import sys as _sys
+_sys.exit(1 if _conflict_count else 0)
 
 sys.exit(1 if _conflict_count else 0)
