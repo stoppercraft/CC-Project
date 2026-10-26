@@ -62,17 +62,28 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-**Last --apply run: commit `a26fb60` — 2026-10-20 (session 37).**
-**Result: 104 vias, 2 keepouts (U3/47 DP_RX1_N, U3/48 DP_RX1_P), 0 crossings.**
-**U3/47+48 stubs manually placed by user on board.**
-# Updated 2026-10-20 (session 37).
+# Updated 2026-10-26 (session 41).
 
-### What to do next
+**route_fanout_vias.py:** COMPLETE. 114 vias (12 VIPPO, 102 side-exit), 0 keepouts.
+- pocket-push added: pushes sandwiched non-HS vias further along escape until trunk-width corridor clears.
+  J_USB_OUT1/A4 pushed 1.10mm → (135.850,138.070). J_DSI1/21 pushed 1.70mm → (154.167,150.413).
+- Latest commit: `015b30f`
 
-Ask user what to work on: fanout bug fix, route_critical.py, or something else.
-Do NOT run any scripts without explicit instruction.
+**route_critical.py:** COMPLETE. 0 conflicts, all power nets connected. Latest commit: `bf77af2` / `836e1a5`.
+- _relocate_anchor: stub width fallbacks (1.0→0.4→0.3mm) + trunk-width accessibility gate
+- wxWidgets fix: build_obstacles via fallback uses drill+annular instead of bare GetWidth()
+- J_USB_OUT1/A4: now routes automatically via pocket-push; A4 has exactly 1 via
+- STUSB_1V2 / STUSB_2V7: still unrouted — F.Cu-only local bypass caps (~1.25mm). Not route_critical scope.
 
-#### Known unresolved bug — `last_blk` overwrite in `_face_fanout`
+**Next: route_highspeed.py** — user approved moving to next phase.
+
+### What to do at next session start
+
+1. Read this file + project_phase10_routing.md + project_hs_routing_requirements.md
+2. Ask user if they want to start working on route_highspeed.py
+3. Do NOT run any scripts without explicit instruction
+
+#### Unresolved fanout bug (deferred) — `last_blk` overwrite in `_face_fanout`
 In the depth-scan while loop, `last_blk = blk` overwrites on every failing depth. For U3/47:
 - Shallow depths: via-vs-via against pad48 → actionable (should increment pad48 lat_off)
 - Deep depths (~2.25mm): via-vs-pad against C_LT1V8_BULK1 → non-actionable fixed obstacle
@@ -80,18 +91,13 @@ Final `last_blk` = C_LT1V8_BULK1 → algorithm increments pad47's own lat_off 50
 Correct fix: track first-actionable (blk_j not None) AND first-fixed (blk_j=None) blockers
 separately; prefer actionable if one exists. First-blocker fix (5cede7d) was reverted because
 it caused regressions when the FIRST depth's blocker was itself a fixed pad on other faces.
+User manually placed stubs for U3/47+48. Defer fix until directed.
 
 #### Remaining J_DSI1 issues — ACCEPTED LIMITATIONS (no algorithmic fix)
 - J_DSI1/15 (TOUCH_RST) and J_DSI1/17 (TOUCH_SCL): still escape NORTH (via at y≈152.113).
   No general algorithmic fix without project-specific overrides (prohibited).
 
-#### Fixed session 36 (commits 014b367, 6b3fde7)
-1. **crossing() false positive:** _route_45deg_stub() replaces _via_corner() in _get_seg_coords.
-2. **nearest-dest preferred_dir:** PRIORITY_OTHER pads biased toward nearest same-net destination.
-
-Do NOT switch to route_highspeed.py without explicit instruction.
-
-Script execution order: route_fanout_vias.py → route_critical.py (IN PROGRESS) → route_highspeed.py (BLOCKED)
+Script execution order: route_fanout_vias.py ✅ → route_critical.py ✅ → route_highspeed.py (NEXT)
 
 ---
 
