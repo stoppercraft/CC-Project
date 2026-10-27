@@ -68,9 +68,9 @@ Do NOT run DRC or Route and Verify after debug_highspeed.py — board is partial
 
 ---
 
-## route_fanout_vias.py — Mandatory Pre-Edit Protocol
+## All Routing Scripts — Mandatory Pre-Edit Protocol
 
-Before writing or modifying ANY code in `route_fanout_vias.py`:
+Before writing or modifying ANY code in ANY routing script in `Python Scripts/` (route_fanout_vias.py, route_critical.py, route_highspeed.py, or any future routing script):
 
 **Step A** — Read the NEVER-AGAIN LIST: call `Read` tool on `E:\Claude Projects\CC Project Folder\SESSION_CONTEXT.md`. Do NOT recall from memory — read the actual file.
 

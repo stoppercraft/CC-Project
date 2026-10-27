@@ -130,9 +130,9 @@ Do NOT run DRC or Route and Verify after debug_highspeed.py — the board shows 
 
 ---
 
-## route_fanout_vias.py — Mandatory Pre-Edit Protocol
+## All Routing Scripts — Mandatory Pre-Edit Protocol
 
-Before writing or modifying ANY code in `route_fanout_vias.py`, execute these steps in order. Skipping any step is a failure.
+Before writing or modifying ANY code in ANY routing script in `Python Scripts/`, execute these steps in order. Skipping any step is a failure. This applies to route_fanout_vias.py, route_critical.py, route_highspeed.py, and any future routing script.
 
 **Step A — Read the PROHIBITED list.**
 Read the NEVER-AGAIN LIST in `E:\Claude Projects\CC Project Folder\SESSION_CONTEXT.md`. All 7 prohibited patterns must be fresh in context before any code is written.
@@ -147,7 +147,7 @@ If you cannot articulate how the planned code avoids each relevant PROHIBITED pa
 **Step C — Write the code.**
 Only after Steps A and B are complete.
 
-This protocol is non-negotiable. A code edit to `route_fanout_vias.py` that is not preceded by Steps A and B in the same response is a protocol violation.
+This protocol is non-negotiable. A code edit to any routing script that is not preceded by Steps A and B in the same response is a protocol violation.
 
 ---
 
