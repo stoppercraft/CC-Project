@@ -3416,8 +3416,62 @@ def route_pair(pair_name):
                 if _mc_nr is not None:
                     break
             if _mc_pp is None or _mc_nr is None:
-                log.append("    WARNING: miter-crossing layer-split failed; skipping emit")
-                _conflict_count += 1
+                # Layer-split failed — try independent P/N routing as last resort
+                _mi_obs = list(build_obstacles(layer_id, {net_p, net_n},
+                                               include_sibling_reserves=False))
+                _mi_obs_bo = list(build_obstacles_board_only(layer_id, {net_p, net_n}))
+                _mi_pp = None
+                for _mi_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                    if path_clear(_mi_c, width_mm, _mi_obs):
+                        _mi_pp = merge_collinear(_mi_c); break
+                if _mi_pp is None:
+                    _mi_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                               width_mm, _mi_obs)
+                if _mi_pp is None:
+                    for _mi_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                        if (path_clear(_mi_c, width_mm, _mi_obs_bo) and
+                                _path_clear_of_run_obs(_mi_c, width_mm/2.0, net_p, layer_id)):
+                            _mi_pp = merge_collinear(_mi_c); break
+                if _mi_pp is None:
+                    _mi_r = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                              width_mm, _mi_obs_bo)
+                    if (_mi_r is not None and
+                            _path_clear_of_run_obs(_mi_r, width_mm/2.0, net_p, layer_id)):
+                        _mi_pp = _mi_r
+                _mi_nr = None
+                for _mi_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                    if path_clear(_mi_c, width_mm, _mi_obs):
+                        _mi_nr = merge_collinear(_mi_c); break
+                if _mi_nr is None:
+                    _mi_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
+                                               width_mm, _mi_obs)
+                if _mi_nr is None:
+                    for _mi_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                        if (path_clear(_mi_c, width_mm, _mi_obs_bo) and
+                                _path_clear_of_run_obs(_mi_c, width_mm/2.0, net_n, layer_id)):
+                            _mi_nr = merge_collinear(_mi_c); break
+                if _mi_nr is None:
+                    _mi_r = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
+                                              width_mm, _mi_obs_bo)
+                    if (_mi_r is not None and
+                            _path_clear_of_run_obs(_mi_r, width_mm/2.0, net_n, layer_id)):
+                        _mi_nr = _mi_r
+                if _mi_pp is not None and _mi_nr is not None:
+                    for _mi_i in range(len(_mi_pp) - 1):
+                        add_track(_mi_pp[_mi_i][0], _mi_pp[_mi_i][1],
+                                  _mi_pp[_mi_i+1][0], _mi_pp[_mi_i+1][1],
+                                  width_mm, layer_id, net_p)
+                    for _mi_i in range(len(_mi_nr) - 1):
+                        add_track(_mi_nr[_mi_i][0], _mi_nr[_mi_i][1],
+                                  _mi_nr[_mi_i+1][0], _mi_nr[_mi_i+1][1],
+                                  width_mm, layer_id, net_n)
+                    log.append("    NOTE: miter-split independent P/N routing succeeded")
+                    _hw = width_mm / 2.0
+                    _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_mi_pp, _hw))
+                    _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_mi_nr, _hw))
+                else:
+                    log.append("    WARNING: miter-crossing layer-split failed; skipping emit")
+                    _conflict_count += 1
             else:
                 for _mc_i in range(len(_mc_pp) - 1):
                     add_track(_mc_pp[_mc_i][0], _mc_pp[_mc_i][1],
