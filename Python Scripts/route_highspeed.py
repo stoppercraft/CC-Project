@@ -2456,24 +2456,17 @@ def route_pair(pair_name):
             continue
 
         # Determine routing layer: all fanout-via endpoints → pair layer (In2.Cu);
-        # all direct-pad endpoints → F.Cu; mixed → skip (fanout vias missing).
+        # any direct-pad endpoint → F.Cu (vias are through-holes, connect to F.Cu).
         def _ep_is_direct(v, pad):
             return abs(v[0] - pad["x"]) < 0.005 and abs(v[1] - pad["y"]) < 0.005
         _vp0_d = _ep_is_direct(vp0, p0); _vn0_d = _ep_is_direct(vn0, n0)
         _vp1_d = _ep_is_direct(vp1, p1); _vn1_d = _ep_is_direct(vn1, n1)
-        _seg_all_direct = _vp0_d and _vn0_d and _vp1_d and _vn1_d
-        _seg_all_via    = not any((_vp0_d, _vn0_d, _vp1_d, _vn1_d))
-        if not _seg_all_via and not _seg_all_direct:
-            _missing = [t for t, d in (('vp0',_vp0_d),('vn0',_vn0_d),
-                                        ('vp1',_vp1_d),('vn1',_vn1_d)) if d]
-            log.append(f"    SKIP seg: mixed via/direct-pad endpoints "
-                       f"(direct: {_missing}) — fanout vias missing")
-            _conflict_count += 1
-            continue
-        if _seg_all_direct:
+        _seg_all_via = not any((_vp0_d, _vn0_d, _vp1_d, _vn1_d))
+        if not _seg_all_via:
             layer_id = F_CU
-            _both_on_route_layer = True  # route P and N independently on F.Cu
-            log.append(f"    NOTE: direct-pad segment — routing on F.Cu")
+            _both_on_route_layer = True
+            _seg_type = "direct-pad" if (_vp0_d and _vn0_d and _vp1_d and _vn1_d) else "mixed"
+            log.append(f"    NOTE: {_seg_type} segment — routing on F.Cu")
 
         # Verify P and N are on the same lateral side at both endpoints
         cx0 = (vp0[0] + vn0[0]) / 2;  cy0 = (vp0[1] + vn0[1]) / 2
