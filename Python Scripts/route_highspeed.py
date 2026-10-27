@@ -287,9 +287,9 @@ _build_fanout_via_index()
 _build_fanout_stub_index()
 
 
-def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None,
-                    include_sibling_reserves=False, sibling_extra=0.0,
-                    comp_keepout_mm=0.0):
+def _build_obstacles_impl(layer_id, net_excl_pads, net_excl_tracks=None,
+                          include_sibling_reserves=False, sibling_extra=0.0,
+                          comp_keepout_mm=0.0):
     """
     Return forbidden rectangles on layer_id (clearance-expanded).
       net_excl_pads   : nets whose pads are NOT obstacles.
@@ -380,7 +380,7 @@ def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None,
     return obs
 
 
-def build_obstacles_board_only(layer_id, net_excl, track_excl=None):
+def _build_obstacles_board_only_impl(layer_id, net_excl, track_excl=None):
     """build_obstacles without _run_obs entries — for use with exact-distance run_obs check."""
     if track_excl is None:
         track_excl = net_excl
@@ -421,6 +421,31 @@ def build_obstacles_board_only(layer_id, net_excl, track_excl=None):
                 (-INF,         -INF,  INF,            _BRD_Y0 + ec),
                 (-INF,          _BRD_Y1 - ec, INF,   INF)])
     return obs
+
+
+# Per-pair accumulator: tracks placed by earlier segments of the current pair,
+# keyed by layer_id.  Populated inside route_pair(); cleared at pair start.
+# Wrappers below inject these into every build_obstacles / build_obstacles_board_only
+# call so later segments correctly treat earlier-segment same-net copper as obstacles.
+_seg_placed = {}  # type: dict[int, list[tuple]]
+
+
+def build_obstacles(layer_id, net_excl_pads, **kw):
+    return _build_obstacles_impl(layer_id, net_excl_pads, **kw) + _seg_placed.get(layer_id, [])
+
+
+def build_obstacles_board_only(layer_id, net_excl, **kw):
+    return _build_obstacles_board_only_impl(layer_id, net_excl, **kw) + _seg_placed.get(layer_id, [])
+
+
+def _poly_obs(poly, half_w):
+    """Convert a polyline to clearance-expanded AABB obstacle rects (same format as build_obstacles)."""
+    c = CLEARANCE_MM
+    return [(min(poly[i][0], poly[i+1][0]) - half_w - c,
+             min(poly[i][1], poly[i+1][1]) - half_w - c,
+             max(poly[i][0], poly[i+1][0]) + half_w + c,
+             max(poly[i][1], poly[i+1][1]) + half_w + c)
+            for i in range(len(poly) - 1)]
 
 
 def _via_clear_of_run_obs(vx, vy, net_name, route_layer_id):
@@ -2298,6 +2323,7 @@ def route_pair(pair_name):
 
     total_p = total_n = 0.0
     _seg_spine = []  # intermediate centerline waypoints from previous segment
+    _seg_placed.clear()  # reset inter-segment obstacle accumulator for this pair
     for seg in range(len(pairs) - 1):
         layer_id = board.GetLayerID(layer_name)  # reset per iteration; may be overridden below
         sub_pairs = [pairs[seg], pairs[seg + 1]]
@@ -2615,6 +2641,9 @@ def route_pair(pair_name):
                                   _nr_sl[_i+1][0], _nr_sl[_i+1][1],
                                   width_mm, layer_id, net_n)
                     log.append(f"    SAME-LAYER CROSSING: P and N on {layer_name}")
+                    _hw = width_mm / 2.0
+                    _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_pp_sl, _hw))
+                    _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_nr_sl, _hw))
                 continue  # skip regular emit_diffpair
 
             if s0 * s1 < 0:
@@ -2833,6 +2862,9 @@ def route_pair(pair_name):
                     log.append(f"    LAYER-SPLIT: P on {_pp_name} "
                                f"({vp0[0]:.3f},{vp0[1]:.3f})→({vp1[0]:.3f},{vp1[1]:.3f}), "
                                f"N on {_nr_name}")
+                    _hw = width_mm / 2.0
+                    _seg_placed.setdefault(_pp_layer, []).extend(_poly_obs(_pp, _hw))
+                    _seg_placed.setdefault(_nr_layer, []).extend(_poly_obs(_nr, _hw))
                 continue  # skip regular emit_diffpair
 
         # Route centerline between (cx0,cy0) and (cx1,cy1)
@@ -3254,6 +3286,9 @@ def route_pair(pair_name):
                                f"→({vp1[0]:.3f},{vp1[1]:.3f}) on {_vc_pln},"
                                f" N ({vn0[0]:.3f},{vn0[1]:.3f})"
                                f"→({vn1[0]:.3f},{vn1[1]:.3f}) on {_vc_nln}")
+                    _hw = width_mm / 2.0
+                    _seg_placed.setdefault(_vc_pp_layer, []).extend(_poly_obs(_vc_pp, _hw))
+                    _seg_placed.setdefault(_vc_nr_layer, []).extend(_poly_obs(_vc_nr, _hw))
                 else:
                     log.append(f"    WARNING: via-clearance split failed "
                                f"(P={'ok' if _vc_pp else 'FAIL'} "
@@ -3325,6 +3360,9 @@ def route_pair(pair_name):
                            f"({vp0[0]:.3f},{vp0[1]:.3f})→"
                            f"({vp1[0]:.3f},{vp1[1]:.3f}), "
                            f"N on {_mc_nr_name}")
+                _hw = width_mm / 2.0
+                _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_mc_pp, _hw))
+                _seg_placed.setdefault(_mc_nr_layer, []).extend(_poly_obs(_mc_nr, _hw))
             continue  # skip emit_diffpair
 
         bends = max(0, len(chosen) - 2)
@@ -3333,6 +3371,8 @@ def route_pair(pair_name):
         log.append(f"    seg emitted: {bends} bend(s)  Lp={lp:.3f}mm  Ln={ln:.3f}mm"
                    f"  Δ={abs(lp-ln):.3f}mm")
         total_p += lp;  total_n += ln
+        _seg_placed.setdefault(layer_id, []).extend(
+            _poly_obs(chosen, width_mm / 2.0 + cc / 2.0))
         if len(pairs) > 2 and len(chosen) > 2:
             _seg_spine = list(chosen[1:-1])
 
