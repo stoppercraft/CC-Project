@@ -161,6 +161,54 @@ def _is_fanout_via(ax, ay, net_name):
     return False
 
 
+_fanout_stubs: dict = {}  # (net, px, py) → (vx, vy) — via at end of fanout stub
+
+
+def _build_fanout_stub_index():
+    """Map each pad position to its fanout via by tracing locked track chains."""
+    adj: dict = {}
+    for trk in board.GetTracks():
+        if trk.GetClass() == "PCB_VIA" or not trk.IsLocked():
+            continue
+        vnet = trk.GetNetname()
+        s = trk.GetStart(); e = trk.GetEnd()
+        sx, sy = round(tomm(s.x), 3), round(tomm(s.y), 3)
+        ex, ey = round(tomm(e.x), 3), round(tomm(e.y), 3)
+        adj.setdefault((vnet, sx, sy), []).append((ex, ey))
+        adj.setdefault((vnet, ex, ey), []).append((sx, sy))
+
+    via_pos: set = {(vnet, round(vx, 3), round(vy, 3))
+                    for vnet, vx, vy in _fanout_via_index}
+
+    for fp in board.GetFootprints():
+        for pad in fp.Pads():
+            pnet = pad.GetNetname()
+            pos  = pad.GetPosition()
+            px, py = round(tomm(pos.x), 3), round(tomm(pos.y), 3)
+            if (pnet, px, py) not in adj:
+                continue
+            visited: set = {(px, py)}
+            frontier = [(px, py)]
+            found = None
+            while frontier and found is None:
+                cur = frontier.pop(0)
+                for nx, ny in adj.get((pnet, cur[0], cur[1]), []):
+                    if (nx, ny) in visited:
+                        continue
+                    visited.add((nx, ny))
+                    if (pnet, nx, ny) in via_pos:
+                        found = (nx, ny)
+                        break
+                    frontier.append((nx, ny))
+            if found is not None:
+                _fanout_stubs[(pnet, px, py)] = found
+
+
+def _follow_stub_to_via(pad_x, pad_y, net_name):
+    """Return the fanout via position for this pad from the stub index, or None."""
+    return _fanout_stubs.get((net_name, round(pad_x, 3), round(pad_y, 3)))
+
+
 # ── Geometry ──────────────────────────────────────────────────────────────────
 
 def mm(x):   return pcbnew.FromMM(x)
@@ -236,6 +284,7 @@ def build_sibling_via_reserves():
 
 _sibling_reserves = build_sibling_via_reserves()
 _build_fanout_via_index()
+_build_fanout_stub_index()
 
 
 def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None,
@@ -1658,6 +1707,17 @@ def escape_endpoint(p_pad, n_pad, net_p, net_n, route_layer_id,
                 fc.add(tag)
                 log.append(f"    reuse cached via {pad['ref']} net={net}: {_via_cache[_ck]}")
                 continue
+            # Stub-follow: trace locked fanout stub from pad to its via (most reliable)
+            _sv = _follow_stub_to_via(pad["x"], pad["y"], net)
+            if _sv is not None:
+                vx, vy = _sv
+                _run_obs.append((vx, vy, vx, vy, VIA_PAD / 2.0, route_layer_id, net))
+                _via_cache[_ck] = (vx, vy)
+                res[tag] = (vx, vy)
+                log.append(f"    stub-snap {pad['ref']} net={net}: ({vx:.3f},{vy:.3f})")
+                continue
+            # Fanout-snap fallback: nearest unclaimed via within FANOUT_SNAP_MM
+            # (handles via-in-pad cases where no stub track exists)
             _fv = _find_fanout_via(pad["x"], pad["y"], net)
             if _fv is not None:
                 vx, vy = _fv
@@ -1666,64 +1726,10 @@ def escape_endpoint(p_pad, n_pad, net_p, net_n, route_layer_id,
                 res[tag] = (vx, vy)
                 log.append(f"    fanout-snap {pad['ref']} net={net}: ({vx:.3f},{vy:.3f})")
                 continue
-            oux, ouy, _sign, _used_axis_fallback = outward_of(pad)
-            if avoid_pad is not None:
-                ax = avoid_pad["x"] - pad["x"]; ay = avoid_pad["y"] - pad["y"]
-                aL = math.hypot(ax, ay)
-                if aL > 0.05:
-                    aux_n, auy_n = ax / aL, ay / aL
-                    dp = oux * aux_n + ouy * auy_n
-                    if dp > 0.0:
-                        perp_ax, perp_ay = -auy_n, aux_n
-                        perp_comp = oux * perp_ax + ouy * perp_ay
-                        sign_perp = 1.0 if perp_comp >= 0 else -1.0
-                        new_ux = -aux_n * 0.7 + sign_perp * perp_ax * 0.7
-                        new_uy = -auy_n * 0.7 + sign_perp * perp_ay * 0.7
-                        nL = math.hypot(new_ux, new_uy) or 1.0
-                        oux, ouy = new_ux / nL, new_uy / nL
-                if force_crossing_of is not None:
-                    if _used_axis_fallback:
-                        oux = axis_ux
-                        ouy = axis_uy
-                    else:
-                        _axis_dp = (pad["x"] - cx) * axis_ux + (pad["y"] - cy) * axis_uy
-                        oux = axis_ux if _axis_dp >= 0 else -axis_ux
-                        ouy = axis_uy if _axis_dp >= 0 else -axis_uy
-            if cross_partner is None:
-                lat = p_lateral if tag == "P" else n_lateral
-                _is_crossing_pair = force_crossing_of is not None
-                _min_d = 1.5 if (_is_crossing_pair and avoid_pad is not None) else 0.0
-                _no_north_of = None
-                _avoid_pad_eff = avoid_pad
-                if (tag == "N" and not _is_crossing_pair
-                        and _used_axis_fallback
-                        and res.get("P") is not None):
-                    _vp = res["P"]
-                    _p_used_vip = (abs(_vp[0] - p_pad["x"]) < 0.005 and
-                                   abs(_vp[1] - p_pad["y"]) < 0.005)
-                    if not _p_used_vip:
-                        _no_north_of = (_vp[0], _vp[1], axis_ux, axis_uy)
-                    else:
-                        _avoid_pad_eff = None
-                _avoid_strict_effective = (_is_crossing_pair or
-                                           (tag == "P" and _tight_conn and _used_axis_fallback))
-                v = place_escape_via(pad, net, partner, route_layer_id,
-                                     oux, ouy, cross_side=None, cross_partner=None,
-                                     avoid_pad=_avoid_pad_eff, lateral_constraint=lat,
-                                     min_distance_mm=_min_d,
-                                     avoid_strict=_avoid_strict_effective,
-                                     no_north_of=_no_north_of)
-            else:
-                rx = cross_partner["x"] - cx;  ry = cross_partner["y"] - cy
-                partner_sign = 1.0 if (rx * perp_ux + ry * perp_uy) >= 0 else -1.0
-                cs_ux, cs_uy = partner_sign * perp_ux, partner_sign * perp_uy
-                v = place_escape_via(pad, net, partner, route_layer_id,
-                                     -axis_ux, -axis_uy,
-                                     cross_side=(cs_ux, cs_uy),
-                                     cross_partner=cross_partner)
-            res[tag] = v
-            if v is not None:
-                _via_cache[_ck] = v
+            # No fanout via — use pad position directly (F.Cu routing)
+            res[tag] = (pad["x"], pad["y"])
+            log.append(f"    direct-pad {pad['ref']} net={net}: "
+                       f"({pad['x']:.3f},{pad['y']:.3f})")
 
     _snap_obs   = len(_run_obs)
     _snap_log   = len(log)
@@ -2311,6 +2317,7 @@ def route_pair(pair_name):
     total_p = total_n = 0.0
     _seg_spine = []  # intermediate centerline waypoints from previous segment
     for seg in range(len(pairs) - 1):
+        layer_id = board.GetLayerID(layer_name)  # reset per iteration; may be overridden below
         sub_pairs = [pairs[seg], pairs[seg + 1]]
         info = detect_crossing(sub_pairs, layer_id)
         if info is None:
@@ -2448,47 +2455,25 @@ def route_pair(pair_name):
             _conflict_count += 1
             continue
 
-        # Anchor accessibility — verify each via can be exited at full pair corridor
-        # width.  If not, walk outward along the stub direction and relocate the via.
-        # Two passes: pass 1 relocates initially inaccessible vias; pass 2 re-checks
-        # any vias NOT relocated in pass 1, since a partner's relocation via may now
-        # block a previously-accessible anchor.
-        _trunk_w = width_mm + cc
-        _anchor_list = [('vp0', vp0, p0, net_p), ('vn0', vn0, n0, net_n),
-                        ('vp1', vp1, p1, net_p), ('vn1', vn1, n1, net_n)]
-        _relocated_in_p1 = set()
-        for _va, _vv, _vp, _vn in _anchor_list:
-            if _vv is None:
-                continue
-            if (_is_fanout_via(_vv[0], _vv[1], _vn) or
-                    _anchor_accessible(_vv[0], _vv[1], _vn, layer_id, _trunk_w)):
-                continue
-            _nr = _hs_relocate_anchor(_vp, _vv[0], _vv[1], _vn, _vp["layer"],
-                                      layer_id, VIA_PAD, VIA_DRILL, STUB_W_MM,
-                                      _trunk_w)
-            if _nr is not None:
-                if   _va == 'vp0': vp0 = _nr
-                elif _va == 'vn0': vn0 = _nr
-                elif _va == 'vp1': vp1 = _nr
-                else:              vn1 = _nr
-                _relocated_in_p1.add(_va)
-        # Pass 2: re-check vias not yet relocated (partner relocation may have blocked them)
-        _anchor_list2 = [('vp0', vp0, p0, net_p), ('vn0', vn0, n0, net_n),
-                         ('vp1', vp1, p1, net_p), ('vn1', vn1, n1, net_n)]
-        for _va, _vv, _vp, _vn in _anchor_list2:
-            if _va in _relocated_in_p1 or _vv is None:
-                continue
-            if (_is_fanout_via(_vv[0], _vv[1], _vn) or
-                    _anchor_accessible(_vv[0], _vv[1], _vn, layer_id, _trunk_w)):
-                continue
-            _nr = _hs_relocate_anchor(_vp, _vv[0], _vv[1], _vn, _vp["layer"],
-                                      layer_id, VIA_PAD, VIA_DRILL, STUB_W_MM,
-                                      _trunk_w)
-            if _nr is not None:
-                if   _va == 'vp0': vp0 = _nr
-                elif _va == 'vn0': vn0 = _nr
-                elif _va == 'vp1': vp1 = _nr
-                else:              vn1 = _nr
+        # Determine routing layer: all fanout-via endpoints → pair layer (In2.Cu);
+        # all direct-pad endpoints → F.Cu; mixed → skip (fanout vias missing).
+        def _ep_is_direct(v, pad):
+            return abs(v[0] - pad["x"]) < 0.005 and abs(v[1] - pad["y"]) < 0.005
+        _vp0_d = _ep_is_direct(vp0, p0); _vn0_d = _ep_is_direct(vn0, n0)
+        _vp1_d = _ep_is_direct(vp1, p1); _vn1_d = _ep_is_direct(vn1, n1)
+        _seg_all_direct = _vp0_d and _vn0_d and _vp1_d and _vn1_d
+        _seg_all_via    = not any((_vp0_d, _vn0_d, _vp1_d, _vn1_d))
+        if not _seg_all_via and not _seg_all_direct:
+            _missing = [t for t, d in (('vp0',_vp0_d),('vn0',_vn0_d),
+                                        ('vp1',_vp1_d),('vn1',_vn1_d)) if d]
+            log.append(f"    SKIP seg: mixed via/direct-pad endpoints "
+                       f"(direct: {_missing}) — fanout vias missing")
+            _conflict_count += 1
+            continue
+        if _seg_all_direct:
+            layer_id = F_CU
+            _both_on_route_layer = True  # route P and N independently on F.Cu
+            log.append(f"    NOTE: direct-pad segment — routing on F.Cu")
 
         # Verify P and N are on the same lateral side at both endpoints
         cx0 = (vp0[0] + vn0[0]) / 2;  cy0 = (vp0[1] + vn0[1]) / 2
