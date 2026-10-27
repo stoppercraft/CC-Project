@@ -3212,6 +3212,10 @@ def route_pair(pair_name):
         # overlap a cross-net endpoint via (electrical short), first try alternate
         # 2-segment paths; if none avoids the overlap, route P and N independently
         # with the partner-net vias added as explicit obstacles.
+        def _ep_r(x, y):
+            return (width_mm / 2.0
+                    if (round(x, 3), round(y, 3)) in _stub_tip_xy
+                    else VIA_PAD / 2.0)
         if _chosen_has_via_clearance_issue(chosen, vp0, vn0, vp1, vn1, cc, width_mm):
             _vc_alt = None
             _vc_obs_list = [obs_layer]
@@ -3239,19 +3243,11 @@ def route_pair(pair_name):
                 log.append("    NOTE: via-clearance overlap — no clean 2-seg path; "
                            "routing P/N independently")
                 # seg_rect already adds track_hw; obstacle needs only via_radius + clearance
-                _vc_margin = VIA_PAD / 2.0 + CLEARANCE_MM
-                _vc_np_boxes = [
-                    (vn0[0]-_vc_margin, vn0[1]-_vc_margin,
-                     vn0[0]+_vc_margin, vn0[1]+_vc_margin),
-                    (vn1[0]-_vc_margin, vn1[1]-_vc_margin,
-                     vn1[0]+_vc_margin, vn1[1]+_vc_margin),
-                ]
-                _vc_pp_boxes = [
-                    (vp0[0]-_vc_margin, vp0[1]-_vc_margin,
-                     vp0[0]+_vc_margin, vp0[1]+_vc_margin),
-                    (vp1[0]-_vc_margin, vp1[1]-_vc_margin,
-                     vp1[0]+_vc_margin, vp1[1]+_vc_margin),
-                ]
+                def _vc_box(xy):
+                    m = _ep_r(xy[0], xy[1]) + CLEARANCE_MM
+                    return (xy[0]-m, xy[1]-m, xy[0]+m, xy[1]+m)
+                _vc_np_boxes = [_vc_box(vn0), _vc_box(vn1)]
+                _vc_pp_boxes = [_vc_box(vp0), _vc_box(vp1)]
                 _vc_base = list(build_obstacles(layer_id, {net_p, net_n},
                                                 include_sibling_reserves=False))
                 _vc_base_bo = list(build_obstacles_board_only(layer_id, {net_p, net_n}))
