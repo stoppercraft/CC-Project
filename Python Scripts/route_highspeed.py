@@ -3152,6 +3152,18 @@ def route_pair(pair_name):
                     if (_vc_board is not None and
                             _path_clear_of_run_obs(_vc_board, width_mm / 2.0, net_p, layer_id)):
                         _vc_pp = _vc_board
+                # Add P's planned segments as obstacles for N's search so they
+                # cannot cross — same pattern as route_critical.py's _run_obs update.
+                if _vc_pp is not None:
+                    _hw_p = width_mm / 2.0
+                    _p_segs = [(min(_vc_pp[_i][0], _vc_pp[_i+1][0]) - _hw_p - CLEARANCE_MM,
+                                min(_vc_pp[_i][1], _vc_pp[_i+1][1]) - _hw_p - CLEARANCE_MM,
+                                max(_vc_pp[_i][0], _vc_pp[_i+1][0]) + _hw_p + CLEARANCE_MM,
+                                max(_vc_pp[_i][1], _vc_pp[_i+1][1]) + _hw_p + CLEARANCE_MM)
+                               for _i in range(len(_vc_pp) - 1)]
+                    _vc_obs_n    = _vc_obs_n    + _p_segs
+                    _vc_obs_n_bo = _vc_obs_n_bo + _p_segs
+
                 _vc_nr = None
                 for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
                     if path_clear(_vc_c, width_mm, _vc_obs_n):
