@@ -1842,17 +1842,34 @@ def _chosen_has_via_clearance_issue(poly, vp0_xy, vn0_xy, vp1_xy, vn1_xy, cc, wi
     return False
 
 
+def _parallel_corner(p_end, p_next, edx_i, edy_i, edx_i1, edy_i1):
+    """Intersect two adjacent parallel offset lines at a centerline corner.
+
+    Line 1 passes through p_end in direction (edx_i, edy_i).
+    Line 2 passes through p_next in direction (edx_i1, edy_i1).
+    Returns (x, y) intersection, or None if lines are parallel (cross ≈ 0).
+    The intersection is the single point shared by both parallel segments,
+    eliminating any bridge segments between them.
+    """
+    cross = edx_i * edy_i1 - edy_i * edx_i1
+    if abs(cross) < 1e-6:
+        return None
+    dx = p_next[0] - p_end[0]
+    dy = p_next[1] - p_end[1]
+    t = (dx * edy_i1 - dy * edx_i1) / cross
+    return (p_end[0] + t * edx_i, p_end[1] + t * edy_i)
+
+
 def emit_diffpair(poly, vpa, vna, vpb, vnb, width_mm, cc, layer_id, net_p, net_n):
     """Emit P and N tracks offset ±cc/2 from the centerline polyline.
 
-    Per-segment parallel tracks with canonical corner bridges (no miter bisector).
-    For each centerline segment a parallel P/N track segment is emitted at ±half
-    perpendicular offset.  At each corner a canonical (0/45/90°) bridge connects
-    the end of one parallel segment to the start of the next using _stub_pts —
-    the same decomposition used by route_fanout_vias.py.
+    Per-segment parallel tracks with intersection corners (no bridge segments).
+    For each centerline segment a parallel P/N track is emitted at ±half offset.
+    At each bend the corner point is the geometric intersection of adjacent parallel
+    lines — one point, zero bridge segments, all angles strictly canonical.
 
     p_sign is constant throughout: for canonical-angle paths with no 180° turns
-    (merge_collinear eliminates those), the miter bisector sign never flips.
+    (merge_collinear eliminates those), the perpendicular side never flips.
     """
     if len(poly) < 2:
         return 0.0, 0.0
@@ -1864,51 +1881,61 @@ def emit_diffpair(poly, vpa, vna, vpb, vnb, width_mm, cc, layer_id, net_p, net_n
 
     n_segs = len(poly) - 1
 
-    # Source escape direction (for source stubs)
-    _s0dx = poly[1][0] - poly[0][0]; _s0dy = poly[1][1] - poly[0][1]
-    _s0L  = math.hypot(_s0dx, _s0dy) or 1.0
-    _edx0, _edy0 = _s0dx / _s0L, _s0dy / _s0L
+    # Precompute canonical unit directions for all segments.
+    seg_dirs = []
+    for i in range(n_segs):
+        dxi = poly[i+1][0] - poly[i][0]; dyi = poly[i+1][1] - poly[i][1]
+        dL  = math.hypot(dxi, dyi) or 1.0
+        seg_dirs.append((dxi / dL, dyi / dL))
 
-    # Source stubs: via → main-run start anchor (first segment perp offset)
+    # Source stubs: via → first-segment parallel start anchor
+    _edx0, _edy0 = seg_dirs[0]
     p_start = (poly[0][0] + p_sign * px0 * half, poly[0][1] + p_sign * py0 * half)
     n_start = (poly[0][0] - p_sign * px0 * half, poly[0][1] - p_sign * py0 * half)
     p_pts = _stub_pts(vpa[0], vpa[1], p_start[0], p_start[1], _edx0, _edy0)
     n_pts = _stub_pts(vna[0], vna[1], n_start[0], n_start[1], _edx0, _edy0)
 
-    # Main run: per-segment parallel tracks + canonical corner bridges at bends
+    # Main run: per-segment parallel tracks joined at intersection corners.
     for i in range(n_segs):
-        pxi, pyi  = _perp_of(*poly[i], *poly[i + 1])
-        p_seg_end = (poly[i+1][0] + p_sign * pxi * half, poly[i+1][1] + p_sign * pyi * half)
-        n_seg_end = (poly[i+1][0] - p_sign * pxi * half, poly[i+1][1] - p_sign * pyi * half)
-
-        # Parallel segment: p_pts[-1] → p_seg_end (canonical — parallel to centerline)
-        p_pts.append(p_seg_end)
-        n_pts.append(n_seg_end)
+        pxi, pyi = _perp_of(*poly[i], *poly[i + 1])
 
         if i < n_segs - 1:
-            # Corner bridge: canonical stub from seg_end to start of next parallel segment.
-            # Escape direction = outgoing segment direction.
+            # Interior corner: intersect parallel-i and parallel-(i+1).
             pxi1, pyi1   = _perp_of(*poly[i+1], *poly[i+2])
+            p_seg_end    = (poly[i+1][0] + p_sign * pxi  * half, poly[i+1][1] + p_sign * pyi  * half)
+            n_seg_end    = (poly[i+1][0] - p_sign * pxi  * half, poly[i+1][1] - p_sign * pyi  * half)
             p_next_start = (poly[i+1][0] + p_sign * pxi1 * half, poly[i+1][1] + p_sign * pyi1 * half)
             n_next_start = (poly[i+1][0] - p_sign * pxi1 * half, poly[i+1][1] - p_sign * pyi1 * half)
-            _dxi  = poly[i+2][0] - poly[i+1][0]; _dyi  = poly[i+2][1] - poly[i+1][1]
-            _dxiL = math.hypot(_dxi, _dyi) or 1.0
-            _edxi, _edyi = _dxi / _dxiL, _dyi / _dxiL
-            bp = _stub_pts(p_seg_end[0], p_seg_end[1], p_next_start[0], p_next_start[1], _edxi, _edyi)
-            bn = _stub_pts(n_seg_end[0], n_seg_end[1], n_next_start[0], n_next_start[1], _edxi, _edyi)
-            for pt in bp[1:]:
-                p_pts.append(pt)
-            for pt in bn[1:]:
-                n_pts.append(pt)
+            edxi_c, edyi_c   = seg_dirs[i]
+            edxi1_c, edyi1_c = seg_dirs[i + 1]
+            cp = _parallel_corner(p_seg_end, p_next_start, edxi_c, edyi_c, edxi1_c, edyi1_c)
+            cn = _parallel_corner(n_seg_end, n_next_start, edxi_c, edyi_c, edxi1_c, edyi1_c)
+            if cp is not None and cn is not None:
+                p_pts.append(cp)
+                n_pts.append(cn)
+            else:
+                # Fallback: stub bridge (parallel lines — not expected after merge_collinear)
+                p_pts.append(p_seg_end)
+                n_pts.append(n_seg_end)
+                bp = _stub_pts(p_seg_end[0], p_seg_end[1], p_next_start[0], p_next_start[1], edxi1_c, edyi1_c)
+                bn = _stub_pts(n_seg_end[0], n_seg_end[1], n_next_start[0], n_next_start[1], edxi1_c, edyi1_c)
+                for pt in bp[1:]:
+                    p_pts.append(pt)
+                for pt in bn[1:]:
+                    n_pts.append(pt)
+        else:
+            # Last segment — conventional perpendicular endpoint.
+            p_seg_end = (poly[i+1][0] + p_sign * pxi * half, poly[i+1][1] + p_sign * pyi * half)
+            n_seg_end = (poly[i+1][0] - p_sign * pxi * half, poly[i+1][1] - p_sign * pyi * half)
+            p_pts.append(p_seg_end)
+            n_pts.append(n_seg_end)
 
-    # Destination stubs: main-run end anchor → via.
-    # p_pts[-1] is already p_end (last segment's p_seg_end); skip first point of stub.
+    # Destination stubs: last parallel endpoint → via.
+    # p_pts[-1] is already p_end (last segment's p_seg_end); [1:] skips the duplicate.
     pxl, pyl = _perp_of(*poly[-2], *poly[-1])
     p_end    = (poly[-1][0] + p_sign * pxl * half, poly[-1][1] + p_sign * pyl * half)
     n_end    = (poly[-1][0] - p_sign * pxl * half, poly[-1][1] - p_sign * pyl * half)
-    _sLdx = poly[-1][0] - poly[-2][0]; _sLdy = poly[-1][1] - poly[-2][1]
-    _sLL  = math.hypot(_sLdx, _sLdy) or 1.0
-    _edxL, _edyL = _sLdx / _sLL, _sLdy / _sLL
+    _edxL, _edyL = seg_dirs[-1]
     p_pts.extend(_stub_pts(p_end[0], p_end[1], vpb[0], vpb[1], _edxL, _edyL)[1:])
     n_pts.extend(_stub_pts(n_end[0], n_end[1], vnb[0], vnb[1], _edxL, _edyL)[1:])
 
