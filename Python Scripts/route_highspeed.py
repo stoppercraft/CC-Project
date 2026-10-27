@@ -1763,38 +1763,17 @@ def _perp_of(ax, ay, bx, by):
 def _miter_predict_crossing(poly, vpa_xy, vpb_xy, cc):
     """Return True if emit_diffpair would produce an end-stub crossing.
 
-    Simulates the cur_p_sign propagation through the poly's bends and compares
-    the final propagated sign to p_sign_dst (the sign P needs at the destination
-    via).  When they disagree, the end stub from p_end/n_end to the destination
-    vias will cross the partner's main-run track body.
+    In the per-segment parallel track approach, p_sign is constant throughout
+    (no bisector propagation). A crossing occurs when the destination via is on
+    the opposite side from the source via.
     """
     if len(poly) < 2:
         return False
-    half = cc / 2.0
-    # Source-side p_sign
     px0, py0 = _perp_of(*poly[0], *poly[1])
-    cur_ps = 1.0 if (px0*(vpa_xy[0]-poly[0][0]) + py0*(vpa_xy[1]-poly[0][1])) >= 0 else -1.0
-    # Propagate through each bend using the same local_sign logic as emit_diffpair
-    for i in range(1, len(poly) - 1):
-        prev, cur, nxt = poly[i-1], poly[i], poly[i+1]
-        p1x, p1y = _perp_of(*prev, *cur)
-        p2x, p2y = _perp_of(*cur,  *nxt)
-        bx = p1x + p2x; by = p1y + p2y
-        bL = math.hypot(bx, by)
-        if bL < 0.05: bx, by = p1x, p1y; bL = 1.0
-        bx /= bL; by /= bL
-        sin_a = abs(p1x * by - p1y * bx)
-        miter = half / max(sin_a, 0.20)
-        p_apx = cur[0] + cur_ps * p1x * half
-        p_apy = cur[1] + cur_ps * p1y * half
-        local_sign = 1.0 if (bx*(p_apx-cur[0]) + by*(p_apy-cur[1])) >= 0 else -1.0
-        p_ex = cur[0] + local_sign * bx * miter - cur[0]
-        p_ey = cur[1] + local_sign * by * miter - cur[1]
-        cur_ps = 1.0 if (p2x*p_ex + p2y*p_ey) >= 0 else -1.0
-    # Destination-side p_sign
-    pxl, pyl = _perp_of(*poly[-2], *poly[-1])
+    p_sign_src = 1.0 if (px0*(vpa_xy[0]-poly[0][0]) + py0*(vpa_xy[1]-poly[0][1])) >= 0 else -1.0
+    pxl, pyl  = _perp_of(*poly[-2], *poly[-1])
     p_sign_dst = 1.0 if (pxl*(vpb_xy[0]-poly[-1][0]) + pyl*(vpb_xy[1]-poly[-1][1])) >= 0 else -1.0
-    return cur_ps != p_sign_dst
+    return p_sign_src != p_sign_dst
 
 
 def _chosen_has_via_clearance_issue(poly, vp0_xy, vn0_xy, vp1_xy, vn1_xy, cc, width_mm):
@@ -1866,10 +1845,14 @@ def _chosen_has_via_clearance_issue(poly, vp0_xy, vn0_xy, vp1_xy, vn1_xy, cc, wi
 def emit_diffpair(poly, vpa, vna, vpb, vnb, width_mm, cc, layer_id, net_p, net_n):
     """Emit P and N tracks offset ±cc/2 from the centerline polyline.
 
-    Structure: diagonal stub from via → H/V anchor at poly[0] offset →
-    H/V main run with miter corners at bends → H/V anchor at poly[-1] offset →
-    diagonal stub to via. Stubs keep routing clean at fine-pitch pads while
-    the main length stays purely H/V.
+    Per-segment parallel tracks with canonical corner bridges (no miter bisector).
+    For each centerline segment a parallel P/N track segment is emitted at ±half
+    perpendicular offset.  At each corner a canonical (0/45/90°) bridge connects
+    the end of one parallel segment to the start of the next using _stub_pts —
+    the same decomposition used by route_fanout_vias.py.
+
+    p_sign is constant throughout: for canonical-angle paths with no 180° turns
+    (merge_collinear eliminates those), the miter bisector sign never flips.
     """
     if len(poly) < 2:
         return 0.0, 0.0
@@ -1879,59 +1862,55 @@ def emit_diffpair(poly, vpa, vna, vpb, vnb, width_mm, cc, layer_id, net_p, net_n
     px0, py0 = _perp_of(*poly[0], *poly[1])
     p_sign   = 1.0 if (px0 * (vpa[0]-poly[0][0]) + py0 * (vpa[1]-poly[0][1])) >= 0 else -1.0
 
-    # cur_p_sign is propagated through bends using local_sign at each corner.
-    # Initialised to p_sign (source side) so source stubs land on the natural side
-    # of the via without crossing the partner via.  The miter propagation then
-    # carries the correct sign forward so that p_end also lands on the natural
-    # destination side (no end-stub crossing either).
-    cur_p_sign = p_sign
+    n_segs = len(poly) - 1
 
-    # H/V anchor points at start of main run.
-    p_start = (poly[0][0] + cur_p_sign *  px0 * half, poly[0][1] + cur_p_sign *  py0 * half)
-    n_start = (poly[0][0] - cur_p_sign *  px0 * half, poly[0][1] - cur_p_sign *  py0 * half)
-
-    # Stub from via → H/V anchor, then miter corners, then H/V anchor → via
+    # Source escape direction (for source stubs)
     _s0dx = poly[1][0] - poly[0][0]; _s0dy = poly[1][1] - poly[0][1]
-    _s0L = math.hypot(_s0dx, _s0dy) or 1.0
+    _s0L  = math.hypot(_s0dx, _s0dy) or 1.0
     _edx0, _edy0 = _s0dx / _s0L, _s0dy / _s0L
+
+    # Source stubs: via → main-run start anchor (first segment perp offset)
+    p_start = (poly[0][0] + p_sign * px0 * half, poly[0][1] + p_sign * py0 * half)
+    n_start = (poly[0][0] - p_sign * px0 * half, poly[0][1] - p_sign * py0 * half)
     p_pts = _stub_pts(vpa[0], vpa[1], p_start[0], p_start[1], _edx0, _edy0)
     n_pts = _stub_pts(vna[0], vna[1], n_start[0], n_start[1], _edx0, _edy0)
-    for i in range(1, len(poly) - 1):
-        prev, cur, nxt = poly[i - 1], poly[i], poly[i + 1]
-        p1x, p1y = _perp_of(*prev, *cur)
-        p2x, p2y = _perp_of(*cur,  *nxt)
-        bx, by = p1x + p2x, p1y + p2y
-        bL = math.hypot(bx, by)
-        if bL < 0.05:
-            bx, by = p1x, p1y; bL = 1.0
-        bx /= bL;  by /= bL
-        # Determine which side of the bisector P is approaching from using
-        # the actual P-anchor position on the incoming segment, not the global sign.
-        p_apx = cur[0] + cur_p_sign * p1x * half
-        p_apy = cur[1] + cur_p_sign * p1y * half
-        local_sign = 1.0 if (bx * (p_apx - cur[0]) + by * (p_apy - cur[1])) >= 0 else -1.0
-        sin_a = abs(p1x * by - p1y * bx)
-        miter = half / max(sin_a, 0.20)
-        cx_, cy_ = cur
-        p_pts.append((cx_ + local_sign *  bx * miter, cy_ + local_sign *  by * miter))
-        n_pts.append((cx_ + local_sign * -bx * miter, cy_ + local_sign * -by * miter))
-        # Update cur_p_sign for the next segment based on where P's corner landed
-        # relative to the outgoing segment perpendicular.
-        p_ex = p_pts[-1][0] - cx_
-        p_ey = p_pts[-1][1] - cy_
-        cur_p_sign = 1.0 if (p2x * p_ex + p2y * p_ey) >= 0 else -1.0
 
-    # H/V anchor at end uses propagated sign so it stays consistent with the
-    # last miter corner (avoids crossing in the final straight segment).
+    # Main run: per-segment parallel tracks + canonical corner bridges at bends
+    for i in range(n_segs):
+        pxi, pyi  = _perp_of(*poly[i], *poly[i + 1])
+        p_seg_end = (poly[i+1][0] + p_sign * pxi * half, poly[i+1][1] + p_sign * pyi * half)
+        n_seg_end = (poly[i+1][0] - p_sign * pxi * half, poly[i+1][1] - p_sign * pyi * half)
+
+        # Parallel segment: p_pts[-1] → p_seg_end (canonical — parallel to centerline)
+        p_pts.append(p_seg_end)
+        n_pts.append(n_seg_end)
+
+        if i < n_segs - 1:
+            # Corner bridge: canonical stub from seg_end to start of next parallel segment.
+            # Escape direction = outgoing segment direction.
+            pxi1, pyi1   = _perp_of(*poly[i+1], *poly[i+2])
+            p_next_start = (poly[i+1][0] + p_sign * pxi1 * half, poly[i+1][1] + p_sign * pyi1 * half)
+            n_next_start = (poly[i+1][0] - p_sign * pxi1 * half, poly[i+1][1] - p_sign * pyi1 * half)
+            _dxi  = poly[i+2][0] - poly[i+1][0]; _dyi  = poly[i+2][1] - poly[i+1][1]
+            _dxiL = math.hypot(_dxi, _dyi) or 1.0
+            _edxi, _edyi = _dxi / _dxiL, _dyi / _dxiL
+            bp = _stub_pts(p_seg_end[0], p_seg_end[1], p_next_start[0], p_next_start[1], _edxi, _edyi)
+            bn = _stub_pts(n_seg_end[0], n_seg_end[1], n_next_start[0], n_next_start[1], _edxi, _edyi)
+            for pt in bp[1:]:
+                p_pts.append(pt)
+            for pt in bn[1:]:
+                n_pts.append(pt)
+
+    # Destination stubs: main-run end anchor → via.
+    # p_pts[-1] is already p_end (last segment's p_seg_end); skip first point of stub.
     pxl, pyl = _perp_of(*poly[-2], *poly[-1])
-    p_end = (poly[-1][0] + cur_p_sign *  pxl * half, poly[-1][1] + cur_p_sign *  pyl * half)
-    n_end = (poly[-1][0] - cur_p_sign *  pxl * half, poly[-1][1] - cur_p_sign *  pyl * half)
-
+    p_end    = (poly[-1][0] + p_sign * pxl * half, poly[-1][1] + p_sign * pyl * half)
+    n_end    = (poly[-1][0] - p_sign * pxl * half, poly[-1][1] - p_sign * pyl * half)
     _sLdx = poly[-1][0] - poly[-2][0]; _sLdy = poly[-1][1] - poly[-2][1]
-    _sLL = math.hypot(_sLdx, _sLdy) or 1.0
+    _sLL  = math.hypot(_sLdx, _sLdy) or 1.0
     _edxL, _edyL = _sLdx / _sLL, _sLdy / _sLL
-    p_pts.extend(_stub_pts(p_end[0], p_end[1], vpb[0], vpb[1], _edxL, _edyL))
-    n_pts.extend(_stub_pts(n_end[0], n_end[1], vnb[0], vnb[1], _edxL, _edyL))
+    p_pts.extend(_stub_pts(p_end[0], p_end[1], vpb[0], vpb[1], _edxL, _edyL)[1:])
+    n_pts.extend(_stub_pts(n_end[0], n_end[1], vnb[0], vnb[1], _edxL, _edyL)[1:])
 
     p_pts = merge_collinear(p_pts)
     n_pts = merge_collinear(n_pts)
