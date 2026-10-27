@@ -62,22 +62,28 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-# Updated 2026-10-26 (session 41 — end).
+# Updated 2026-10-27 (session 42 — end).
 
 **route_fanout_vias.py:** COMPLETE. commit `015b30f`
 **route_critical.py:** COMPLETE. commits `bf77af2`, `836e1a5`
-**route_highspeed.py workflow:** ESTABLISHED. commit `fcee29f` / `ba66a44`
-- --pairs flag, wxWidgets fix, sys.exit, 3 DBG lines removed
-- debug_highspeed.py created with FULL_SETUP / fast-iteration modes
-- Route and Verify updated to 6-step full pipeline
-- CLAUDE.md, AGENT_RULES.md updated with all new triggers
+**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. commits `7f54032`, `411ef3f`, `ebaedec`
+
+Session 42 fixes:
+- `7f54032`: `continue` misplacement fixed in via-clearance split success branch → fixes LT_TX1
+- `411ef3f`: Look-ahead reservation block removed → fixes DP_AUX seg 0 (UNAUTHORIZED commit)
+- `ebaedec`: Miter-split independent P/N fallback added → fixes LT_AUX, HDMI0_CLK
+
+Current state (debug run, FULL_SETUP=False, all pairs):
+- Fully routed: HDMI0_CLK/TX0/TX1/TX2, LT_TX1 [PASS], LT_TX2 [REVIEW], LT_AUX, MIPI1_D2 [REVIEW], MIPI1_CLK [REVIEW], MIPI1_D1, DP_RX2
+- 7 pairs with unrouted segments: DP_AUX (segs 1+2), DP_RX1, DP_TX1 (seg 1), DP_TX2 (seg 1), MIPI1_D0, MIPI1_D3, USB2 (segs 1+2)
+- 18 CONFLICTs — do NOT run DRC or Route and Verify
 
 **STUSB_1V2 / STUSB_2V7:** still unrouted (~1.25mm F.Cu traces). Not blocking HS routing.
 
 ### What to do at next session start
 
 1. Read this file + project_phase10_routing.md + project_hs_routing_requirements.md
-2. Read route_highspeed.py (2845 lines — read before touching any code)
+2. Read route_highspeed.py before touching any code
 3. Ask user what they want to work on in route_highspeed.py
 4. Do NOT run any scripts without explicit instruction
 
