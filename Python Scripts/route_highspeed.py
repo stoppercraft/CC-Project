@@ -300,6 +300,10 @@ def build_sibling_via_reserves():
 _sibling_reserves = build_sibling_via_reserves()
 _build_fanout_via_index()
 _build_fanout_stub_index()
+# Stub-tip positions for O(1) lookup — used to select correct obstacle radius
+_stub_tip_xy: frozenset = frozenset(
+    (round(tx, 3), round(ty, 3)) for tx, ty in _stub_tips.values()
+)
 
 
 def _build_obstacles_impl(layer_id, net_excl_pads, net_excl_tracks=None,
@@ -3402,12 +3406,18 @@ def route_pair(pair_name):
             log.append("    NOTE: miter end-stub crossing predicted — "
                        "falling back to layer-split routing")
             _mc_wf  = width_mm + cc
-            _mc_vr  = VIA_PAD / 2.0
             _mc_cl  = CLEARANCE_MM
-            _mc_p0b = (vp0[0]-_mc_vr-_mc_cl, vp0[1]-_mc_vr-_mc_cl,
-                       vp0[0]+_mc_vr+_mc_cl, vp0[1]+_mc_vr+_mc_cl)
-            _mc_p1b = (vp1[0]-_mc_vr-_mc_cl, vp1[1]-_mc_vr-_mc_cl,
-                       vp1[0]+_mc_vr+_mc_cl, vp1[1]+_mc_vr+_mc_cl)
+            # Stub-tip endpoints have no via copper — use track half-width as
+            # the exclusion radius instead of VIA_PAD/2 so the partner can
+            # start routing from its own stub tip without being pushed away.
+            def _ep_r(pt):
+                return (width_mm / 2.0
+                        if (round(pt[0], 3), round(pt[1], 3)) in _stub_tip_xy
+                        else VIA_PAD / 2.0)
+            _mc_p0b = (vp0[0]-_ep_r(vp0)-_mc_cl, vp0[1]-_ep_r(vp0)-_mc_cl,
+                       vp0[0]+_ep_r(vp0)+_mc_cl, vp0[1]+_ep_r(vp0)+_mc_cl)
+            _mc_p1b = (vp1[0]-_ep_r(vp1)-_mc_cl, vp1[1]-_ep_r(vp1)-_mc_cl,
+                       vp1[0]+_ep_r(vp1)+_mc_cl, vp1[1]+_ep_r(vp1)+_mc_cl)
             # Route P on route layer
             _mc_pp = None
             _mc_obs_p = build_obstacles(layer_id, {net_p, net_n},
