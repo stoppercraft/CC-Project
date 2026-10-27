@@ -1716,16 +1716,6 @@ def escape_endpoint(p_pad, n_pad, net_p, net_n, route_layer_id,
                 res[tag] = (vx, vy)
                 log.append(f"    stub-snap {pad['ref']} net={net}: ({vx:.3f},{vy:.3f})")
                 continue
-            # Fanout-snap fallback: nearest unclaimed via within FANOUT_SNAP_MM
-            # (handles via-in-pad cases where no stub track exists)
-            _fv = _find_fanout_via(pad["x"], pad["y"], net)
-            if _fv is not None:
-                vx, vy = _fv
-                _run_obs.append((vx, vy, vx, vy, VIA_PAD / 2.0, route_layer_id, net))
-                _via_cache[_ck] = (vx, vy)
-                res[tag] = (vx, vy)
-                log.append(f"    fanout-snap {pad['ref']} net={net}: ({vx:.3f},{vy:.3f})")
-                continue
             # No fanout via — use pad position directly (F.Cu routing)
             res[tag] = (pad["x"], pad["y"])
             log.append(f"    direct-pad {pad['ref']} net={net}: "
@@ -2106,10 +2096,10 @@ def _assign_corridor_trunks(order):
                 continue
             p0, n0 = matched[0]
             p1, n1 = matched[-1]
-            fv_p0 = _find_fanout_via(p0["x"], p0["y"], net_p)
-            fv_n0 = _find_fanout_via(n0["x"], n0["y"], net_n)
-            fv_p1 = _find_fanout_via(p1["x"], p1["y"], net_p)
-            fv_n1 = _find_fanout_via(n1["x"], n1["y"], net_n)
+            fv_p0 = _follow_stub_to_via(p0["x"], p0["y"], net_p)
+            fv_n0 = _follow_stub_to_via(n0["x"], n0["y"], net_n)
+            fv_p1 = _follow_stub_to_via(p1["x"], p1["y"], net_p)
+            fv_n1 = _follow_stub_to_via(n1["x"], n1["y"], net_n)
             vp0 = fv_p0 if fv_p0 else (p0["x"], p0["y"])
             vn0 = fv_n0 if fv_n0 else (n0["x"], n0["y"])
             vp1 = fv_p1 if fv_p1 else (p1["x"], p1["y"])
