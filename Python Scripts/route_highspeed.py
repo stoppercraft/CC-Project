@@ -930,7 +930,7 @@ def _astar_centerline(cx0, cy0, cx1, cy1, w_full, obs_layer, grid_pitch=0.6):
             path.reverse()
             path[-1] = (ex * gp, ey * gp)    # snapped grid end (canonical)
             return merge_collinear(path)
-        for ddx, ddy in ((0,1),(0,-1),(1,0),(-1,0)):
+        for ddx, ddy in ((0,1),(0,-1),(1,0),(-1,0),(1,1),(1,-1),(-1,1),(-1,-1)):
             nx, ny = cx + ddx, cy + ddy
             if (nx, ny) in g_score:
                 continue
