@@ -62,19 +62,22 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-# Updated 2026-10-27 (session 43 — end).
+# Updated 2026-10-27 (session 44 — end).
 
 **route_fanout_vias.py:** COMPLETE. commit `015b30f`
 **route_critical.py:** COMPLETE. commits `bf77af2`, `836e1a5`
-**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. commits `7f54032`, `411ef3f`, `ebaedec`, `89d2712`, `8f93a4c`, `664224b`
+**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. commits `7f54032`, `411ef3f`, `ebaedec`, `89d2712`, `8f93a4c`, `664224b`, `7b8fdfd`, `82ef22e`
 
-Session 43 fixes:
-- `89d2712`: Stub-tip routing anchors — no-via locked stubs now used as start points (LT_TX1/TX2/AUX)
-- `8f93a4c`: Miter-split obstacle radius fix — `_ep_r` helper uses `width_mm/2` for stub-tip endpoints; fixes LT_AUX_N gap
-- `664224b`: `_vc_box` per-endpoint obstacle boxes for VIA-CLEAR-SPLIT; removed leftover `ep_r=_ep_r` kwargs (crash fix); `_chosen_has_via_clearance_issue` stays uniform (reverted — ep_r caused LT_TX1 regression)
+Session 44 fixes:
+- `7b8fdfd`: _rip_up_retry crash fix — board.GetTracks() SwigPyObject fallback
+- `82ef22e`: _stub_exit_path + _path_clear_approx — natural stub exit direction routing.
+  LT_TX1_N now routes SW→S→SE (matches manual): Δ=0.040mm (was 0.117mm). Key bugs fixed:
+  (1) `_path_clear_approx` uses point_to_seg_dist for square via obstacles instead of AABB;
+  (2) d_sw_min computation capped to via-sized obstacles (r_obs ≤ VIA_PAD/2+CLEARANCE+0.1)
+  AND filtered by V segment y range — U3 thermal pad (r_obs=3.25mm) was forcing d_sw_min=4.193mm.
 
 Current state (debug run, FULL_SETUP=False, all pairs):
-- Fully routed: HDMI0_CLK/TX0/TX1/TX2, LT_TX1 [PASS Δ=0.117mm], LT_TX2 [REVIEW Δ=0.454mm], LT_AUX, MIPI1_D2 [REVIEW Δ=0.270mm], MIPI1_CLK [REVIEW Δ=0.812mm], MIPI1_D1 (cross-layer — needs investigation), DP_RX2, USB2 seg 0 [PASS]
+- Fully routed: HDMI0_CLK/TX0/TX1/TX2, LT_TX1 [PASS Δ=0.040mm], LT_TX2 [REVIEW Δ=0.162mm], LT_AUX [REVIEW Δ=0.337mm], MIPI1_D2 [REVIEW Δ=0.270mm], MIPI1_CLK [REVIEW Δ=0.812mm], MIPI1_D1 (cross-layer — needs investigation), DP_RX2, USB2 seg 0 [PASS]
 - 7 pairs with unrouted segments: DP_AUX (segs 1+2), DP_RX1, DP_TX1 (seg 1), DP_TX2 (seg 1), MIPI1_D0, MIPI1_D3, USB2 (segs 1+2)
 - 18 CONFLICTs — do NOT run DRC or Route and Verify
 
