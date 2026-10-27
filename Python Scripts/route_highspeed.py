@@ -2319,10 +2319,15 @@ def _rip_up_retry(order, max_passes=3):
             # Remove unlocked board tracks for this pair
             if APPLY:
                 removed = 0
+                _tc = board.GetTracks()
                 try:
-                    _all_trks = list(board.GetTracks())
+                    _all_trks = list(_tc)
                 except TypeError:
-                    _all_trks = [t for t in board.Tracks()]
+                    try:
+                        _all_trks = [_tc[i] for i in range(len(_tc))]
+                    except Exception:
+                        _all_trks = []
+                        log.append(f"  [rip-up] WARNING: could not iterate board tracks for {pair_name}")
                 for trk in _all_trks:
                     if trk.GetNetname() in ripped_nets and not trk.IsLocked():
                         board.Remove(trk)
