@@ -3658,7 +3658,9 @@ def _fp_face_needs_coopt(fp, edx: float, edy: float, sg_clr: float,
 
 
 def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
-                        skip_nets: set) -> list:
+                        skip_nets: set,
+                        hs_map: dict = None, sw_map: dict = None,
+                        board=None) -> list:
     """Build PendingVia objects for skip-net pads on a face.
 
     Skip-net pads are excluded from pending (no via needed) but _face_fanout
@@ -3689,12 +3691,15 @@ def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
         sk_num = sk_pad.GetNumber()
         if sk_num in existing_nums:
             continue
-        sk_drill, sk_ann        = via_params(PRIORITY_OTHER)
-        sk_floor, sk_nl, sk_mx  = neckdown_params(PRIORITY_OTHER, sk_net)
+        sk_pri = (classify(sk_net, hs_map, sw_map, board)[0]
+                  if (hs_map is not None and sw_map is not None and board is not None)
+                  else PRIORITY_OTHER)
+        sk_drill, sk_ann        = via_params(sk_pri)
+        sk_floor, sk_nl, sk_mx  = neckdown_params(sk_pri, sk_net)
         sk_bb  = sk_pad.GetBoundingBox()
         sk_pw  = pcbnew.ToMM(sk_bb.GetWidth())
         sk_ph  = pcbnew.ToMM(sk_bb.GetHeight())
-        sk_nw  = neckdown_stub_width(sk_floor, sk_pw, sk_ph, sk_net, PRIORITY_OTHER)
+        sk_nw  = neckdown_stub_width(sk_floor, sk_pw, sk_ph, sk_net, sk_pri)
         # Pads with axial deviation > 0.5mm are corner pads that belong to an
         # adjacent face.  Include them as obstacles in this face's fanout but
         # suppress stub emission so only the true-face stub is written to the board.
@@ -3709,7 +3714,7 @@ def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
             target_layer_id      = tgt_layer,
             escape_dx            = edx,
             escape_dy            = edy,
-            priority             = PRIORITY_OTHER,
+            priority             = sk_pri,
             via_drill_mm         = sk_drill,
             via_annular_mm       = sk_ann,
             neckdown_w_mm        = sk_nw,
@@ -3728,7 +3733,9 @@ def _build_skip_net_pvs(fp, face_grp: list, edx: float, edy: float,
 
 def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
                         pending_set: set, skip_nets: set,
-                        suppressed_set: set = None) -> list:
+                        suppressed_set: set = None,
+                        hs_map: dict = None, sw_map: dict = None,
+                        board=None) -> list:
     """Build PendingVia corridor phantoms for face pads not in pending and not skip-net.
 
     These pads are absent from _face_fanout's face_pads but need on-layer routing
@@ -3768,12 +3775,15 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
             continue  # already in pending (face_grp)
         if (fp.GetReference(), num) in pending_set:
             continue  # in pending on a different face — via-bearing, not a phantom
-        drill, ann = via_params(PRIORITY_OTHER)
-        floor, nl, mx = neckdown_params(PRIORITY_OTHER, net)
+        pri = (classify(net, hs_map, sw_map, board)[0]
+               if (hs_map is not None and sw_map is not None and board is not None)
+               else PRIORITY_OTHER)
+        drill, ann = via_params(pri)
+        floor, nl, mx = neckdown_params(pri, net)
         bb   = pad.GetBoundingBox()
         pw  = pcbnew.ToMM(bb.GetWidth())
         ph  = pcbnew.ToMM(bb.GetHeight())
-        nw  = neckdown_stub_width(floor, pw, ph, net, PRIORITY_OTHER)
+        nw  = neckdown_stub_width(floor, pw, ph, net, pri)
         bb_l = pcbnew.ToMM(bb.GetLeft())
         bb_t = pcbnew.ToMM(bb.GetTop())
         bb_r = pcbnew.ToMM(bb.GetRight())
@@ -3796,7 +3806,7 @@ def _build_corridor_pvs(fp, face_grp: list, edx: float, edy: float,
             target_layer_id = tgt_layer,
             escape_dx       = edx,
             escape_dy       = edy,
-            priority        = PRIORITY_OTHER,
+            priority        = pri,
             via_drill_mm    = drill,
             via_annular_mm  = ann,
             neckdown_w_mm   = nw,
@@ -6508,7 +6518,8 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
 
         # Augment face group with skip-net pads on this face.
         _co_skip_pvs = _build_skip_net_pvs(
-            _fp_by_ref.get(_co_ref), _face_grp_co, _co_edx, _co_edy, skip_nets
+            _fp_by_ref.get(_co_ref), _face_grp_co, _co_edx, _co_edy, skip_nets,
+            hs_map, sw_map, board,
         )
         # Augment with corridor phantoms: face pads not in pending and not skip-net
         # that need on-layer routing through the fanout zone.  NOT added to
@@ -6518,6 +6529,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _co_corridor_pvs = _build_corridor_pvs(
             _fp_by_ref.get(_co_ref), _face_grp_co, _co_edx, _co_edy,
             _co_pending_set, skip_nets, _share_suppressed,
+            hs_map, sw_map, board,
         )
 
         _face_grp_aug = _face_grp_co + _co_skip_pvs + _co_corridor_pvs
@@ -6635,7 +6647,8 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             # from generating bus stubs that reach unrelated pads.
             _fp_sg = _fp_by_ref.get(_sub_ref)
             _sg_all_skip = _build_skip_net_pvs(
-                _fp_sg, _sg_pads, _sub_edx, _sub_edy, skip_nets)
+                _fp_sg, _sg_pads, _sub_edx, _sub_edy, skip_nets,
+                hs_map, sw_map, board)
             _sg_min_lat = min(v.pad_x * _sg_ldx + v.pad_y * _sg_ldy for v in _sg_pads)
             _sg_max_lat = max(v.pad_x * _sg_ldx + v.pad_y * _sg_ldy for v in _sg_pads)
             _sg_lat_margin = 1.0  # mm — roughly 2× max expected pad pitch
@@ -6761,7 +6774,8 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
 
             _fp_of = _fp_by_ref.get(_of_ref)
             _of_all_skip = _build_skip_net_pvs(
-                _fp_of, _of_sg_pads, _of_edx, _of_edy, skip_nets)
+                _fp_of, _of_sg_pads, _of_edx, _of_edy, skip_nets,
+                hs_map, sw_map, board)
             _of_min_lat = min(v.pad_x * _of_ldx + v.pad_y * _of_ldy for v in _of_sg_pads)
             _of_max_lat = max(v.pad_x * _of_ldx + v.pad_y * _of_ldy for v in _of_sg_pads)
             _of_lat_margin = 1.0
