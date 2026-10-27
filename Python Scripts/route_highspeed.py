@@ -163,6 +163,7 @@ def _is_fanout_via(ax, ay, net_name):
 
 _fanout_stubs: dict = {}  # (net, px, py) → (vx, vy) — via at end of fanout stub
 _stub_tips:    dict = {}  # (net, px, py) → (tx, ty) — tip of no-via locked stub
+_stub_bends:   dict = {}  # (net, px, py) → (bx, by) — bend point (second-to-last node) of no-via stub
 
 
 def _build_fanout_stub_index():
@@ -204,14 +205,21 @@ def _build_fanout_stub_index():
             if found is not None:
                 _fanout_stubs[(pnet, px, py)] = found
             elif len(visited) > 1:
-                # No via at chain end — record farthest stub tip as routing anchor
-                best = max(
-                    (v for v in visited if v != (px, py)),
-                    key=lambda v: math.hypot(v[0] - px, v[1] - py),
-                    default=None,
-                )
-                if best is not None:
-                    _stub_tips[(pnet, px, py)] = best
+                # No via at chain end — walk chain in order to get tip and bend point
+                _chain = [(px, py)]
+                _chain_vis: set = {(px, py)}
+                while True:
+                    _cur = _chain[-1]
+                    _nexts = [n for n in adj.get((pnet, _cur[0], _cur[1]), [])
+                              if n not in _chain_vis]
+                    if not _nexts:
+                        break
+                    _nxt = _nexts[0]
+                    _chain_vis.add(_nxt)
+                    _chain.append(_nxt)
+                if len(_chain) >= 2:
+                    _stub_tips[(pnet, px, py)]  = _chain[-1]
+                    _stub_bends[(pnet, px, py)] = _chain[-2]
 
 
 def _follow_stub_to_via(pad_x, pad_y, net_name):
@@ -222,6 +230,37 @@ def _follow_stub_to_via(pad_x, pad_y, net_name):
 def _follow_stub_tip(pad_x, pad_y, net_name):
     """Return the no-via stub tip for this pad, or None."""
     return _stub_tips.get((net_name, round(pad_x, 3), round(pad_y, 3)))
+
+
+def _follow_stub_bend(pad_x, pad_y, net_name):
+    """Return the bend point (second-to-last node) of the no-via stub, or None."""
+    return _stub_bends.get((net_name, round(pad_x, 3), round(pad_y, 3)))
+
+
+def _stub_direct_path(tx, ty, dest_x, dest_y):
+    """Return a 2- or 3-point octilinear path from stub tip (tx,ty) to (dest_x,dest_y).
+
+    Uses the canonical diagonal direction that points toward (dest_x, dest_y):
+    diagonal to dest_x, then straight to dest_y. Falls back to H-then-V if the
+    diagonal would overshoot dest_y.
+    """
+    dx_d = dest_x - tx; dy_d = dest_y - ty
+    if abs(dx_d) < 1e-4:
+        if abs(dy_d) < 1e-4:
+            return None
+        return [(tx, ty), (dest_x, dest_y)]
+    _S2 = 1.0 / math.sqrt(2.0)
+    edx_u = _S2 if dx_d > 0 else -_S2
+    edy_u = _S2 if dy_d > 0 else -_S2
+    t = dx_d / edx_u  # always positive
+    ext_y = ty + t * edy_u
+    # ext_y must land between ty and dest_y (no overshoot in y)
+    if (ext_y - ty) * dy_d >= 0 and abs(ext_y - ty) <= abs(dy_d) + 1e-4:
+        if abs(ext_y - dest_y) < 1e-4:
+            return [(tx, ty), (dest_x, dest_y)]
+        return [(tx, ty), (dest_x, ext_y), (dest_x, dest_y)]
+    # Fallback: horizontal then vertical
+    return [(tx, ty), (dest_x, ty), (dest_x, dest_y)]
 
 
 # ── Geometry ──────────────────────────────────────────────────────────────────
@@ -2512,6 +2551,52 @@ def route_pair(pair_name):
             _both_on_route_layer = True
             _seg_type = "direct-pad" if (_vp0_d and _vn0_d and _vp1_d and _vn1_d) else "mixed"
             log.append(f"    NOTE: {_seg_type} segment — routing on F.Cu")
+
+        # Stub-tip natural extension: when the source endpoint is a no-via stub tip,
+        # route P and N independently following the stub's natural exit direction.
+        # This avoids direction-reversal zigzags from centerline-offset coupling when
+        # the stub tips are further apart than the coupling distance.
+        if seg == 0:
+            _st_p = _follow_stub_tip(p0["x"], p0["y"], net_p)
+            _st_n = _follow_stub_tip(n0["x"], n0["y"], net_n)
+            _p_is_stub = (_st_p is not None and
+                          abs(_st_p[0] - vp0[0]) < 0.005 and abs(_st_p[1] - vp0[1]) < 0.005)
+            _n_is_stub = (_st_n is not None and
+                          abs(_st_n[0] - vn0[0]) < 0.005 and abs(_st_n[1] - vn0[1]) < 0.005)
+            if _p_is_stub or _n_is_stub:
+                _sext_obs = build_obstacles(layer_id, {net_p, net_n},
+                                            include_sibling_reserves=False)
+                _pp_ext = (_stub_direct_path(vp0[0], vp0[1], vp1[0], vp1[1])
+                           if _p_is_stub else None)
+                _nn_ext = (_stub_direct_path(vn0[0], vn0[1], vn1[0], vn1[1])
+                           if _n_is_stub else None)
+                if (_pp_ext is not None and _nn_ext is not None and
+                        path_clear(_pp_ext, width_mm, _sext_obs) and
+                        path_clear(_nn_ext, width_mm, _sext_obs)):
+                    _pp_ext = merge_collinear(_pp_ext)
+                    _nn_ext = merge_collinear(_nn_ext)
+                    for _si in range(len(_pp_ext) - 1):
+                        add_track(_pp_ext[_si][0], _pp_ext[_si][1],
+                                  _pp_ext[_si + 1][0], _pp_ext[_si + 1][1],
+                                  width_mm, layer_id, net_p)
+                    for _si in range(len(_nn_ext) - 1):
+                        add_track(_nn_ext[_si][0], _nn_ext[_si][1],
+                                  _nn_ext[_si + 1][0], _nn_ext[_si + 1][1],
+                                  width_mm, layer_id, net_n)
+                    _lp = sum(math.hypot(_pp_ext[i+1][0]-_pp_ext[i][0],
+                                         _pp_ext[i+1][1]-_pp_ext[i][1])
+                              for i in range(len(_pp_ext)-1))
+                    _ln = sum(math.hypot(_nn_ext[i+1][0]-_nn_ext[i][0],
+                                         _nn_ext[i+1][1]-_nn_ext[i][1])
+                              for i in range(len(_nn_ext)-1))
+                    total_p += _lp; total_n += _ln
+                    log.append(f"    NOTE: stub-tip direct routing  Lp={_lp:.3f}mm  Ln={_ln:.3f}mm"
+                               f"  Δ={abs(_lp-_ln):.3f}mm")
+                    _seg_placed.setdefault(layer_id, []).extend(
+                        _poly_obs(_pp_ext, width_mm / 2))
+                    _seg_placed.setdefault(layer_id, []).extend(
+                        _poly_obs(_nn_ext, width_mm / 2))
+                    continue
 
         # Verify P and N are on the same lateral side at both endpoints
         cx0 = (vp0[0] + vn0[0]) / 2;  cy0 = (vp0[1] + vn0[1]) / 2
