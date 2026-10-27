@@ -486,10 +486,10 @@ def _path_clear_of_run_obs(pts, half_w, net_name, layer_id):
 
 def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
     """
-    Like build_obstacles but reduces clearance to zero (physical extent only) for
-    pads on footprint `own_ref`.  This lets short pin escape stubs pass between
-    adjacent pins of a fine-pitch IC (QFN/BGA), while still enforcing full
-    clearance against every other footprint.
+    Like build_obstacles but accepts own_ref for API compatibility.
+    All pads use full DRC clearance via pad_obs_rect() — no per-footprint
+    clearance reduction (which would allow routing through the DRC clearance
+    zone of adjacent same-footprint pads, causing clearance violations).
     Tracks/vias/_run_obs are excluded for own-net only (same as build_obstacles).
     pads_only=True: omit board tracks and _run_obs — returns board pads only.
     """
@@ -497,27 +497,12 @@ def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
     c   = CLEARANCE_MM
 
     for fp in board.GetFootprints():
-        is_own = (fp.GetReference() == own_ref)
         for pad in fp.Pads():
             if pad.GetNetname() in net_excl_pads:
                 continue
             if not pad.GetLayerSet().Contains(layer_id):
                 continue
-            if is_own:
-                pos = pad.GetPosition()
-                px, py = tomm(pos.x), tomm(pos.y)
-                size = pad.GetSize()
-                sx, sy = tomm(size.x) / 2, tomm(size.y) / 2
-                try:
-                    ang = math.radians(pad.GetOrientationDegrees())
-                except AttributeError:
-                    ang = 0.0
-                ca_, sa_ = abs(math.cos(ang)), abs(math.sin(ang))
-                hx = sx * ca_ + sy * sa_
-                hy = sx * sa_ + sy * ca_
-                obs.append((px - hx, py - hy, px + hx, py + hy))
-            else:
-                obs.append(pad_obs_rect(pad))
+            obs.append(pad_obs_rect(pad))
 
     if pads_only:
         return obs
@@ -960,8 +945,10 @@ def _try_via(vx, vy, obs_pad, obs_route, stub_x1, stub_y1, stub_w,
     """
     via_r = VIA_PAD / 2.0
     c = CLEARANCE_MM
-    via_box  = (vx - via_r - c, vy - via_r - c, vx + via_r + c, vy + via_r + c)
-    stub_box = seg_rect(stub_x1, stub_y1, vx, vy, stub_w + 2 * c)
+    # Obstacles already contain CLEARANCE_MM (from pad_obs_rect / build_obstacles).
+    # Use copper-only extents here — adding c again would double-count clearance.
+    via_box  = (vx - via_r, vy - via_r, vx + via_r, vy + via_r)
+    stub_box = seg_rect(stub_x1, stub_y1, vx, vy, stub_w)
 
     # Board pads: AABB is exact for rectangular pads — no fallback needed.
     _pad_check = obs_pad_solid if obs_pad_solid is not None else obs_pad
@@ -1057,12 +1044,12 @@ def _astar_escape(pad, net_name, partner_net, route_layer_id,
     def cell_blocked(gx, gy):
         wx = gx * gp
         wy = gy * gp
-        box = (wx - via_r - c, wy - via_r - c, wx + via_r + c, wy + via_r + c)
+        box = (wx - via_r, wy - via_r, wx + via_r, wy + via_r)
         return (any(rect_overlap(box, o) for o in obs_fine) or
                 any(rect_overlap(box, o) for o in obs_route))
 
     def stub_blocked(x1, y1, x2, y2):
-        sb = seg_rect(x1, y1, x2, y2, STUB_W + 2 * c)
+        sb = seg_rect(x1, y1, x2, y2, STUB_W)
         return any(rect_overlap(sb, o) for o in obs_fine)
 
     max_cells = 3000
@@ -1155,14 +1142,13 @@ def _astar_crossing_escape(pad, net_name, partner_net, route_layer_id,
     def cell_blocked(gx, gy):
         wx = gx * gp
         wy = gy * gp
-        box = (wx - via_r - c, wy - via_r - c, wx + via_r + c, wy + via_r + c)
+        box = (wx - via_r, wy - via_r, wx + via_r, wy + via_r)
         return (any(rect_overlap(box, o) for o in obs_fine) or
                 any(rect_overlap(box, o) for o in obs_route))
 
     def stub_blocked_pts(pts):
         for i in range(len(pts) - 1):
-            sb = seg_rect(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1],
-                          STUB_W + 2 * c)
+            sb = seg_rect(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1], STUB_W)
             if any(rect_overlap(sb, o) for o in obs_fine):
                 return True
         return False
@@ -1506,9 +1492,9 @@ def place_escape_via(pad, net_name, partner_net, route_layer_id,
             shift = along - proj_from_partner
             vx = mx + _ccsx * shift
             vy = my + _ccsy * shift
-            stub1 = seg_rect(px, py, mx, my, cross_stub_w + 2 * c)
-            stub2 = seg_rect(mx, my, vx, vy, cross_stub_w + 2 * c)
-            via_box  = (vx - via_r - c, vy - via_r - c, vx + via_r + c, vy + via_r + c)
+            stub1 = seg_rect(px, py, mx, my, cross_stub_w)
+            stub2 = seg_rect(mx, my, vx, vy, cross_stub_w)
+            via_box  = (vx - via_r, vy - via_r, vx + via_r, vy + via_r)
             if any(rect_overlap(stub1, o) for o in obs_pad): continue
             if any(rect_overlap(stub2, o) for o in obs_pad): continue
             if any(rect_overlap(via_box,  o) for o in obs_pad):   continue
