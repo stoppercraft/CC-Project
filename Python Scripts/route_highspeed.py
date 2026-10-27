@@ -263,6 +263,94 @@ def _stub_direct_path(tx, ty, dest_x, dest_y):
     return [(tx, ty), (dest_x, ty), (dest_x, dest_y)]
 
 
+def _stub_exit_path(tx, ty, dest_x, dest_y, bx, by, width_mm, obstacles):
+    """Build a clear path from stub tip (tx,ty) to (dest_x,dest_y) that continues
+    the natural stub exit direction (bend→tip, snapped to 45°).
+
+    Option A: exit in stub direction until x=dest_x, then straight V (for stubs
+              whose exit direction moves toward dest_x).
+    Option B: exit a computed minimum distance d_sw (to clear via obstacles along
+              the following V segment), then straight V, then 45° diagonal to dest.
+
+    Uses _path_clear_approx (accurate circular check for via obstacles) to verify
+    each candidate. Falls back to _stub_direct_path if neither option passes.
+    """
+    hw = width_mm / 2
+    _via_r_max = VIA_PAD / 2 + CLEARANCE_MM + 0.1  # max r_obs for a real via obstacle
+
+    # Compute 45°-snapped exit direction from bend to tip
+    raw_dx = tx - bx; raw_dy = ty - by
+    if math.hypot(raw_dx, raw_dy) < 1e-6:
+        return _stub_direct_path(tx, ty, dest_x, dest_y)
+    angle = math.atan2(raw_dy, raw_dx)
+    snapped = round(angle / (math.pi / 4)) * (math.pi / 4)
+    ex = math.cos(snapped); ey = math.sin(snapped)
+
+    def _try(path):
+        return merge_collinear(path) if _path_clear_approx(path, width_mm, obstacles) else None
+
+    # Option A: exit to x=dest_x then straight V
+    if abs(ex) > 0.01 and ((ex > 0) == (dest_x > tx)) and abs(dest_x - tx) > 1e-4:
+        t = (dest_x - tx) / ex
+        corner_y = ty + t * ey
+        if (t >= 0 and (corner_y - ty) * (dest_y - ty) >= -1e-6
+                and abs(corner_y - ty) <= abs(dest_y - ty) + 1e-4):
+            if abs(corner_y - dest_y) < 1e-4:
+                r = _try([(tx, ty), (dest_x, dest_y)])
+            else:
+                r = _try([(tx, ty), (dest_x, corner_y), (dest_x, dest_y)])
+            if r is not None:
+                return r
+
+    # Option B: exit d_sw, then straight V, then diagonal to dest
+    if abs(ex) > 0.01 and abs(ey) > 0.01:
+        # Minimum d_sw so the V segment at vert_x clears all via obstacles.
+        # Only consider via-sized square obstacles (r_obs ≤ _via_r_max) that are
+        # within the approximate y range of the V segment [min(ty,dest_y), max(ty,dest_y)].
+        d_sw_min = 0.0
+        _vy_lo = min(ty, dest_y) - _via_r_max
+        _vy_hi = max(ty, dest_y) + _via_r_max
+        for o in obstacles:
+            lx, ly, rx, ry = o
+            if abs((rx - lx) - (ry - ly)) > 1e-3:
+                continue  # non-square (pad) — skip
+            r_obs = (rx - lx) / 2
+            if r_obs > _via_r_max:
+                continue  # too large to be a via (thermal pad, keepout, etc.) — skip
+            via_cx = (lx + rx) / 2; via_cy = (ly + ry) / 2
+            if via_cy < _vy_lo or via_cy > _vy_hi:
+                continue  # not in the V segment's y range — skip
+            needed_sep = r_obs + hw
+            dist_now = abs(via_cx - tx)
+            if dist_now < needed_sep:
+                # Via is currently too close; check if moving in exit direction helps
+                if (via_cx - tx) * ex < 0:  # via on opposite side from exit — moving away helps
+                    delta = needed_sep - dist_now
+                    d_sw_min = max(d_sw_min, delta / abs(ex) + 0.002)
+
+        # Try d_sw_min and two slightly larger increments
+        for d_sw in (d_sw_min, d_sw_min + 0.010, d_sw_min + 0.025):
+            vert_x = tx + d_sw * ex
+            vert_y = ty + d_sw * ey
+            dx_diag = dest_x - vert_x
+            if abs(dx_diag) < 1e-4:
+                path_b = [(tx, ty), (vert_x, vert_y), (dest_x, dest_y)]
+            else:
+                dy_diag = abs(dx_diag) * (1.0 if (dest_y - vert_y) >= 0 else -1.0)
+                y_before = dest_y - dy_diag
+                if (y_before - vert_y) * (dest_y - vert_y) < -1e-6:
+                    continue  # dest behind us in V direction
+                if abs(y_before - vert_y) < 1e-4:
+                    path_b = [(tx, ty), (vert_x, vert_y), (dest_x, dest_y)]
+                else:
+                    path_b = [(tx, ty), (vert_x, vert_y), (vert_x, y_before), (dest_x, dest_y)]
+            r = _try(path_b)
+            if r is not None:
+                return r
+
+    return _stub_direct_path(tx, ty, dest_x, dest_y)
+
+
 # ── Geometry ──────────────────────────────────────────────────────────────────
 
 def mm(x):   return pcbnew.FromMM(x)
@@ -944,6 +1032,30 @@ def path_clear(pts, w, obstacles):
         for o in obstacles:
             if rect_overlap(r, o):
                 return False
+    return True
+
+
+def _path_clear_approx(pts, w, obstacles):
+    """Like path_clear but uses actual segment-to-center distance for square
+    obstacle boxes (vias). For a 45° segment near a circular via, the AABB
+    of the segment inflates the corner area and produces false positives.
+    Square obstacle boxes (equal width and height) are via obstacles; all
+    others (non-square pad obstacles) still use AABB."""
+    hw = w / 2
+    for i in range(len(pts) - 1):
+        x1, y1 = pts[i]; x2, y2 = pts[i+1]
+        r = seg_rect(x1, y1, x2, y2, w)
+        for o in obstacles:
+            if not rect_overlap(r, o):
+                continue  # AABB fast-pass: definitely clear
+            lx, ly, rx, ry = o
+            if abs((rx - lx) - (ry - ly)) < 1e-3:  # square → via obstacle
+                cx = (lx + rx) / 2; cy = (ly + ry) / 2
+                r_obs = (rx - lx) / 2
+                if point_to_seg_dist(cx, cy, x1, y1, x2, y2) < r_obs + hw:
+                    return False
+            else:
+                return False  # non-square pad: trust AABB
     return True
 
 
@@ -2571,13 +2683,29 @@ def route_pair(pair_name):
             if _p_is_stub or _n_is_stub:
                 _sext_obs = build_obstacles(layer_id, {net_p, net_n},
                                             include_sibling_reserves=False)
-                _pp_ext = (_stub_direct_path(vp0[0], vp0[1], vp1[0], vp1[1])
-                           if _p_is_stub else None)
-                _nn_ext = (_stub_direct_path(vn0[0], vn0[1], vn1[0], vn1[1])
-                           if _n_is_stub else None)
-                if (_pp_ext is not None and _nn_ext is not None and
-                        path_clear(_pp_ext, width_mm, _sext_obs) and
-                        path_clear(_nn_ext, width_mm, _sext_obs)):
+                _pb_p = _follow_stub_bend(p0["x"], p0["y"], net_p)
+                _pb_n = _follow_stub_bend(n0["x"], n0["y"], net_n)
+                _pp_ext = None
+                _nn_ext = None
+                if _p_is_stub:
+                    if _pb_p is not None:
+                        _pp_ext = _stub_exit_path(vp0[0], vp0[1], vp1[0], vp1[1],
+                                                   _pb_p[0], _pb_p[1],
+                                                   width_mm, _sext_obs)
+                    if _pp_ext is None:
+                        _pt = _stub_direct_path(vp0[0], vp0[1], vp1[0], vp1[1])
+                        if _pt is not None and _path_clear_approx(_pt, width_mm, _sext_obs):
+                            _pp_ext = _pt
+                if _n_is_stub:
+                    if _pb_n is not None:
+                        _nn_ext = _stub_exit_path(vn0[0], vn0[1], vn1[0], vn1[1],
+                                                   _pb_n[0], _pb_n[1],
+                                                   width_mm, _sext_obs)
+                    if _nn_ext is None:
+                        _pt = _stub_direct_path(vn0[0], vn0[1], vn1[0], vn1[1])
+                        if _pt is not None and _path_clear_approx(_pt, width_mm, _sext_obs):
+                            _nn_ext = _pt
+                if (_pp_ext is not None and _nn_ext is not None):
                     _pp_ext = merge_collinear(_pp_ext)
                     _nn_ext = merge_collinear(_nn_ext)
                     for _si in range(len(_pp_ext) - 1):
