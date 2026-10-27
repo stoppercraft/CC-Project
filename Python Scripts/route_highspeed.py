@@ -162,10 +162,11 @@ def _is_fanout_via(ax, ay, net_name):
 
 
 _fanout_stubs: dict = {}  # (net, px, py) → (vx, vy) — via at end of fanout stub
+_stub_tips:    dict = {}  # (net, px, py) → (tx, ty) — tip of no-via locked stub
 
 
 def _build_fanout_stub_index():
-    """Map each pad position to its fanout via by tracing locked track chains."""
+    """Map each pad position to its fanout via (or stub tip) by tracing locked track chains."""
     adj: dict = {}
     for trk in board.GetTracks():
         if trk.GetClass() == "PCB_VIA" or not trk.IsLocked():
@@ -202,11 +203,25 @@ def _build_fanout_stub_index():
                     frontier.append((nx, ny))
             if found is not None:
                 _fanout_stubs[(pnet, px, py)] = found
+            elif len(visited) > 1:
+                # No via at chain end — record farthest stub tip as routing anchor
+                best = max(
+                    (v for v in visited if v != (px, py)),
+                    key=lambda v: math.hypot(v[0] - px, v[1] - py),
+                    default=None,
+                )
+                if best is not None:
+                    _stub_tips[(pnet, px, py)] = best
 
 
 def _follow_stub_to_via(pad_x, pad_y, net_name):
     """Return the fanout via position for this pad from the stub index, or None."""
     return _fanout_stubs.get((net_name, round(pad_x, 3), round(pad_y, 3)))
+
+
+def _follow_stub_tip(pad_x, pad_y, net_name):
+    """Return the no-via stub tip for this pad, or None."""
+    return _stub_tips.get((net_name, round(pad_x, 3), round(pad_y, 3)))
 
 
 # ── Geometry ──────────────────────────────────────────────────────────────────
@@ -1714,8 +1729,14 @@ def escape_endpoint(p_pad, n_pad, net_p, net_n, route_layer_id,
     def _run_order(ord_list, res, fc, ol):
         for tag, pad, net, partner, cross_partner, avoid_pad in ord_list:
             if pad_on_layer(pad, route_layer_id):
-                res[tag] = (pad["x"], pad["y"])
-                ol.add(tag)
+                _st = _follow_stub_tip(pad["x"], pad["y"], net)
+                if _st is not None:
+                    res[tag] = _st
+                    ol.add(tag)
+                    log.append(f"    stub-tip {pad['ref']} net={net}: ({_st[0]:.3f},{_st[1]:.3f})")
+                else:
+                    res[tag] = (pad["x"], pad["y"])
+                    ol.add(tag)
                 continue
             _ck = (pad["ref"], round(pad["x"], 3), round(pad["y"], 3), net)
             if _ck in _via_cache:
@@ -1731,6 +1752,12 @@ def escape_endpoint(p_pad, n_pad, net_p, net_n, route_layer_id,
                 _via_cache[_ck] = (vx, vy)
                 res[tag] = (vx, vy)
                 log.append(f"    stub-snap {pad['ref']} net={net}: ({vx:.3f},{vy:.3f})")
+                continue
+            # No-via stub tip: pad has a locked stub but no via — start from tip
+            _st = _follow_stub_tip(pad["x"], pad["y"], net)
+            if _st is not None:
+                res[tag] = _st
+                log.append(f"    stub-tip {pad['ref']} net={net}: ({_st[0]:.3f},{_st[1]:.3f})")
                 continue
             # No fanout via — use pad position directly (F.Cu routing)
             res[tag] = (pad["x"], pad["y"])
