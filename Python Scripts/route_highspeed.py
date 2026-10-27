@@ -427,15 +427,20 @@ def _build_obstacles_board_only_impl(layer_id, net_excl, track_excl=None):
 # keyed by layer_id.  Populated inside route_pair(); cleared at pair start.
 # Wrappers below inject these into every build_obstacles / build_obstacles_board_only
 # call so later segments correctly treat earlier-segment same-net copper as obstacles.
-_seg_placed = {}  # type: dict[int, list[tuple]]
+_seg_placed = {}     # type: dict[int, list[tuple]]
+_seg_reserved = {}   # look-ahead corridor reservations for the next segment
 
 
 def build_obstacles(layer_id, net_excl_pads, **kw):
-    return _build_obstacles_impl(layer_id, net_excl_pads, **kw) + _seg_placed.get(layer_id, [])
+    return (_build_obstacles_impl(layer_id, net_excl_pads, **kw)
+            + _seg_placed.get(layer_id, [])
+            + _seg_reserved.get(layer_id, []))
 
 
 def build_obstacles_board_only(layer_id, net_excl, **kw):
-    return _build_obstacles_board_only_impl(layer_id, net_excl, **kw) + _seg_placed.get(layer_id, [])
+    return (_build_obstacles_board_only_impl(layer_id, net_excl, **kw)
+            + _seg_placed.get(layer_id, [])
+            + _seg_reserved.get(layer_id, []))
 
 
 def _poly_obs(poly, half_w):
@@ -2323,7 +2328,8 @@ def route_pair(pair_name):
 
     total_p = total_n = 0.0
     _seg_spine = []  # intermediate centerline waypoints from previous segment
-    _seg_placed.clear()  # reset inter-segment obstacle accumulator for this pair
+    _seg_placed.clear()    # reset inter-segment obstacle accumulator for this pair
+    _seg_reserved.clear()  # reset look-ahead reservations for this pair
     for seg in range(len(pairs) - 1):
         layer_id = board.GetLayerID(layer_name)  # reset per iteration; may be overridden below
         sub_pairs = [pairs[seg], pairs[seg + 1]]
@@ -2587,6 +2593,7 @@ def route_pair(pair_name):
                     pux, puy = -auy, aux
                     s0 = 1.0 if ((vp0[0]-cx0)*pux + (vp0[1]-cy0)*puy) >= 0 else -1.0
                     s1 = 1.0 if ((vp1[0]-cx1)*pux + (vp1[1]-cy1)*puy) >= 0 else -1.0
+
             if s0 * s1 < 0 and _both_on_route_layer:
                 # Both endpoints are SMT pads on the route layer — no escape vias
                 # placed, so layer-split would create dangling buried tracks.
@@ -2867,6 +2874,37 @@ def route_pair(pair_name):
                     _seg_placed.setdefault(_nr_layer, []).extend(_poly_obs(_nr, _hw))
                 continue  # skip regular emit_diffpair
 
+        # Look-ahead: reserve the approximate corridor that the NEXT segment will
+        # need, so that this segment's routing avoids blocking it.
+        _seg_reserved.clear()
+        if len(pairs) > 2 and seg + 2 < len(pairs):
+            _s1_dst_p = pairs[seg + 2][0]
+            _s1_dst_n = pairs[seg + 2][1]
+            _s1_cx0 = (vp1[0] + vn1[0]) / 2.0
+            _s1_cy0 = (vp1[1] + vn1[1]) / 2.0
+            _s1_cx1 = (_s1_dst_p['x'] + _s1_dst_n['x']) / 2.0
+            _s1_cy1 = (_s1_dst_p['y'] + _s1_dst_n['y']) / 2.0
+            _s1_len = math.hypot(_s1_cx1 - _s1_cx0, _s1_cy1 - _s1_cy0)
+            if _s1_len > 1.0:
+                _s1_ux = (_s1_cx1 - _s1_cx0) / _s1_len
+                _s1_uy = (_s1_cy1 - _s1_cy0) / _s1_len
+                _s1_hw = width_mm / 2.0 + cc / 2.0 + CLEARANCE_MM
+                # Shrink must guarantee the reserved AABB does not cover the junction
+                # centroid (cx0,cy0) — the point seg 0 is routing TO. A point is
+                # outside an AABB if it is out-of-range on at least one axis. For the
+                # axis with the largest |u| component, |u|*shrink > expansion guarantees
+                # the junction is excluded on that axis.
+                _s1_expansion = _s1_hw + CLEARANCE_MM
+                _s1_dom = max(abs(_s1_ux), abs(_s1_uy))
+                _s1_shrink = _s1_expansion / _s1_dom + 0.05  # +0.05mm margin
+                if _s1_shrink * 2 < _s1_len:
+                    _s1_rx0 = _s1_cx0 + _s1_ux * _s1_shrink
+                    _s1_ry0 = _s1_cy0 + _s1_uy * _s1_shrink
+                    _s1_rx1 = _s1_cx1 - _s1_ux * _s1_shrink
+                    _s1_ry1 = _s1_cy1 - _s1_uy * _s1_shrink
+                    _seg_reserved.setdefault(layer_id, []).extend(
+                        _poly_obs([(_s1_rx0, _s1_ry0), (_s1_rx1, _s1_ry1)], _s1_hw))
+
         # Route centerline between (cx0,cy0) and (cx1,cy1)
         # include_sibling_reserves: keep clear any HS pad position on a
         # sibling net (e.g. AC-coupling cap pad carrying the paired
@@ -3097,6 +3135,69 @@ def route_pair(pair_name):
                                 if chosen is not None:
                                     break
                     if chosen is None:
+                        # Independent P/N fallback: the shared corridor (width_mm+cc)
+                        # is blocked, but P and N may each have a clear individual path
+                        # (width_mm) to their own destination — e.g. when a previously
+                        # routed pair runs between the two source vias.
+                        _ip_obs = list(build_obstacles(layer_id, {net_p, net_n},
+                                                       include_sibling_reserves=False))
+                        _ip_obs_bo = list(build_obstacles_board_only(layer_id, {net_p, net_n}))
+                        _ip_pp = None
+                        for _ip_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                            if path_clear(_ip_c, width_mm, _ip_obs):
+                                _ip_pp = merge_collinear(_ip_c); break
+                        if _ip_pp is None:
+                            _ip_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                                       width_mm, _ip_obs)
+                        if _ip_pp is None:
+                            for _ip_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                                if (path_clear(_ip_c, width_mm, _ip_obs_bo) and
+                                        _path_clear_of_run_obs(_ip_c, width_mm/2.0,
+                                                               net_p, layer_id)):
+                                    _ip_pp = merge_collinear(_ip_c); break
+                        if _ip_pp is None:
+                            _ip_r = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                                      width_mm, _ip_obs_bo)
+                            if (_ip_r is not None and
+                                    _path_clear_of_run_obs(_ip_r, width_mm/2.0,
+                                                           net_p, layer_id)):
+                                _ip_pp = _ip_r
+                        _ip_nr = None
+                        for _ip_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                            if path_clear(_ip_c, width_mm, _ip_obs):
+                                _ip_nr = merge_collinear(_ip_c); break
+                        if _ip_nr is None:
+                            _ip_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
+                                                       width_mm, _ip_obs)
+                        if _ip_nr is None:
+                            for _ip_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                                if (path_clear(_ip_c, width_mm, _ip_obs_bo) and
+                                        _path_clear_of_run_obs(_ip_c, width_mm/2.0,
+                                                               net_n, layer_id)):
+                                    _ip_nr = merge_collinear(_ip_c); break
+                        if _ip_nr is None:
+                            _ip_r = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
+                                                      width_mm, _ip_obs_bo)
+                            if (_ip_r is not None and
+                                    _path_clear_of_run_obs(_ip_r, width_mm/2.0,
+                                                           net_n, layer_id)):
+                                _ip_nr = _ip_r
+                        if _ip_pp is not None and _ip_nr is not None:
+                            for _ip_i in range(len(_ip_pp) - 1):
+                                add_track(_ip_pp[_ip_i][0], _ip_pp[_ip_i][1],
+                                          _ip_pp[_ip_i+1][0], _ip_pp[_ip_i+1][1],
+                                          width_mm, layer_id, net_p)
+                            for _ip_i in range(len(_ip_nr) - 1):
+                                add_track(_ip_nr[_ip_i][0], _ip_nr[_ip_i][1],
+                                          _ip_nr[_ip_i+1][0], _ip_nr[_ip_i+1][1],
+                                          width_mm, layer_id, net_n)
+                            log.append("    NOTE: independent P/N routing succeeded")
+                            _hw = width_mm / 2.0
+                            _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_ip_pp, _hw))
+                            _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_ip_nr, _hw))
+                            continue
+
+                    if chosen is None:
                         # All paths blocked — skip this segment rather than emitting a
                         # straight diagonal that crosses adjacent pair routes.
                         # Option D rip-up pass will re-attempt after obstacle landscape
@@ -3289,11 +3390,12 @@ def route_pair(pair_name):
                     _hw = width_mm / 2.0
                     _seg_placed.setdefault(_vc_pp_layer, []).extend(_poly_obs(_vc_pp, _hw))
                     _seg_placed.setdefault(_vc_nr_layer, []).extend(_poly_obs(_vc_nr, _hw))
+                    continue  # skip emit_diffpair
                 else:
                     log.append(f"    WARNING: via-clearance split failed "
                                f"(P={'ok' if _vc_pp else 'FAIL'} "
                                f"N={'ok' if _vc_nr else 'FAIL'}); keeping chosen")
-                continue  # skip emit_diffpair
+                # fall through to emit_diffpair with original chosen path
 
         # Miter-crossing guard: simulate cur_p_sign propagation through the chosen
         # path.  When the final propagated sign disagrees with p_sign_dst, the
