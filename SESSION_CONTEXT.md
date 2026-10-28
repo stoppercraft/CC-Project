@@ -62,32 +62,45 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-# Updated 2026-10-27 (session 44 — end).
+# Updated 2026-10-27 (session 45 — end).
 
 **route_fanout_vias.py:** COMPLETE. commit `015b30f`
 **route_critical.py:** COMPLETE. commits `bf77af2`, `836e1a5`
 **route_highspeed.py:** ALGORITHM WORK IN PROGRESS. commits `7f54032`, `411ef3f`, `ebaedec`, `89d2712`, `8f93a4c`, `664224b`, `7b8fdfd`, `82ef22e`
+**AGENT_RULES.md + CLAUDE.md:** debug_highspeed.py description corrected (snapshot, not locking). commit `d183a07`
 
-Session 44 fixes:
-- `7b8fdfd`: _rip_up_retry crash fix — board.GetTracks() SwigPyObject fallback
-- `82ef22e`: _stub_exit_path + _path_clear_approx — natural stub exit direction routing.
-  LT_TX1_N now routes SW→S→SE (matches manual): Δ=0.040mm (was 0.117mm). Key bugs fixed:
-  (1) `_path_clear_approx` uses point_to_seg_dist for square via obstacles instead of AABB;
-  (2) d_sw_min computation capped to via-sized obstacles (r_obs ≤ VIA_PAD/2+CLEARANCE+0.1)
-  AND filtered by V segment y range — U3 thermal pad (r_obs=3.25mm) was forcing d_sw_min=4.193mm.
+Session 45 work (no route_highspeed.py code changes):
+- Inspected user's manual HDMI0_TX2_N route on board — diagnosed root cause of 3-seg jog failure
+- Updated AGENT_RULES.md + CLAUDE.md: removed stale locking description, replaced with snapshot method
 
-Current state (debug run, FULL_SETUP=False, all pairs):
-- Fully routed: HDMI0_CLK/TX0/TX1/TX2, LT_TX1 [PASS Δ=0.040mm], LT_TX2 [REVIEW Δ=0.162mm], LT_AUX [REVIEW Δ=0.337mm], MIPI1_D2 [REVIEW Δ=0.270mm], MIPI1_CLK [REVIEW Δ=0.812mm], MIPI1_D1 (cross-layer — needs investigation), DP_RX2, USB2 seg 0 [PASS]
-- 7 pairs with unrouted segments: DP_AUX (segs 1+2), DP_RX1, DP_TX1 (seg 1), DP_TX2 (seg 1), MIPI1_D0, MIPI1_D3, USB2 (segs 1+2)
-- 18 CONFLICTs — do NOT run DRC or Route and Verify
+### HDMI0_TX2_N — Root Cause Diagnosed (session 45)
 
-**STUSB_1V2 / STUSB_2V7:** still unrouted (~1.25mm F.Cu traces). Not blocking HS routing.
+User manually routed HDMI0_TX2_N on board using D-V-D topology (currently on board, NOT in snapshot):
+- P route: via (150.000,104.295) → H +0.2mm → vertical x=149.800 → via (149.800,111.573)
+- N route: via (150.750,104.295) → 45°SW diagonal → vertical x=150.487 → 45°SE diagonal → via (150.550,111.573)
+
+**Why H-V-H 3-seg jog fails:**
+1. Left jogs (xj ≤ 150.450): first H at y=104.295 → AABB rect_overlap hits P's start via box [149.550,103.845→150.450,104.745]. Both vias are on same y=104.295; any H going left clips P's via box.
+2. For xj ∈ (150.514, 150.614): H clears P's via, but V segment enters HDMI0_TX1_P end-via box [150.550,109.998→151.450,110.898].
+3. Right jogs: V segment blocked by HDMI0_TX1_P/N end vias at x=[150.550,151.450]/[151.300,152.200].
+
+**Why user's D-V-D works:**
+45° diagonal exits y=104.295 immediately; by x=150.487 y=104.513 — exact segment-to-via distance ≈0.534mm vs 0.5135mm required. AABB of 45° diagonal falsely overlaps P's via box, but actual copper clears. V segment at x=150.487 also just clears HDMI0_TX1_P end via (151.000−150.487=0.513mm; inner layer clearance may be 0.1mm not 0.15mm).
+
+**Fix direction:**
+Replace AABB `rect_overlap` with exact **segment-to-circle distance** check for via endpoint obstacles in VIA-CLEAR-SPLIT jog. For circular vias, `path_clear` over-estimates blocked zone on 45° approaches. Alternatively add D-V-D jog topology (45° exit/entry instead of H-V-H).
+
+### Current Board State
+
+- **Board has user's manual HDMI0_TX2_N route** — NOT in hs_debug_baseline.json snapshot.
+  Running `debug_highspeed.py FULL_SETUP=False` will remove it (not in snapshot) and re-route via algorithm.
+- All other routes same as session 44 end.
 
 ### What to do at next session start
 
 1. Read this file + project_phase10_routing.md + project_hs_routing_requirements.md
-2. Read route_highspeed.py before touching any code
-3. Ask user what they want to work on in route_highspeed.py
+2. Read route_highspeed.py before touching any code (VIA-CLEAR-SPLIT jog section ~line 3551)
+3. Ask user what they want to work on — likely: implement segment-to-circle fix for VIA-CLEAR-SPLIT jog
 4. Do NOT run any scripts without explicit instruction
 
 ### Debug workflow for route_highspeed.py
