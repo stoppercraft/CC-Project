@@ -3596,7 +3596,7 @@ def route_pair(pair_name):
                                 _vc_pp = _cj
                                 log.append(f"    NOTE: via-clear-split P VDV d={_d:.3f}")
                                 break
-                    elif _adxp > _adyp + 1e-3:  # HDV: H stub, 45° diagonal, V arrive
+                    else:  # HDV: H stub, 45° diagonal, V arrive (also covers adx ≈ ady)
                         _min_dp = _adxp - _adyp
                         for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
                             if _d <= _min_dp - 1e-3 or _d >= _adxp - 1e-3:
@@ -3623,8 +3623,10 @@ def route_pair(pair_name):
                                 _vc_pp = _cj
                                 log.append(f"    NOTE: via-clear-split P VDV-rev d={_d:.3f}")
                                 break
-                    elif _adxp > _adyp + 1e-3:  # HDV-rev: stub away from dest x, diagonal overshoots y, V return
+                    else:  # HDV-rev: stub away from dest x, diagonal overshoots y, V return (also adx ≈ ady)
                         for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                            if _d >= _adxp - 1e-3:
+                                break
                             _ep = (vp0[0] - _sxp*_d, vp0[1])
                             _ap = (vp1[0], vp0[1] + _syp*(_adxp + _d))
                             _cj = merge_collinear([(vp0[0],vp0[1]), _ep, _ap, (vp1[0],vp1[1])])
@@ -3738,7 +3740,7 @@ def route_pair(pair_name):
                                 _vc_nr = _cj
                                 log.append(f"    NOTE: via-clear-split N VDV d={_d:.3f}")
                                 break
-                    elif _adxn > _adyn + 1e-3:  # HDV: H stub, 45° diagonal, V arrive
+                    else:  # HDV: H stub, 45° diagonal, V arrive (also covers adx ≈ ady)
                         _min_dn = _adxn - _adyn
                         for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
                             if _d <= _min_dn - 1e-3 or _d >= _adxn - 1e-3:
@@ -3768,8 +3770,10 @@ def route_pair(pair_name):
                                 _vc_nr = _cj
                                 log.append(f"    NOTE: via-clear-split N VDV-rev d={_d:.3f}")
                                 break
-                    elif _adxn > _adyn + 1e-3:  # HDV-rev: stub away from dest x, diagonal overshoots y, V return
+                    else:  # HDV-rev: stub away from dest x, diagonal overshoots y, V return (also adx ≈ ady)
                         for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                            if _d >= _adxn - 1e-3:
+                                break
                             _en = (vn0[0] - _sxn*_d, vn0[1])
                             _an = (vn1[0], vn0[1] + _syn*(_adxn + _d))
                             _cj = merge_collinear([(vn0[0],vn0[1]), _en, _an, (vn1[0],vn1[1])])
