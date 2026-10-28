@@ -7643,7 +7643,8 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
     if _so_emit_count:
         print(f"Emitted {_so_emit_count} co-opt stub-only trace(s).")
 
-    pcbnew.Refresh()
+    if live:
+        pcbnew.Refresh()
     print(f"\nEmitted {n_placed} via(s), skipped {n_skip} (net not found).")
     if not live:
         board.Save(cfg.PCB_FILE)

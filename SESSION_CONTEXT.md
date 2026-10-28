@@ -341,6 +341,28 @@ unresolved is never acceptable.
 
 ---
 
+### PROHIBITED 8: `pcbnew.Refresh()` called unconditionally in headless/subprocess mode
+
+**What it did:** `pcbnew.Refresh()` was called at the end of the `_run()` function in
+`route_fanout_vias.py` without checking whether the script was running in KiCad GUI mode
+or as a headless subprocess.
+
+**Why it was wrong:** `pcbnew.Refresh()` is a GUI-only call — it tells KiCad's board canvas
+to redraw. When called in a headless subprocess (no KiCad GUI running), wxWidgets has no
+display context and fires debug assertion dialogs that block execution until the user
+dismisses them.
+
+**The correct fix:** Guard ALL GUI-only pcbnew calls with `if live:`. The `live` flag is
+`True` only when the script is called from KiCad's scripting console (`run_live()`). Any
+call that requires a running KiCad GUI — `pcbnew.Refresh()`, `pcbnew.GetBoard()` used as
+a side effect, etc. — must be inside `if live:`.
+
+**Applies to:** `route_fanout_vias.py`, `route_critical.py`, `route_highspeed.py`, and any
+future routing script. Before adding any `pcbnew.*()` call at module level or in a run
+function, ask: "Does this require a running KiCad GUI?" If yes, guard with `if live:`.
+
+---
+
 ## CORE REQUIREMENTS (user-stated, non-negotiable)
 
 ### 1. Every pad gets a via

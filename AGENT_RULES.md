@@ -86,6 +86,7 @@ Before writing or modifying ANY code in ANY routing script in `Python Scripts/` 
 5. Bounding-circle pad geometry (`obs.r = hypot(half_w, half_h) + clearance`) used for clearance checks
 6. `GetBoundingBox()` AABB used for rotated pads
 7. Incoherent HS pair handoff when one partner gets escape=0
+8. `pcbnew.Refresh()` or any GUI-only pcbnew call without `if live:` guard — triggers wxWidgets debug alerts in headless subprocess mode
 
 ---
 
