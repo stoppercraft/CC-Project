@@ -75,6 +75,12 @@ COMP_KEEPOUT_MM      = 0.5    # footprint bbox keepout margin for trunk routes
 board   = pcbnew.LoadBoard(cfg.PCB_FILE)
 F_CU    = board.GetLayerID("F.Cu")
 B_CU    = board.GetLayerID("B.Cu")
+
+def _track_fp(t):
+    s, e = t.GetStart(), t.GetEnd()
+    return (t.GetNetname(), s.x, s.y, e.x, e.y)
+
+_pre_existing_track_fps: frozenset = frozenset(_track_fp(t) for t in board.GetTracks())
 GND_NET = cfg.LAYER_SCHEME.get("gnd_ref", "GND")
 
 _bbox   = board.GetBoardEdgesBoundingBox()
@@ -2441,7 +2447,9 @@ def _rip_up_retry(order, max_passes=3):
                         _all_trks = []
                         log.append(f"  [rip-up] WARNING: could not iterate board tracks for {pair_name}")
                 for trk in _all_trks:
-                    if trk.GetNetname() in ripped_nets and not trk.IsLocked():
+                    if (trk.GetNetname() in ripped_nets
+                            and not trk.IsLocked()
+                            and _track_fp(trk) not in _pre_existing_track_fps):
                         board.Remove(trk)
                         removed += 1
                 log.append(f"  [rip-up] {pair_name}: removed {removed} board tracks")
