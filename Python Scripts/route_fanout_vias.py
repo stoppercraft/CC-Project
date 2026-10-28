@@ -4171,8 +4171,16 @@ def _face_fanout(
     # ------------------------------------------------------------------
     # 5. Clearance checker
     # ------------------------------------------------------------------
+    def _eff_r(pv):
+        """Effective copper radius for clearance.  Skip-net pads emit only a
+        trace stub (no via), so their obstacle radius is trace half-width.
+        Real via-bearing pads use the full via copper radius."""
+        if pv.net_name in _skip_nets:
+            return pv.neckdown_w_mm / 2.0
+        return pv.via_drill_mm / 2.0 + ca
+
     def _check(v, vx, vy, placed):
-        via_copper_r = v.via_drill_mm / 2.0 + ca
+        via_copper_r = _eff_r(v)
         stub_hw      = v.neckdown_w_mm / 2.0
         chk_r        = via_copper_r + CLEARANCE
 
@@ -4371,7 +4379,7 @@ def _face_fanout(
             if global_i in keepout_set:
                 continue
             v            = face_pads[global_i]
-            via_copper_r = v.via_drill_mm / 2.0 + ca
+            via_copper_r = _eff_r(v)
             lat_off      = lat_offs_arr[si]
             ls           = _lat_sign(v)
             placed_i             = False
@@ -4526,7 +4534,7 @@ def _face_fanout(
                             'pad_i': gj, 'net': pvj.net_name, 'pad_num': pvj.pad_num,
                         })
                         continue
-                    pcrj = pvj.via_drill_mm / 2.0 + ca
+                    pcrj = _eff_r(pvj)
                     other_placed.append({
                         'vx': vxj, 'vy': vyj, 'r': pcrj,
                         'stub_hw': pvj.neckdown_w_mm / 2.0,
@@ -4536,7 +4544,7 @@ def _face_fanout(
                         'pad_num': pvj.pad_num,
                     })
 
-                _vcr = v.via_drill_mm / 2.0 + ca
+                _vcr = _eff_r(v)
                 _thr = _vcr + CLEARANCE
 
                 def _own_depth_floor(lo, _v=v, _ls=ls, _thr=_thr, _ldx=ldx, _ldy=ldy,
@@ -4687,7 +4695,7 @@ def _face_fanout(
         # ------------------------------------------------------------------
         def _pair_depth_floor(pv, ls_, lat_):
             """Own-pad depth floor for an arbitrary pad at given lateral offset."""
-            pcr_ = pv.via_drill_mm / 2.0 + ca
+            pcr_ = _eff_r(pv)
             thr_ = pcr_ + CLEARANCE
             vx_t = pv.pad_x + ls_ * lat_ * ldx
             if pv.pad_bbox is None:
@@ -4733,8 +4741,8 @@ def _face_fanout(
             ls_j  = _lat_sign(vj)
             lat_i = lat_offs_arr[_si]
             lat_j = lat_offs_arr[_sj]
-            pcr_i = vi.via_drill_mm / 2.0 + ca
-            pcr_j = vj.via_drill_mm / 2.0 + ca
+            pcr_i = _eff_r(vi)
+            pcr_j = _eff_r(vj)
 
             di = abs((vxi_c - vi.pad_x) * edx + (vyi_c - vi.pad_y) * edy)
             dj = abs((vxj_c - vj.pad_x) * edx + (vyj_c - vj.pad_y) * edy)
@@ -4892,7 +4900,7 @@ def _face_fanout(
                             'pad_i': gj, 'net': pvj.net_name, 'pad_num': pvj.pad_num,
                         })
                         continue
-                    pcrj = pvj.via_drill_mm / 2.0 + ca
+                    pcrj = _eff_r(pvj)
                     other_placed.append({
                         'vx': vxj, 'vy': vyj, 'r': pcrj,
                         'stub_hw': pvj.neckdown_w_mm / 2.0,
@@ -4902,7 +4910,7 @@ def _face_fanout(
                         'pad_num': pvj.pad_num,
                     })
 
-                _vcr = v.via_drill_mm / 2.0 + ca
+                _vcr = _eff_r(v)
                 _thr = _vcr + CLEARANCE
 
                 def _own_depth_floor(lo, _v=v, _ls=ls, _thr=_thr, _ldx=ldx, _ldy=ldy,
