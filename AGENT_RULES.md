@@ -62,8 +62,8 @@ Never present results without completing all steps.
 4. route_highspeed.py --apply
 
 Never skip upstream steps. To debug a specific pair: run debug_highspeed.py.
-- FULL_SETUP = True (first run): clear all → fanout → critical → lock all tracks/vias → highspeed --pairs. Locks upstream so future clears only remove HS routes.
-- FULL_SETUP = False (fast iteration): clear unlocked only → highspeed --pairs. Fanout/critical survive.
+- FULL_SETUP = True (first run): clear all → fanout → critical → snapshot all track fingerprints to hs_debug_baseline.json → highspeed --pairs. No locking — fanout/critical tracks stay unlocked.
+- FULL_SETUP = False (fast iteration): load snapshot → remove non-snapshot tracks (removes HS routes, fanout/critical survive unlocked) → highspeed --pairs.
 Do NOT run DRC or Route and Verify after debug_highspeed.py — board is partial.
 
 ---
