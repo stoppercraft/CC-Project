@@ -74,7 +74,7 @@ TARGET_SEGS_ARG  = {int(s.strip()) for s in _args.segs.split(",") if s.strip()}
 TARGET_REFS_ARG  = {r.strip() for r in _args.refs.split(",") if r.strip()}
 TARGET_NETS_ARG  = {n.strip() for n in _args.nets.split(",") if n.strip()}
 
-CLEARANCE_MM         = 0.15
+CLEARANCE_MM         = 0.10
 STUB_W_MM            = 0.127  # narrow escape stub
 BOARD_EDGE_CLEARANCE = 0.50   # mm — copper-to-edge DRC minimum
 RELOC_STEP_MM        = 0.10   # walk step for anchor relocation
