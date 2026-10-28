@@ -74,7 +74,7 @@ TARGET_SEGS_ARG  = {int(s.strip()) for s in _args.segs.split(",") if s.strip()}
 TARGET_REFS_ARG  = {r.strip() for r in _args.refs.split(",") if r.strip()}
 TARGET_NETS_ARG  = {n.strip() for n in _args.nets.split(",") if n.strip()}
 
-CLEARANCE_MM         = 0.15
+CLEARANCE_MM         = 0.10
 STUB_W_MM            = 0.127  # narrow escape stub
 BOARD_EDGE_CLEARANCE = 0.50   # mm — copper-to-edge DRC minimum
 RELOC_STEP_MM        = 0.10   # walk step for anchor relocation
@@ -1083,8 +1083,12 @@ def _path_clear_approx(pts, w, obstacles):
                     return False
                 if lx - hw <= x2 <= rx + hw and ly - hw <= y2 <= ry + hw:
                     return False
-                for _cx, _cy in ((lx,ly),(rx,ly),(lx,ry),(rx,ry)):
-                    if point_to_seg_dist(_cx, _cy, x1, y1, x2, y2) < hw:
+                _pcx = (lx + rx) / 2; _pcy = (ly + ry) / 2
+                _phw = (rx - lx) / 2 - CLEARANCE_MM
+                _phh = (ry - ly) / 2 - CLEARANCE_MM
+                for _cx, _cy in ((_pcx-_phw, _pcy-_phh), (_pcx+_phw, _pcy-_phh),
+                                  (_pcx-_phw, _pcy+_phh), (_pcx+_phw, _pcy+_phh)):
+                    if point_to_seg_dist(_cx, _cy, x1, y1, x2, y2) < hw + CLEARANCE_MM:
                         return False
                 for _ex1,_ey1,_ex2,_ey2 in ((lx,ly,rx,ly),(rx,ly,rx,ry),
                                                (rx,ry,lx,ry),(lx,ry,lx,ly)):
@@ -3562,26 +3566,6 @@ def route_pair(pair_name):
                                 break
                         if _vc_pp is not None: break
                 if _vc_pp is None:
-                    # D-V-D jog: 45° diagonal exit, vertical column, 45° diagonal approach.
-                    # Tries both left and right jog columns — direction is not assumed.
-                    _dyp = 1.0 if vp1[1] >= vp0[1] else -1.0
-                    _dvd_p_done = False
-                    for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
-                        for _xj in (vp0[0] - _d, vp0[0] + _d):
-                            _y_top = vp0[1] + _d * _dyp
-                            _y_bot = vp1[1] - abs(vp1[0] - _xj) * _dyp
-                            if (_dyp > 0 and _y_top >= _y_bot) or (_dyp < 0 and _y_top <= _y_bot):
-                                continue
-                            _cj = merge_collinear([(vp0[0], vp0[1]), (_xj, _y_top),
-                                                   (_xj, _y_bot), (vp1[0], vp1[1])])
-                            if _path_clear_approx(_cj, width_mm, _vc_obs_p):
-                                _vc_pp = _cj
-                                log.append(f"    NOTE: via-clear-split P D-V-D jog x={_xj:.3f}")
-                                _dvd_p_done = True
-                                break
-                        if _dvd_p_done:
-                            break
-                if _vc_pp is None:
                     _adxp = abs(vp1[0]-vp0[0]); _adyp = abs(vp1[1]-vp0[1])
                     _sxp  = 1 if vp1[0] > vp0[0] else -1
                     _syp  = 1 if vp1[1] > vp0[1] else -1
@@ -3635,6 +3619,26 @@ def route_pair(pair_name):
                                 log.append(f"    NOTE: via-clear-split P HDV-rev d={_d:.3f}")
                                 break
                 if _vc_pp is None:
+                    # D-V-D jog: 45° diagonal exit, vertical column, 45° diagonal approach.
+                    # Tries both left and right jog columns — direction is not assumed.
+                    _dyp = 1.0 if vp1[1] >= vp0[1] else -1.0
+                    _dvd_p_done = False
+                    for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                        for _xj in (vp0[0] - _d, vp0[0] + _d):
+                            _y_top = vp0[1] + _d * _dyp
+                            _y_bot = vp1[1] - abs(vp1[0] - _xj) * _dyp
+                            if (_dyp > 0 and _y_top >= _y_bot) or (_dyp < 0 and _y_top <= _y_bot):
+                                continue
+                            _cj = merge_collinear([(vp0[0], vp0[1]), (_xj, _y_top),
+                                                   (_xj, _y_bot), (vp1[0], vp1[1])])
+                            if _path_clear_approx(_cj, width_mm, _vc_obs_p):
+                                _vc_pp = _cj
+                                log.append(f"    NOTE: via-clear-split P D-V-D jog x={_xj:.3f}")
+                                _dvd_p_done = True
+                                break
+                        if _dvd_p_done:
+                            break
+                if _vc_pp is None:
                     _vc_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                width_mm, _vc_obs_p)
                 if _vc_pp is None:
@@ -3674,51 +3678,6 @@ def route_pair(pair_name):
                     if (_path_clear_approx(_vc_c, width_mm, _vc_obs_n_bo) and
                             _path_clear_of_explicit_segs(_vc_c, width_mm / 2.0, _p_exact_segs)):
                         _vc_nr = merge_collinear(_vc_c); break
-                if _vc_nr is None:
-                    _xn_lo = min(vn0[0], vn1[0]); _xn_hi = max(vn0[0], vn1[0])
-                    for _jdx in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
-                        for _xj in (_xn_lo - _jdx, _xn_hi + _jdx):
-                            _cj = merge_collinear([(vn0[0], vn0[1]), (_xj, vn0[1]),
-                                                   (_xj, vn1[1]), (vn1[0], vn1[1])])
-                            if (_path_clear_approx(_cj, width_mm, _vc_obs_n_bo) and
-                                    _path_clear_of_explicit_segs(_cj, width_mm / 2.0, _p_exact_segs)):
-                                _vc_nr = _cj
-                                log.append(f"    NOTE: via-clear-split N 3-seg jog x={_xj:.3f}")
-                                break
-                        if _vc_nr is not None: break
-                if _vc_nr is None:
-                    _yn_lo = min(vn0[1], vn1[1]); _yn_hi = max(vn0[1], vn1[1])
-                    for _jdy in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
-                        for _yj in (_yn_lo - _jdy, _yn_hi + _jdy):
-                            _cj = merge_collinear([(vn0[0], vn0[1]), (vn0[0], _yj),
-                                                   (vn1[0], _yj), (vn1[0], vn1[1])])
-                            if (_path_clear_approx(_cj, width_mm, _vc_obs_n_bo) and
-                                    _path_clear_of_explicit_segs(_cj, width_mm / 2.0, _p_exact_segs)):
-                                _vc_nr = _cj
-                                log.append(f"    NOTE: via-clear-split N 3-seg V-H-V jog y={_yj:.3f}")
-                                break
-                        if _vc_nr is not None: break
-                if _vc_nr is None:
-                    # D-V-D jog: 45° diagonal exit, vertical column, 45° diagonal approach.
-                    # Tries both left and right jog columns — direction is not assumed.
-                    _dyn = 1.0 if vn1[1] >= vn0[1] else -1.0
-                    _dvd_n_done = False
-                    for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
-                        for _xj in (vn0[0] - _d, vn0[0] + _d):
-                            _y_top = vn0[1] + _d * _dyn
-                            _y_bot = vn1[1] - abs(vn1[0] - _xj) * _dyn
-                            if (_dyn > 0 and _y_top >= _y_bot) or (_dyn < 0 and _y_top <= _y_bot):
-                                continue
-                            _cj = merge_collinear([(vn0[0], vn0[1]), (_xj, _y_top),
-                                                   (_xj, _y_bot), (vn1[0], vn1[1])])
-                            if (_path_clear_approx(_cj, width_mm, _vc_obs_n_bo) and
-                                    _path_clear_of_explicit_segs(_cj, width_mm / 2.0, _p_exact_segs)):
-                                _vc_nr = _cj
-                                log.append(f"    NOTE: via-clear-split N D-V-D jog x={_xj:.3f}")
-                                _dvd_n_done = True
-                                break
-                        if _dvd_n_done:
-                            break
                 if _vc_nr is None:
                     _adxn = abs(vn1[0]-vn0[0]); _adyn = abs(vn1[1]-vn0[1])
                     _sxn  = 1 if vn1[0] > vn0[0] else -1
@@ -3782,6 +3741,51 @@ def route_pair(pair_name):
                                 _vc_nr = _cj
                                 log.append(f"    NOTE: via-clear-split N HDV-rev d={_d:.3f}")
                                 break
+                if _vc_nr is None:
+                    _xn_lo = min(vn0[0], vn1[0]); _xn_hi = max(vn0[0], vn1[0])
+                    for _jdx in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                        for _xj in (_xn_lo - _jdx, _xn_hi + _jdx):
+                            _cj = merge_collinear([(vn0[0], vn0[1]), (_xj, vn0[1]),
+                                                   (_xj, vn1[1]), (vn1[0], vn1[1])])
+                            if (_path_clear_approx(_cj, width_mm, _vc_obs_n_bo) and
+                                    _path_clear_of_explicit_segs(_cj, width_mm / 2.0, _p_exact_segs)):
+                                _vc_nr = _cj
+                                log.append(f"    NOTE: via-clear-split N 3-seg jog x={_xj:.3f}")
+                                break
+                        if _vc_nr is not None: break
+                if _vc_nr is None:
+                    _yn_lo = min(vn0[1], vn1[1]); _yn_hi = max(vn0[1], vn1[1])
+                    for _jdy in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                        for _yj in (_yn_lo - _jdy, _yn_hi + _jdy):
+                            _cj = merge_collinear([(vn0[0], vn0[1]), (vn0[0], _yj),
+                                                   (vn1[0], _yj), (vn1[0], vn1[1])])
+                            if (_path_clear_approx(_cj, width_mm, _vc_obs_n_bo) and
+                                    _path_clear_of_explicit_segs(_cj, width_mm / 2.0, _p_exact_segs)):
+                                _vc_nr = _cj
+                                log.append(f"    NOTE: via-clear-split N 3-seg V-H-V jog y={_yj:.3f}")
+                                break
+                        if _vc_nr is not None: break
+                if _vc_nr is None:
+                    # D-V-D jog: 45° diagonal exit, vertical column, 45° diagonal approach.
+                    # Tries both left and right jog columns — direction is not assumed.
+                    _dyn = 1.0 if vn1[1] >= vn0[1] else -1.0
+                    _dvd_n_done = False
+                    for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                        for _xj in (vn0[0] - _d, vn0[0] + _d):
+                            _y_top = vn0[1] + _d * _dyn
+                            _y_bot = vn1[1] - abs(vn1[0] - _xj) * _dyn
+                            if (_dyn > 0 and _y_top >= _y_bot) or (_dyn < 0 and _y_top <= _y_bot):
+                                continue
+                            _cj = merge_collinear([(vn0[0], vn0[1]), (_xj, _y_top),
+                                                   (_xj, _y_bot), (vn1[0], vn1[1])])
+                            if (_path_clear_approx(_cj, width_mm, _vc_obs_n_bo) and
+                                    _path_clear_of_explicit_segs(_cj, width_mm / 2.0, _p_exact_segs)):
+                                _vc_nr = _cj
+                                log.append(f"    NOTE: via-clear-split N D-V-D jog x={_xj:.3f}")
+                                _dvd_n_done = True
+                                break
+                        if _dvd_n_done:
+                            break
                 if _vc_nr is None:
                     _vc_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                width_mm, _vc_obs_n)
