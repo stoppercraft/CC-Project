@@ -351,6 +351,30 @@ unresolved is never acceptable.
 
 ---
 
+### PROHIBITED 9: `PCB_VIA::GetWidth(layer_id)` called on a via object
+
+**What it does:** Calling `track.GetWidth(layer_id)` on a `PCB_VIA` object fires a wxWidgets
+assertion dialog at the C++ level even inside a headless subprocess. The previous "fix" wrapped
+the call in `try/except Exception` — this only catches the Python exception that may propagate
+AFTER the dialog has already appeared. The dialog is not suppressible from Python.
+
+**Why it is wrong:** Every time `GetWidth(layer_id)` is called on a PCB_VIA in the obstacle
+builders, a modal dialog blocks execution until the user dismisses it. The try/except was
+masking the symptom, not eliminating the cause.
+
+**The correct fix:** For `PCB_VIA` objects, never call `GetWidth()` with any arguments.
+Compute via radius directly from drill + annular ring:
+```python
+vr = tomm(track.GetDrill()) / 2 + 0.15
+```
+Since the code already checks `track.GetClass() == "PCB_VIA"` before this line, the
+via type is known — there is no reason to call `GetWidth(layer_id)` at all.
+
+**Applies to:** `route_critical.py`, `route_highspeed.py`, and any future routing script that
+iterates `board.GetTracks()` and checks via dimensions.
+
+---
+
 ### PROHIBITED 8: `pcbnew.Refresh()` called unconditionally in headless/subprocess mode
 
 **What it did:** `pcbnew.Refresh()` was called at the end of the `_run()` function in

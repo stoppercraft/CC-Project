@@ -477,12 +477,8 @@ def _build_obstacles_impl(layer_id, net_excl_pads, net_excl_tracks=None,
         if track.GetClass() == "PCB_VIA":
             if not track.GetLayerSet().Contains(layer_id):
                 continue
-            try:
-                vr = tomm(track.GetWidth(layer_id)) / 2
-            except Exception:
-                # PCB_VIA::GetWidth() without a layer fires a wxWidgets assertion
-                # in KiCad 10 — never call it; fall back to drill + annular ring.
-                vr = tomm(track.GetDrill()) / 2 + 0.15
+            # PROHIBITED 9: never call GetWidth(layer_id) on PCB_VIA — asserts wxWidgets
+            vr = tomm(track.GetDrill()) / 2 + 0.15
             vx = tomm(track.GetPosition().x)
             vy = tomm(track.GetPosition().y)
             obs.append((vx - vr - c, vy - vr - c, vx + vr + c, vy + vr + c))
@@ -551,12 +547,8 @@ def _build_obstacles_board_only_impl(layer_id, net_excl, track_excl=None):
         if track.GetClass() == "PCB_VIA":
             if not track.GetLayerSet().Contains(layer_id):
                 continue
-            try:
-                vr = tomm(track.GetWidth(layer_id)) / 2
-            except Exception:
-                # PCB_VIA::GetWidth() without a layer fires a wxWidgets assertion
-                # in KiCad 10 — never call it; fall back to drill + annular ring.
-                vr = tomm(track.GetDrill()) / 2 + 0.15
+            # PROHIBITED 9: never call GetWidth(layer_id) on PCB_VIA — asserts wxWidgets
+            vr = tomm(track.GetDrill()) / 2 + 0.15
             vx2 = tomm(track.GetPosition().x)
             vy2 = tomm(track.GetPosition().y)
             obs.append((vx2 - vr - c, vy2 - vr - c, vx2 + vr + c, vy2 + vr + c))
@@ -717,12 +709,8 @@ def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
         if track.GetClass() == "PCB_VIA":
             if not track.GetLayerSet().Contains(layer_id):
                 continue
-            try:
-                vr = tomm(track.GetWidth(layer_id)) / 2
-            except Exception:
-                # PCB_VIA::GetWidth() without a layer fires a wxWidgets assertion
-                # in KiCad 10 — never call it; fall back to drill + annular ring.
-                vr = tomm(track.GetDrill()) / 2 + 0.15
+            # PROHIBITED 9: never call GetWidth(layer_id) on PCB_VIA — asserts wxWidgets
+            vr = tomm(track.GetDrill()) / 2 + 0.15
             vx = tomm(track.GetPosition().x)
             vy = tomm(track.GetPosition().y)
             obs.append((vx - vr - c, vy - vr - c, vx + vr + c, vy + vr + c))

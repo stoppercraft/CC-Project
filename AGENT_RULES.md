@@ -87,6 +87,7 @@ Before writing or modifying ANY code in ANY routing script in `Python Scripts/` 
 6. `GetBoundingBox()` AABB used for rotated pads
 7. Incoherent HS pair handoff when one partner gets escape=0
 8. `pcbnew.Refresh()` or any GUI-only pcbnew call without `if live:` guard — triggers wxWidgets debug alerts in headless subprocess mode
+9. `track.GetWidth(layer_id)` called on a `PCB_VIA` object — fires a wxWidgets assertion dialog at C++ level; try/except does NOT prevent the dialog. Use `tomm(track.GetDrill()) / 2 + 0.15` directly when `track.GetClass() == "PCB_VIA"`
 
 ---
 
