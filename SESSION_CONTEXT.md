@@ -351,49 +351,36 @@ unresolved is never acceptable.
 
 ---
 
-### PROHIBITED 9: `PCB_VIA::GetWidth(layer_id)` called on a via object
+### PROHIBITED 8: pcbnew calls that trigger wxWidgets dialogs in headless/subprocess mode
 
-**What it does:** Calling `track.GetWidth(layer_id)` on a `PCB_VIA` object fires a wxWidgets
-assertion dialog at the C++ level even inside a headless subprocess. The previous "fix" wrapped
-the call in `try/except Exception` — this only catches the Python exception that may propagate
-AFTER the dialog has already appeared. The dialog is not suppressible from Python.
+The same root cause, same symptom, two known instances. Before adding any `pcbnew.*()` call,
+ask: "Could this fire a wxWidgets assertion or require a running KiCad GUI?" If yes, apply
+the appropriate fix below. A `try/except` wrapper does NOT prevent the dialog — the C++
+assertion fires before Python gets control.
 
-**Why it is wrong:** Every time `GetWidth(layer_id)` is called on a PCB_VIA in the obstacle
-builders, a modal dialog blocks execution until the user dismisses it. The try/except was
-masking the symptom, not eliminating the cause.
+**Instance A — `pcbnew.Refresh()` (and other GUI-only calls) without `if live:` guard**
 
-**The correct fix:** For `PCB_VIA` objects, never call `GetWidth()` with any arguments.
-Compute via radius directly from drill + annular ring:
+`pcbnew.Refresh()` requires a running KiCad board canvas. When called in a headless
+subprocess it fires a wxWidgets assertion dialog.
+
+*Fix:* Guard with `if live:`. The `live` flag is `True` only from KiCad's scripting console
+(`run_live()`). Any call that requires the GUI — `pcbnew.Refresh()`, `pcbnew.GetBoard()` as
+a side effect, etc. — must be inside `if live:`.
+
+**Instance B — `track.GetWidth(layer_id)` called on a `PCB_VIA` object**
+
+Calling `GetWidth(layer_id)` on a `PCB_VIA` fires a C++ assertion even in a headless
+subprocess. The try/except that was in `route_critical.py` and `route_highspeed.py` (4 sites,
+removed in commit `cb37cbd`) only caught the Python exception AFTER the dialog appeared.
+
+*Fix:* When `track.GetClass() == "PCB_VIA"` is already confirmed, never call `GetWidth()`.
+Compute radius directly:
 ```python
 vr = tomm(track.GetDrill()) / 2 + 0.15
 ```
-Since the code already checks `track.GetClass() == "PCB_VIA"` before this line, the
-via type is known — there is no reason to call `GetWidth(layer_id)` at all.
 
-**Applies to:** `route_critical.py`, `route_highspeed.py`, and any future routing script that
-iterates `board.GetTracks()` and checks via dimensions.
-
----
-
-### PROHIBITED 8: `pcbnew.Refresh()` called unconditionally in headless/subprocess mode
-
-**What it did:** `pcbnew.Refresh()` was called at the end of the `_run()` function in
-`route_fanout_vias.py` without checking whether the script was running in KiCad GUI mode
-or as a headless subprocess.
-
-**Why it was wrong:** `pcbnew.Refresh()` is a GUI-only call — it tells KiCad's board canvas
-to redraw. When called in a headless subprocess (no KiCad GUI running), wxWidgets has no
-display context and fires debug assertion dialogs that block execution until the user
-dismisses them.
-
-**The correct fix:** Guard ALL GUI-only pcbnew calls with `if live:`. The `live` flag is
-`True` only when the script is called from KiCad's scripting console (`run_live()`). Any
-call that requires a running KiCad GUI — `pcbnew.Refresh()`, `pcbnew.GetBoard()` used as
-a side effect, etc. — must be inside `if live:`.
-
-**Applies to:** `route_fanout_vias.py`, `route_critical.py`, `route_highspeed.py`, and any
-future routing script. Before adding any `pcbnew.*()` call at module level or in a run
-function, ask: "Does this require a running KiCad GUI?" If yes, guard with `if live:`.
+**Applies to:** All routing scripts. Any new code that reads via or track dimensions from
+`board.GetTracks()` must follow both rules above.
 
 ---
 

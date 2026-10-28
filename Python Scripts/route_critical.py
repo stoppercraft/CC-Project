@@ -160,7 +160,7 @@ def build_obstacles(layer_id, net_excl_pads, net_excl_tracks=None,
         if track.GetClass() == "PCB_VIA":
             if not track.GetLayerSet().Contains(layer_id):
                 continue
-            # PROHIBITED 9: never call GetWidth(layer_id) on PCB_VIA — asserts wxWidgets
+            # PROHIBITED 8B: never call GetWidth(layer_id) on PCB_VIA — asserts wxWidgets
             vr = tomm(track.GetDrill()) / 2 + 0.15
             vx = tomm(track.GetPosition().x)
             vy = tomm(track.GetPosition().y)
