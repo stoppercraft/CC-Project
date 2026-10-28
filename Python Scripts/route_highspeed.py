@@ -61,9 +61,12 @@ _parser = _ap.ArgumentParser(add_help=False)
 _parser.add_argument("--apply",  action="store_true")
 _parser.add_argument("--pairs",  default="",
                      help="comma-separated pair names to route; default routes all pairs")
+_parser.add_argument("--segs",   default="",
+                     help="comma-separated segment indices to route within each pair (0-based); default routes all segments")
 _args, _ = _parser.parse_known_args()
 APPLY            = _args.apply
 TARGET_PAIRS_ARG = {p.strip() for p in _args.pairs.split(",") if p.strip()}
+TARGET_SEGS_ARG  = {int(s.strip()) for s in _args.segs.split(",") if s.strip()}
 
 CLEARANCE_MM         = 0.15
 STUB_W_MM            = 0.127  # narrow escape stub
@@ -2553,6 +2556,9 @@ def route_pair(pair_name):
     _seg_placed.clear()    # reset inter-segment obstacle accumulator for this pair
     _seg_reserved.clear()  # reset look-ahead reservations for this pair
     for seg in range(len(pairs) - 1):
+        if TARGET_SEGS_ARG and seg not in TARGET_SEGS_ARG:
+            log.append(f"  seg {seg}: skipped (--segs filter)")
+            continue
         layer_id = board.GetLayerID(layer_name)  # reset per iteration; may be overridden below
         sub_pairs = [pairs[seg], pairs[seg + 1]]
         info = detect_crossing(sub_pairs, layer_id)
@@ -4040,6 +4046,8 @@ if TARGET_PAIRS_ARG:
 log.append(f"Pairs to route ({len(order)}): {', '.join(order)}")
 if TARGET_PAIRS_ARG:
     log.append(f"(filtered by --pairs; full set has {len(routing_order())} pairs)")
+if TARGET_SEGS_ARG:
+    log.append(f"(filtered by --segs; only segment(s) {sorted(TARGET_SEGS_ARG)} will be routed per pair)")
 else:
     log.append("(pairs not in HS_ROUTE_WIDTHS are deferred to FreeRouting by config)")
 
