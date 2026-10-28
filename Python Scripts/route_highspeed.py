@@ -643,6 +643,25 @@ def _stub_clear_of_run_obs(x1, y1, x2, y2, stub_w, net_name, pad_layer_id):
     return True
 
 
+def _path_clear_of_explicit_segs(pts, half_w, segs):
+    """Exact segment-to-segment clearance check against an explicit list of
+    (x1, y1, x2, y2, seg_hw) tuples.  Uses the same 4-endpoint min-distance
+    approximation as _path_clear_of_run_obs.  Unlike AABB, this does not
+    inflate diagonal segments, so it avoids false rejections of valid paths."""
+    req_margin = half_w + CLEARANCE_MM
+    for i in range(len(pts) - 1):
+        x1, y1 = pts[i];  x2, y2 = pts[i + 1]
+        for sx1, sy1, sx2, sy2, shw in segs:
+            req = shw + req_margin
+            d = min(point_to_seg_dist(sx1, sy1, x1, y1, x2, y2),
+                    point_to_seg_dist(sx2, sy2, x1, y1, x2, y2),
+                    point_to_seg_dist(x1, y1, sx1, sy1, sx2, sy2),
+                    point_to_seg_dist(x2, y2, sx1, sy1, sx2, sy2))
+            if d < req:
+                return False
+    return True
+
+
 def _path_clear_of_run_obs(pts, half_w, net_name, layer_id):
     """
     Exact segment-to-segment check for each leg of a polyline against _run_obs.
@@ -3501,6 +3520,10 @@ def route_pair(pair_name):
                         _vc_pp = _vc_board
                 # Add P's planned segments as obstacles for N's search so they
                 # cannot cross — same pattern as route_critical.py's _run_obs update.
+                # AABB boxes go into _vc_obs_n for the A* grid search.
+                # Exact tuples go into _p_exact_segs for octilinear candidate checks
+                # so diagonal segments don't produce inflated false-obstacle regions.
+                _p_exact_segs = []
                 if _vc_pp is not None:
                     _hw_p = width_mm / 2.0
                     _p_segs = [(min(_vc_pp[_i][0], _vc_pp[_i+1][0]) - _hw_p - CLEARANCE_MM,
@@ -3508,12 +3531,16 @@ def route_pair(pair_name):
                                 max(_vc_pp[_i][0], _vc_pp[_i+1][0]) + _hw_p + CLEARANCE_MM,
                                 max(_vc_pp[_i][1], _vc_pp[_i+1][1]) + _hw_p + CLEARANCE_MM)
                                for _i in range(len(_vc_pp) - 1)]
+                    _p_exact_segs = [(_vc_pp[_i][0], _vc_pp[_i][1],
+                                      _vc_pp[_i+1][0], _vc_pp[_i+1][1], _hw_p)
+                                     for _i in range(len(_vc_pp) - 1)]
                     _vc_obs_n    = _vc_obs_n    + _p_segs
                     _vc_obs_n_bo = _vc_obs_n_bo + _p_segs
 
                 _vc_nr = None
                 for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                    if path_clear(_vc_c, width_mm, _vc_obs_n):
+                    if (path_clear(_vc_c, width_mm, _vc_obs_n_bo) and
+                            _path_clear_of_explicit_segs(_vc_c, width_mm / 2.0, _p_exact_segs)):
                         _vc_nr = merge_collinear(_vc_c); break
                 if _vc_nr is None:
                     _vc_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
