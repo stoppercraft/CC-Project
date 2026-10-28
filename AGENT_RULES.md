@@ -74,11 +74,11 @@ Before writing or modifying ANY code in ANY routing script in `Python Scripts/` 
 
 **Step A** — Read the NEVER-AGAIN LIST: call `Read` tool on `E:\Claude Projects\CC Project Folder\SESSION_CONTEXT.md`. Do NOT recall from memory — read the actual file.
 
-**Step B** — Before any code, explicitly state which PROHIBITED patterns (1–7) are relevant to the planned change and one sentence per pattern explaining how the planned code avoids it.
+**Step B** — Before any code, explicitly state which PROHIBITED patterns (1–8) are relevant to the planned change and one sentence per pattern explaining how the planned code avoids it.
 
 **Step C** — Write the code only after A and B.
 
-### NEVER-AGAIN (PROHIBITED) Patterns Summary
+### NEVER-AGAIN (PROHIBITED) Patterns Summary — All Routing Scripts
 1. `skip_ref` — skipping same-footprint pads from obstacle checks
 2. Endpoint via check scoped only to `skip_ref` pads
 3. Arbitrary-angle escape directions (must be 0°, 45°, or 90° only)
