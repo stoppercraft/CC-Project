@@ -576,22 +576,24 @@ def _build_obstacles_board_only_impl(layer_id, net_excl, track_excl=None):
 
 
 # Per-pair accumulator: tracks placed by earlier segments of the current pair,
-# keyed by layer_id.  Populated inside route_pair(); cleared at pair start.
-# Wrappers below inject these into every build_obstacles / build_obstacles_board_only
-# call so later segments correctly treat earlier-segment same-net copper as obstacles.
-_seg_placed = {}     # type: dict[int, list[tuple]]
+# keyed by layer_id.  Each entry is (rect, net_name) so build_obstacles can
+# exclude same-net entries — prevents a previous segment's approach tracks from
+# blocking the NEXT segment's departure from the shared endpoint pad.
+_seg_placed = {}     # type: dict[int, list[tuple[tuple, str]]]  # (rect, net_name)
 _seg_reserved = {}   # look-ahead corridor reservations for the next segment
 
 
 def build_obstacles(layer_id, net_excl_pads, **kw):
+    _sp = [r for r, n in _seg_placed.get(layer_id, []) if n not in net_excl_pads]
     return (_build_obstacles_impl(layer_id, net_excl_pads, **kw)
-            + _seg_placed.get(layer_id, [])
+            + _sp
             + _seg_reserved.get(layer_id, []))
 
 
 def build_obstacles_board_only(layer_id, net_excl, **kw):
+    _sp = [r for r, n in _seg_placed.get(layer_id, []) if n not in net_excl]
     return (_build_obstacles_board_only_impl(layer_id, net_excl, **kw)
-            + _seg_placed.get(layer_id, [])
+            + _sp
             + _seg_reserved.get(layer_id, []))
 
 
@@ -1079,8 +1081,18 @@ def _path_clear_approx(pts, w, obstacles):
                 r_obs = (rx - lx) / 2
                 if point_to_seg_dist(cx, cy, x1, y1, x2, y2) < r_obs + hw:
                     return False
-            else:
-                return False  # non-square pad: trust AABB
+            else:  # non-square pad: exact corner + endpoint + crossing check
+                if lx - hw <= x1 <= rx + hw and ly - hw <= y1 <= ry + hw:
+                    return False
+                if lx - hw <= x2 <= rx + hw and ly - hw <= y2 <= ry + hw:
+                    return False
+                for _cx, _cy in ((lx,ly),(rx,ly),(lx,ry),(rx,ry)):
+                    if point_to_seg_dist(_cx, _cy, x1, y1, x2, y2) < hw:
+                        return False
+                for _ex1,_ey1,_ex2,_ey2 in ((lx,ly,rx,ly),(rx,ly,rx,ry),
+                                               (rx,ry,lx,ry),(lx,ry,lx,ly)):
+                    if _segs_cross(x1, y1, x2, y2, _ex1, _ey1, _ex2, _ey2):
+                        return False
     return True
 
 
@@ -2013,7 +2025,8 @@ def _miter_predict_crossing(poly, vpa_xy, vpb_xy, cc):
     return p_sign_src != p_sign_dst
 
 
-def _chosen_has_via_clearance_issue(poly, vp0_xy, vn0_xy, vp1_xy, vn1_xy, cc, width_mm):
+def _chosen_has_via_clearance_issue(poly, vp0_xy, vn0_xy, vp1_xy, vn1_xy, cc, width_mm,
+                                     direct_pad=False):
     """Return True if the chosen path's P or N track would physically overlap a
     cross-net endpoint via (creating a true electrical short).
 
@@ -2022,12 +2035,19 @@ def _chosen_has_via_clearance_issue(poly, vp0_xy, vn0_xy, vp1_xy, vn1_xy, cc, wi
     clearance margin) so only actual conductor overlaps are flagged — tight but
     legal spacings are left to DRC.  Simulates cur_p_sign propagation matching
     emit_diffpair for accurate track positions.
+
+    direct_pad=True: endpoints are SMT pads, not through-hole vias.  Uses
+    width_mm/2 as endpoint radius so fine-pitch pads (e.g. 0.5mm-pitch USB-C)
+    do not trigger false positives that would fire at a legal 0.19mm spacing.
     """
     if len(poly) < 2:
         return False
     half = cc / 2.0
-    # Overlap threshold: track edge touches via edge
-    overlap_thr = VIA_PAD / 2.0 + width_mm / 2.0
+    # Overlap threshold: track edge touches endpoint conductor edge.
+    # SMT pad endpoints use track half-width as radius (not the larger VIA_PAD/2)
+    # so fine-pitch connectors don't produce false positives.
+    ep_r = width_mm / 2.0 if direct_pad else VIA_PAD / 2.0
+    overlap_thr = ep_r + width_mm / 2.0
 
     px0, py0 = _perp_of(*poly[0], *poly[1])
     cur_ps = 1.0 if (px0*(vp0_xy[0]-poly[0][0]) + py0*(vp0_xy[1]-poly[0][1])) >= 0 else -1.0
@@ -2753,9 +2773,9 @@ def route_pair(pair_name):
                     log.append(f"    NOTE: stub-tip direct routing  Lp={_lp:.3f}mm  Ln={_ln:.3f}mm"
                                f"  Δ={abs(_lp-_ln):.3f}mm")
                     _seg_placed.setdefault(layer_id, []).extend(
-                        _poly_obs(_pp_ext, width_mm / 2))
+                        (r, net_p) for r in _poly_obs(_pp_ext, width_mm / 2))
                     _seg_placed.setdefault(layer_id, []).extend(
-                        _poly_obs(_nn_ext, width_mm / 2))
+                        (r, net_n) for r in _poly_obs(_nn_ext, width_mm / 2))
                     continue
 
         # Verify P and N are on the same lateral side at both endpoints
@@ -2925,8 +2945,8 @@ def route_pair(pair_name):
                                   width_mm, layer_id, net_n)
                     log.append(f"    SAME-LAYER CROSSING: P and N on {layer_name}")
                     _hw = width_mm / 2.0
-                    _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_pp_sl, _hw))
-                    _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_nr_sl, _hw))
+                    _seg_placed.setdefault(layer_id, []).extend((r, net_p) for r in _poly_obs(_pp_sl, _hw))
+                    _seg_placed.setdefault(layer_id, []).extend((r, net_n) for r in _poly_obs(_nr_sl, _hw))
                 continue  # skip regular emit_diffpair
 
             if s0 * s1 < 0:
@@ -3146,8 +3166,8 @@ def route_pair(pair_name):
                                f"({vp0[0]:.3f},{vp0[1]:.3f})→({vp1[0]:.3f},{vp1[1]:.3f}), "
                                f"N on {_nr_name}")
                     _hw = width_mm / 2.0
-                    _seg_placed.setdefault(_pp_layer, []).extend(_poly_obs(_pp, _hw))
-                    _seg_placed.setdefault(_nr_layer, []).extend(_poly_obs(_nr, _hw))
+                    _seg_placed.setdefault(_pp_layer, []).extend((r, net_p) for r in _poly_obs(_pp, _hw))
+                    _seg_placed.setdefault(_nr_layer, []).extend((r, net_n) for r in _poly_obs(_nr, _hw))
                 continue  # skip regular emit_diffpair
 
         # Route centerline between (cx0,cy0) and (cx1,cy1)
@@ -3246,7 +3266,7 @@ def route_pair(pair_name):
         # horizontal trunk placed by seg 0) for seg 1 instead of finding an
         # independent path — the HS-safe analog of route_critical.py's
         # spine-waypoint tapping (no T-junctions; separate copper per segment).
-        if chosen is None and _seg_spine:
+        if chosen is None and _seg_spine and not _both_on_route_layer:
             obs_no_sib = obs_no_sib or build_obstacles(layer_id, {net_p, net_n},
                                                         include_sibling_reserves=False)
             for _obs_sp, _sp_lbl in [(obs_layer, ""), (obs_no_sib, " (sibling relaxed)")]:
@@ -3438,8 +3458,8 @@ def route_pair(pair_name):
                                           width_mm, layer_id, net_n)
                             log.append("    NOTE: independent P/N routing succeeded")
                             _hw = width_mm / 2.0
-                            _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_ip_pp, _hw))
-                            _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_ip_nr, _hw))
+                            _seg_placed.setdefault(layer_id, []).extend((r, net_p) for r in _poly_obs(_ip_pp, _hw))
+                            _seg_placed.setdefault(layer_id, []).extend((r, net_n) for r in _poly_obs(_ip_nr, _hw))
                             continue
 
                     if chosen is None:
@@ -3458,10 +3478,25 @@ def route_pair(pair_name):
         # 2-segment paths; if none avoids the overlap, route P and N independently
         # with the partner-net vias added as explicit obstacles.
         def _ep_r(x, y):
-            return (width_mm / 2.0
-                    if (round(x, 3), round(y, 3)) in _stub_tip_xy
-                    else VIA_PAD / 2.0)
-        if _chosen_has_via_clearance_issue(chosen, vp0, vn0, vp1, vn1, cc, width_mm):
+            if (round(x, 3), round(y, 3)) in _stub_tip_xy or _both_on_route_layer:
+                return width_mm / 2.0
+            return VIA_PAD / 2.0
+        # Force independent P/N routing when the centerline detour is >2× the
+        # straight-line distance AND all endpoints are on the route layer (no
+        # escape vias).  Direct-pad segments can have varying cc (e.g. USB2:
+        # 2.0mm at src, 0.5mm at dst) so the shared w_full=cc+width corridor
+        # over-routes around obstacles that individual traces can navigate.
+        _vc_force_indep = (chosen is not None and _both_on_route_layer and
+                           math.hypot(cx1-cx0, cy1-cy0) > 1e-3 and
+                           sum(math.hypot(chosen[i+1][0]-chosen[i][0],
+                                          chosen[i+1][1]-chosen[i][1])
+                               for i in range(len(chosen)-1))
+                           > math.hypot(cx1-cx0, cy1-cy0) * 2.0)
+        if _vc_force_indep or _chosen_has_via_clearance_issue(
+                chosen, vp0, vn0, vp1, vn1, cc, width_mm,
+                direct_pad=_both_on_route_layer):
+            if _vc_force_indep:
+                log.append("    NOTE: direct-pad detour >2× straight — routing P/N independently")
             _vc_alt = None
             _vc_obs_list = [obs_layer]
             if obs_no_sib is None:
@@ -3516,6 +3551,33 @@ def route_pair(pair_name):
                                 break
                         if _vc_pp is not None: break
                 if _vc_pp is None:
+                    _adxp = abs(vp1[0]-vp0[0]); _adyp = abs(vp1[1]-vp0[1])
+                    _sxp  = 1 if vp1[0] > vp0[0] else -1
+                    _syp  = 1 if vp1[1] > vp0[1] else -1
+                    if _adyp > _adxp + 1e-3:  # VDV: V stub, 45° diagonal, V arrive
+                        for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                            if _d >= _adyp - _adxp - 1e-3:
+                                break
+                            _ep = (vp0[0], vp0[1] + _syp*_d)
+                            _ap = (vp1[0], vp0[1] + _syp*(_d + _adxp))
+                            _cj = merge_collinear([(vp0[0],vp0[1]), _ep, _ap, (vp1[0],vp1[1])])
+                            if _path_clear_approx(_cj, width_mm, _vc_obs_p):
+                                _vc_pp = _cj
+                                log.append(f"    NOTE: via-clear-split P VDV d={_d:.3f}")
+                                break
+                    elif _adxp > _adyp + 1e-3:  # HDV: H stub, 45° diagonal, V arrive
+                        _min_dp = _adxp - _adyp
+                        for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                            if _d <= _min_dp - 1e-3 or _d >= _adxp - 1e-3:
+                                continue
+                            _ep = (vp0[0] + _sxp*_d, vp0[1])
+                            _ap = (vp1[0], vp0[1] + _syp*(_adxp - _d))
+                            _cj = merge_collinear([(vp0[0],vp0[1]), _ep, _ap, (vp1[0],vp1[1])])
+                            if _path_clear_approx(_cj, width_mm, _vc_obs_p):
+                                _vc_pp = _cj
+                                log.append(f"    NOTE: via-clear-split P HDV d={_d:.3f}")
+                                break
+                if _vc_pp is None:
                     _vc_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                width_mm, _vc_obs_p)
                 if _vc_pp is None:
@@ -3541,7 +3603,9 @@ def route_pair(pair_name):
                                 min(_vc_pp[_i][1], _vc_pp[_i+1][1]) - _hw_p - CLEARANCE_MM,
                                 max(_vc_pp[_i][0], _vc_pp[_i+1][0]) + _hw_p + CLEARANCE_MM,
                                 max(_vc_pp[_i][1], _vc_pp[_i+1][1]) + _hw_p + CLEARANCE_MM)
-                               for _i in range(len(_vc_pp) - 1)]
+                               for _i in range(len(_vc_pp) - 1)
+                               if (abs(_vc_pp[_i][0] - _vc_pp[_i+1][0]) < 1e-3 or
+                                   abs(_vc_pp[_i][1] - _vc_pp[_i+1][1]) < 1e-3)]
                     _p_exact_segs = [(_vc_pp[_i][0], _vc_pp[_i][1],
                                       _vc_pp[_i+1][0], _vc_pp[_i+1][1], _hw_p)
                                      for _i in range(len(_vc_pp) - 1)]
@@ -3584,8 +3648,45 @@ def route_pair(pair_name):
                             log.append(f"    NOTE: via-clear-split N D-V-D jog x={_xj:.3f}")
                             break
                 if _vc_nr is None:
+                    _adxn = abs(vn1[0]-vn0[0]); _adyn = abs(vn1[1]-vn0[1])
+                    _sxn  = 1 if vn1[0] > vn0[0] else -1
+                    _syn  = 1 if vn1[1] > vn0[1] else -1
+                    # For diagonal N candidates use board+endpoint obstacles only.
+                    # P's diagonal AABB is square (dx=dy for 45°), which the square-
+                    # obstacle check treats as a via circle — falsely over-conservative.
+                    # Exact P clearance is guaranteed by _path_clear_of_explicit_segs.
+                    _vc_obs_n_dp = _vc_base_bo + _vc_pp_boxes
+                    if _adyn > _adxn + 1e-3:  # VDV: V stub, 45° diagonal, V arrive
+                        for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                            if _d >= _adyn - _adxn - 1e-3:
+                                break
+                            _en = (vn0[0], vn0[1] + _syn*_d)
+                            _an = (vn1[0], vn0[1] + _syn*(_d + _adxn))
+                            _cj = merge_collinear([(vn0[0],vn0[1]), _en, _an, (vn1[0],vn1[1])])
+                            if (_path_clear_approx(_cj, width_mm, _vc_obs_n_dp) and
+                                    _path_clear_of_explicit_segs(_cj, width_mm/2.0, _p_exact_segs)):
+                                _vc_nr = _cj
+                                log.append(f"    NOTE: via-clear-split N VDV d={_d:.3f}")
+                                break
+                    elif _adxn > _adyn + 1e-3:  # HDV: H stub, 45° diagonal, V arrive
+                        _min_dn = _adxn - _adyn
+                        for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                            if _d <= _min_dn - 1e-3 or _d >= _adxn - 1e-3:
+                                continue
+                            _en = (vn0[0] + _sxn*_d, vn0[1])
+                            _an = (vn1[0], vn0[1] + _syn*(_adxn - _d))
+                            _cj = merge_collinear([(vn0[0],vn0[1]), _en, _an, (vn1[0],vn1[1])])
+                            if (_path_clear_approx(_cj, width_mm, _vc_obs_n_dp) and
+                                    _path_clear_of_explicit_segs(_cj, width_mm/2.0, _p_exact_segs)):
+                                _vc_nr = _cj
+                                log.append(f"    NOTE: via-clear-split N HDV d={_d:.3f}")
+                                break
+                if _vc_nr is None:
                     _vc_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                width_mm, _vc_obs_n)
+                    if (_vc_nr is not None and
+                            not _path_clear_of_explicit_segs(_vc_nr, width_mm/2.0, _p_exact_segs)):
+                        _vc_nr = None
                 if _vc_nr is None:
                     for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
                         if (path_clear(_vc_c, width_mm, _vc_obs_n_bo) and
@@ -3599,7 +3700,7 @@ def route_pair(pair_name):
                         _vc_nr = _vc_board
                 # Alternate-layer fallback for any failing leg.
                 _vc_pp_layer = layer_id;  _vc_nr_layer = layer_id
-                if _vc_pp is None or _vc_nr is None:
+                if (_vc_pp is None or _vc_nr is None) and not _both_on_route_layer:
                     _vc_alt_layers = []
                     if layer_id != F_CU:
                         _vc_alt_layers.append((F_CU, "F.Cu"))
@@ -3678,8 +3779,8 @@ def route_pair(pair_name):
                                f" N ({vn0[0]:.3f},{vn0[1]:.3f})"
                                f"→({vn1[0]:.3f},{vn1[1]:.3f}) on {_vc_nln}")
                     _hw = width_mm / 2.0
-                    _seg_placed.setdefault(_vc_pp_layer, []).extend(_poly_obs(_vc_pp, _hw))
-                    _seg_placed.setdefault(_vc_nr_layer, []).extend(_poly_obs(_vc_nr, _hw))
+                    _seg_placed.setdefault(_vc_pp_layer, []).extend((r, net_p) for r in _poly_obs(_vc_pp, _hw))
+                    _seg_placed.setdefault(_vc_nr_layer, []).extend((r, net_n) for r in _poly_obs(_vc_nr, _hw))
                     continue  # skip emit_diffpair
                 else:
                     log.append(f"    WARNING: via-clearance split failed "
@@ -3692,7 +3793,7 @@ def route_pair(pair_name):
         # end stubs from p_end/n_end to the destination vias would cross the
         # partner's track body on a single layer.  Fall back to layer-split so P
         # and N route independently and can cross each other without shorting.
-        if _miter_predict_crossing(chosen, vp0, vp1, cc):
+        if not _both_on_route_layer and _miter_predict_crossing(chosen, vp0, vp1, cc):
             log.append("    NOTE: miter end-stub crossing predicted — "
                        "falling back to layer-split routing")
             _mc_wf  = width_mm + cc
@@ -3701,9 +3802,9 @@ def route_pair(pair_name):
             # the exclusion radius instead of VIA_PAD/2 so the partner can
             # start routing from its own stub tip without being pushed away.
             def _ep_r(pt):
-                return (width_mm / 2.0
-                        if (round(pt[0], 3), round(pt[1], 3)) in _stub_tip_xy
-                        else VIA_PAD / 2.0)
+                if (round(pt[0], 3), round(pt[1], 3)) in _stub_tip_xy or _both_on_route_layer:
+                    return width_mm / 2.0
+                return VIA_PAD / 2.0
             _mc_p0b = (vp0[0]-_ep_r(vp0)-_mc_cl, vp0[1]-_ep_r(vp0)-_mc_cl,
                        vp0[0]+_ep_r(vp0)+_mc_cl, vp0[1]+_ep_r(vp0)+_mc_cl)
             _mc_p1b = (vp1[0]-_ep_r(vp1)-_mc_cl, vp1[1]-_ep_r(vp1)-_mc_cl,
@@ -3794,8 +3895,8 @@ def route_pair(pair_name):
                                   width_mm, layer_id, net_n)
                     log.append("    NOTE: miter-split independent P/N routing succeeded")
                     _hw = width_mm / 2.0
-                    _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_mi_pp, _hw))
-                    _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_mi_nr, _hw))
+                    _seg_placed.setdefault(layer_id, []).extend((r, net_p) for r in _poly_obs(_mi_pp, _hw))
+                    _seg_placed.setdefault(layer_id, []).extend((r, net_n) for r in _poly_obs(_mi_nr, _hw))
                 else:
                     log.append("    WARNING: miter-crossing layer-split failed; skipping emit")
                     _conflict_count += 1
@@ -3813,8 +3914,8 @@ def route_pair(pair_name):
                            f"({vp1[0]:.3f},{vp1[1]:.3f}), "
                            f"N on {_mc_nr_name}")
                 _hw = width_mm / 2.0
-                _seg_placed.setdefault(layer_id, []).extend(_poly_obs(_mc_pp, _hw))
-                _seg_placed.setdefault(_mc_nr_layer, []).extend(_poly_obs(_mc_nr, _hw))
+                _seg_placed.setdefault(layer_id, []).extend((r, net_p) for r in _poly_obs(_mc_pp, _hw))
+                _seg_placed.setdefault(_mc_nr_layer, []).extend((r, net_n) for r in _poly_obs(_mc_nr, _hw))
             continue  # skip emit_diffpair
 
         bends = max(0, len(chosen) - 2)
@@ -3824,7 +3925,7 @@ def route_pair(pair_name):
                    f"  Δ={abs(lp-ln):.3f}mm")
         total_p += lp;  total_n += ln
         _seg_placed.setdefault(layer_id, []).extend(
-            _poly_obs(chosen, width_mm / 2.0 + cc / 2.0))
+            (r, net_p) for r in _poly_obs(chosen, width_mm / 2.0 + cc / 2.0))
         if len(pairs) > 2 and len(chosen) > 2:
             _seg_spine = list(chosen[1:-1])
 
