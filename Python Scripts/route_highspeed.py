@@ -176,7 +176,7 @@ def _build_fanout_stub_index():
     """Map each pad position to its fanout via (or stub tip) by tracing locked track chains."""
     adj: dict = {}
     for trk in board.GetTracks():
-        if trk.GetClass() == "PCB_VIA" or not trk.IsLocked():
+        if trk.GetClass() == "PCB_VIA":
             continue
         vnet = trk.GetNetname()
         s = trk.GetStart(); e = trk.GetEnd()
