@@ -3894,15 +3894,52 @@ def route_pair(pair_name):
                                       width_mm, _vc_pp_layer, net_p)
                         _seg_placed.setdefault(_vc_pp_layer, []).extend(
                             (r, net_p) for r in _poly_obs(_vc_pp, _hw))
-                        _ind_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
-                                                     width_mm, _vc_base_bo)
+                        # Retry N with exact 45°/H/V topology loops on board-only
+                        # obstacles (no P endpoint boxes). A* is not used: replacing
+                        # its grid-snapped endpoints with exact pad coords would
+                        # create arbitrary-angle segments (PROHIBITED 3).
+                        _ind_nr = None
+                        for _ind_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                            if (path_clear(_ind_c, width_mm, _vc_base_bo) and
+                                    _path_clear_of_explicit_segs(
+                                        _ind_c, width_mm/2.0, _p_exact_segs)):
+                                _ind_nr = merge_collinear(_ind_c); break
                         if _ind_nr is None:
-                            for _ind_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                                if path_clear(_ind_c, width_mm, _vc_base_bo):
-                                    _ind_nr = merge_collinear(_ind_c); break
+                            _adxn2 = abs(vn1[0]-vn0[0]); _adyn2 = abs(vn1[1]-vn0[1])
+                            _sxn2 = 1 if vn1[0] > vn0[0] else -1
+                            _syn2 = 1 if vn1[1] > vn0[1] else -1
+                            if _adyn2 > _adxn2 + 1e-3:
+                                for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                                    if _d >= _adyn2 - _adxn2 - 1e-3:
+                                        break
+                                    _en2 = (vn0[0], vn0[1] + _syn2*_d)
+                                    _an2 = (vn1[0], vn0[1] + _syn2*(_d + _adxn2))
+                                    _cj2 = merge_collinear(
+                                        [(vn0[0],vn0[1]), _en2, _an2, (vn1[0],vn1[1])])
+                                    if (_path_clear_approx(_cj2, width_mm, _vc_base_bo) and
+                                            _path_clear_of_explicit_segs(
+                                                _cj2, width_mm/2.0, _p_exact_segs)):
+                                        _ind_nr = _cj2
+                                        log.append(f"    NOTE: VCS partial N retry"
+                                                   f" VDV d={_d:.3f}")
+                                        break
+                            else:
+                                _min_dn2 = _adxn2 - _adyn2
+                                for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                                    if _d <= _min_dn2 - 1e-3 or _d >= _adxn2 - 1e-3:
+                                        continue
+                                    _en2 = (vn0[0] + _sxn2*_d, vn0[1])
+                                    _an2 = (vn1[0], vn0[1] + _syn2*(_adxn2 - _d))
+                                    _cj2 = merge_collinear(
+                                        [(vn0[0],vn0[1]), _en2, _an2, (vn1[0],vn1[1])])
+                                    if (_path_clear_approx(_cj2, width_mm, _vc_base_bo) and
+                                            _path_clear_of_explicit_segs(
+                                                _cj2, width_mm/2.0, _p_exact_segs)):
+                                        _ind_nr = _cj2
+                                        log.append(f"    NOTE: VCS partial N retry"
+                                                   f" HDV d={_d:.3f}")
+                                        break
                         if _ind_nr is not None:
-                            _ind_nr = [vn0] + list(_ind_nr[1:-1]) + [vn1]
-                            _ind_nr = merge_collinear(_ind_nr)
                             for _vc_i in range(len(_ind_nr) - 1):
                                 add_track(_ind_nr[_vc_i][0], _ind_nr[_vc_i][1],
                                           _ind_nr[_vc_i+1][0], _ind_nr[_vc_i+1][1],
@@ -3910,7 +3947,7 @@ def route_pair(pair_name):
                             _seg_placed.setdefault(layer_id, []).extend(
                                 (r, net_n) for r in _poly_obs(_ind_nr, _hw))
                             log.append(f"    NOTE: VCS P=ok/N=FAIL partial split:"
-                                       f" P via-clear-split, N independent A*")
+                                       f" P via-clear-split, N independent topology")
                         else:
                             log.append(f"    NOTE: VCS P=ok/N=FAIL partial split:"
                                        f" P via-clear-split, N unrouted")
@@ -3924,15 +3961,50 @@ def route_pair(pair_name):
                                       width_mm, _vc_nr_layer, net_n)
                         _seg_placed.setdefault(_vc_nr_layer, []).extend(
                             (r, net_n) for r in _poly_obs(_vc_nr, _hw))
-                        _ind_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
-                                                     width_mm, _vc_base_bo)
+                        _n_exact_segs = [(_vc_nr[_i], _vc_nr[_i+1])
+                                         for _i in range(len(_vc_nr)-1)]
+                        _ind_pp = None
+                        for _ind_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                            if (path_clear(_ind_c, width_mm, _vc_base_bo) and
+                                    _path_clear_of_explicit_segs(
+                                        _ind_c, width_mm/2.0, _n_exact_segs)):
+                                _ind_pp = merge_collinear(_ind_c); break
                         if _ind_pp is None:
-                            for _ind_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                                if path_clear(_ind_c, width_mm, _vc_base_bo):
-                                    _ind_pp = merge_collinear(_ind_c); break
+                            _adxp2 = abs(vp1[0]-vp0[0]); _adyp2 = abs(vp1[1]-vp0[1])
+                            _sxp2 = 1 if vp1[0] > vp0[0] else -1
+                            _syp2 = 1 if vp1[1] > vp0[1] else -1
+                            if _adyp2 > _adxp2 + 1e-3:
+                                for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                                    if _d >= _adyp2 - _adxp2 - 1e-3:
+                                        break
+                                    _ep2 = (vp0[0], vp0[1] + _syp2*_d)
+                                    _ap2 = (vp1[0], vp0[1] + _syp2*(_d + _adxp2))
+                                    _cj2 = merge_collinear(
+                                        [(vp0[0],vp0[1]), _ep2, _ap2, (vp1[0],vp1[1])])
+                                    if (_path_clear_approx(_cj2, width_mm, _vc_base_bo) and
+                                            _path_clear_of_explicit_segs(
+                                                _cj2, width_mm/2.0, _n_exact_segs)):
+                                        _ind_pp = _cj2
+                                        log.append(f"    NOTE: VCS partial P retry"
+                                                   f" VDV d={_d:.3f}")
+                                        break
+                            else:
+                                _min_dp2 = _adxp2 - _adyp2
+                                for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                                    if _d <= _min_dp2 - 1e-3 or _d >= _adxp2 - 1e-3:
+                                        continue
+                                    _ep2 = (vp0[0] + _sxp2*_d, vp0[1])
+                                    _ap2 = (vp1[0], vp0[1] + _syp2*(_adxp2 - _d))
+                                    _cj2 = merge_collinear(
+                                        [(vp0[0],vp0[1]), _ep2, _ap2, (vp1[0],vp1[1])])
+                                    if (_path_clear_approx(_cj2, width_mm, _vc_base_bo) and
+                                            _path_clear_of_explicit_segs(
+                                                _cj2, width_mm/2.0, _n_exact_segs)):
+                                        _ind_pp = _cj2
+                                        log.append(f"    NOTE: VCS partial P retry"
+                                                   f" HDV d={_d:.3f}")
+                                        break
                         if _ind_pp is not None:
-                            _ind_pp = [vp0] + list(_ind_pp[1:-1]) + [vp1]
-                            _ind_pp = merge_collinear(_ind_pp)
                             for _vc_i in range(len(_ind_pp) - 1):
                                 add_track(_ind_pp[_vc_i][0], _ind_pp[_vc_i][1],
                                           _ind_pp[_vc_i+1][0], _ind_pp[_vc_i+1][1],
@@ -3940,7 +4012,7 @@ def route_pair(pair_name):
                             _seg_placed.setdefault(layer_id, []).extend(
                                 (r, net_p) for r in _poly_obs(_ind_pp, _hw))
                             log.append(f"    NOTE: VCS P=FAIL/N=ok partial split:"
-                                       f" N via-clear-split, P independent A*")
+                                       f" N via-clear-split, P independent topology")
                         else:
                             log.append(f"    NOTE: VCS P=FAIL/N=ok partial split:"
                                        f" N via-clear-split, P unrouted")
