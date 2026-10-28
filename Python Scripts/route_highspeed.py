@@ -3884,9 +3884,68 @@ def route_pair(pair_name):
                     _seg_placed.setdefault(_vc_nr_layer, []).extend((r, net_n) for r in _poly_obs(_vc_nr, _hw))
                     continue  # skip emit_diffpair
                 else:
-                    log.append(f"    WARNING: via-clearance split failed "
-                               f"(P={'ok' if _vc_pp else 'FAIL'} "
-                               f"N={'ok' if _vc_nr else 'FAIL'}); keeping chosen")
+                    _hw = width_mm / 2.0
+                    if _vc_pp is not None and _vc_nr is None:
+                        # P succeeded, N failed — emit P's correct route and
+                        # attempt N independently on board-only obstacles.
+                        for _vc_i in range(len(_vc_pp) - 1):
+                            add_track(_vc_pp[_vc_i][0], _vc_pp[_vc_i][1],
+                                      _vc_pp[_vc_i+1][0], _vc_pp[_vc_i+1][1],
+                                      width_mm, _vc_pp_layer, net_p)
+                        _seg_placed.setdefault(_vc_pp_layer, []).extend(
+                            (r, net_p) for r in _poly_obs(_vc_pp, _hw))
+                        _ind_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
+                                                     width_mm, _vc_base_bo)
+                        if _ind_nr is None:
+                            for _ind_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
+                                if path_clear(_ind_c, width_mm, _vc_base_bo):
+                                    _ind_nr = merge_collinear(_ind_c); break
+                        if _ind_nr is not None:
+                            for _vc_i in range(len(_ind_nr) - 1):
+                                add_track(_ind_nr[_vc_i][0], _ind_nr[_vc_i][1],
+                                          _ind_nr[_vc_i+1][0], _ind_nr[_vc_i+1][1],
+                                          width_mm, layer_id, net_n)
+                            _seg_placed.setdefault(layer_id, []).extend(
+                                (r, net_n) for r in _poly_obs(_ind_nr, _hw))
+                            log.append(f"    NOTE: VCS P=ok/N=FAIL partial split:"
+                                       f" P via-clear-split, N independent A*")
+                        else:
+                            log.append(f"    NOTE: VCS P=ok/N=FAIL partial split:"
+                                       f" P via-clear-split, N unrouted")
+                            _conflict_count += 1
+                        continue  # skip emit_diffpair
+                    elif _vc_nr is not None and _vc_pp is None:
+                        # N succeeded, P failed — symmetric case.
+                        for _vc_i in range(len(_vc_nr) - 1):
+                            add_track(_vc_nr[_vc_i][0], _vc_nr[_vc_i][1],
+                                      _vc_nr[_vc_i+1][0], _vc_nr[_vc_i+1][1],
+                                      width_mm, _vc_nr_layer, net_n)
+                        _seg_placed.setdefault(_vc_nr_layer, []).extend(
+                            (r, net_n) for r in _poly_obs(_vc_nr, _hw))
+                        _ind_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                                     width_mm, _vc_base_bo)
+                        if _ind_pp is None:
+                            for _ind_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                                if path_clear(_ind_c, width_mm, _vc_base_bo):
+                                    _ind_pp = merge_collinear(_ind_c); break
+                        if _ind_pp is not None:
+                            for _vc_i in range(len(_ind_pp) - 1):
+                                add_track(_ind_pp[_vc_i][0], _ind_pp[_vc_i][1],
+                                          _ind_pp[_vc_i+1][0], _ind_pp[_vc_i+1][1],
+                                          width_mm, layer_id, net_p)
+                            _seg_placed.setdefault(layer_id, []).extend(
+                                (r, net_p) for r in _poly_obs(_ind_pp, _hw))
+                            log.append(f"    NOTE: VCS P=FAIL/N=ok partial split:"
+                                       f" N via-clear-split, P independent A*")
+                        else:
+                            log.append(f"    NOTE: VCS P=FAIL/N=ok partial split:"
+                                       f" N via-clear-split, P unrouted")
+                            _conflict_count += 1
+                        continue  # skip emit_diffpair
+                    else:
+                        log.append(f"    WARNING: via-clearance split failed "
+                                   f"(P={'ok' if _vc_pp else 'FAIL'} "
+                                   f"N={'ok' if _vc_nr else 'FAIL'}); keeping chosen")
                 # fall through to emit_diffpair with original chosen path
 
         # Miter-crossing guard: simulate cur_p_sign propagation through the chosen
