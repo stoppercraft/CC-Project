@@ -3901,6 +3901,8 @@ def route_pair(pair_name):
                                 if path_clear(_ind_c, width_mm, _vc_base_bo):
                                     _ind_nr = merge_collinear(_ind_c); break
                         if _ind_nr is not None:
+                            _ind_nr = [vn0] + list(_ind_nr[1:-1]) + [vn1]
+                            _ind_nr = merge_collinear(_ind_nr)
                             for _vc_i in range(len(_ind_nr) - 1):
                                 add_track(_ind_nr[_vc_i][0], _ind_nr[_vc_i][1],
                                           _ind_nr[_vc_i+1][0], _ind_nr[_vc_i+1][1],
@@ -3929,6 +3931,8 @@ def route_pair(pair_name):
                                 if path_clear(_ind_c, width_mm, _vc_base_bo):
                                     _ind_pp = merge_collinear(_ind_c); break
                         if _ind_pp is not None:
+                            _ind_pp = [vp0] + list(_ind_pp[1:-1]) + [vp1]
+                            _ind_pp = merge_collinear(_ind_pp)
                             for _vc_i in range(len(_ind_pp) - 1):
                                 add_track(_ind_pp[_vc_i][0], _ind_pp[_vc_i][1],
                                           _ind_pp[_vc_i+1][0], _ind_pp[_vc_i+1][1],
