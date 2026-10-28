@@ -62,46 +62,53 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-# Updated 2026-10-27 (session 45 — end).
+# Updated 2026-10-28 (session 46 — end).
 
 **route_fanout_vias.py:** COMPLETE. commit `015b30f`
 **route_critical.py:** COMPLETE. commits `bf77af2`, `836e1a5`
-**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. commits `7f54032`, `411ef3f`, `ebaedec`, `89d2712`, `8f93a4c`, `664224b`, `7b8fdfd`, `82ef22e`
-**AGENT_RULES.md + CLAUDE.md:** debug_highspeed.py description corrected (snapshot, not locking). commit `d183a07`
+**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. latest commit `3c9fe8c`
 
-Session 45 work (no route_highspeed.py code changes):
-- Inspected user's manual HDMI0_TX2_N route on board — diagnosed root cause of 3-seg jog failure
-- Updated AGENT_RULES.md + CLAUDE.md: removed stale locking description, replaced with snapshot method
+Session 46 focus: USB2 seg 2 (D_USB1 → J_USB_IN1) independent P/N routing.
 
-### HDMI0_TX2_N — Root Cause Diagnosed (session 45)
+### USB2 seg 2 — Current State
 
-User manually routed HDMI0_TX2_N on board using D-V-D topology (currently on board, NOT in snapshot):
-- P route: via (150.000,104.295) → H +0.2mm → vertical x=149.800 → via (149.800,111.573)
-- N route: via (150.750,104.295) → 45°SW diagonal → vertical x=150.487 → 45°SE diagonal → via (150.550,111.573)
+**P: SOLVED.** VDV d=0.300 found — 3mm path (was 15mm A* detour).
+Path: (158.1,137.55) → (158.1,137.25) → (159.347,136.003) → (159.347,135.206)
 
-**Why H-V-H 3-seg jog fails:**
-1. Left jogs (xj ≤ 150.450): first H at y=104.295 → AABB rect_overlap hits P's start via box [149.550,103.845→150.450,104.745]. Both vias are on same y=104.295; any H going left clips P's via box.
-2. For xj ∈ (150.514, 150.614): H clears P's via, but V segment enters HDMI0_TX1_P end-via box [150.550,109.998→151.450,110.898].
-3. Right jogs: V segment blocked by HDMI0_TX1_P/N end vias at x=[150.550,151.450]/[151.300,152.200].
+**N: STILL FAILING.** "WARNING: via-clearance split failed (P=ok N=FAIL); keeping chosen"
 
-**Why user's D-V-D works:**
-45° diagonal exits y=104.295 immediately; by x=150.487 y=104.513 — exact segment-to-via distance ≈0.534mm vs 0.5135mm required. AABB of 45° diagonal falsely overlaps P's via box, but actual copper clears. V segment at x=150.487 also just clears HDMI0_TX1_P end via (151.000−150.487=0.513mm; inner layer clearance may be 0.1mm not 0.15mm).
+N geometry: vn0=(156.1,137.55), vn1=(158.847,135.206), adx=2.747, ady=2.344 → HDV topology.
+HDV formula: H stub from vn0, 45° diagonal, short V arrive at vn1.
+- At d=0.5 (first valid candidate): path=(156.1,137.55)→(156.6,137.55)→diagonal→(158.847,135.303)→(158.847,135.206)
 
-**Fix direction:**
-Replace AABB `rect_overlap` with exact **segment-to-circle distance** check for via endpoint obstacles in VIA-CLEAR-SPLIT jog. For circular vias, `path_clear` over-estimates blocked zone on 45° approaches. Alternatively add D-V-D jog topology (45° exit/entry instead of H-V-H).
+**Root cause of N failure: UNKNOWN.** `_path_clear_approx` returns False for ALL HDV candidates
+(d=0.5,0.6,0.8,1.0,1.5,2.0) when checked against `_vc_obs_n_dp = _vc_base_bo + _vc_pp_boxes`.
 
-### Current Board State
+Confirmed NOT causing the failure:
+- P's diagonal AABB (now excluded from `_p_segs` by Fix 1 — only H/V segs in AABB obstacles)
+- `_path_clear_of_explicit_segs` check (P diagonal 1.273mm from N diagonal >> 0.35mm req)
+- vp0 box (157.85,137.30→158.35,137.80): N diagonal passes below it by x=157.85
+- Bypass cap C_CM_USB_A1 at (159.395,137.238): N diagonal ends at x=158.847, below cap box
+- USBC_IN_CC1 track at x=159.847: 1.0mm from N path
 
-- **Board has user's manual HDMI0_TX2_N route** — NOT in hs_debug_baseline.json snapshot.
-  Running `debug_highspeed.py FULL_SETUP=False` will remove it (not in snapshot) and re-route via algorithm.
-- All other routes same as session 44 end.
+**Unknown blocker:** Something in `_vc_base_bo` (board tracks/pads on F.Cu, non-USB nets)
+rejects the HDV path. Board state near the area:
+- J_USB_IN1 pads A8-A12 at y=135.206, x=156.347–158.347 (non-USB nets, ARE obstacles)
+- D_USB1/1 GND at (158.1,139.25), D_USB1/4 empty at (156.1,139.45) — above routing area
+- No via found blocking in preliminary investigation
+
+**Next step:** Identify the blocking obstacle. Best approach:
+Add temporary debug in the HDV N section to log which `_path_clear_approx` obstacle rejects
+the first d=0.5 candidate. OR write a standalone script that calls `build_obstacles_board_only`
+and tests the candidate path segment-by-segment against each obstacle box.
 
 ### What to do at next session start
 
 1. Read this file + project_phase10_routing.md + project_hs_routing_requirements.md
-2. Read route_highspeed.py before touching any code (VIA-CLEAR-SPLIT jog section ~line 3551)
-3. Ask user what they want to work on — likely: implement segment-to-circle fix for VIA-CLEAR-SPLIT jog
-4. Do NOT run any scripts without explicit instruction
+2. Read route_highspeed.py (VIA-CLEAR-SPLIT section ~line 3500–3700)
+3. Read `_path_clear_approx` function definition
+4. Identify blocking obstacle for USB2 N HDV candidates — then fix
+5. Do NOT run scripts without explicit instruction
 
 ### Debug workflow for route_highspeed.py
 
