@@ -63,10 +63,13 @@ _parser.add_argument("--pairs",  default="",
                      help="comma-separated pair names to route; default routes all pairs")
 _parser.add_argument("--segs",   default="",
                      help="comma-separated segment indices to route within each pair (0-based); default routes all segments")
+_parser.add_argument("--refs",   default="",
+                     help="comma-separated component refs; route only pairs that have a pad on one of these refs")
 _args, _ = _parser.parse_known_args()
 APPLY            = _args.apply
 TARGET_PAIRS_ARG = {p.strip() for p in _args.pairs.split(",") if p.strip()}
 TARGET_SEGS_ARG  = {int(s.strip()) for s in _args.segs.split(",") if s.strip()}
+TARGET_REFS_ARG  = {r.strip() for r in _args.refs.split(",") if r.strip()}
 
 CLEARANCE_MM         = 0.15
 STUB_W_MM            = 0.127  # narrow escape stub
@@ -4043,12 +4046,22 @@ if TARGET_PAIRS_ARG:
     unknown = TARGET_PAIRS_ARG - set(cfg.HS_ROUTE_WIDTHS)
     if unknown:
         log.append(f"WARNING: --pairs requested unknown pair(s): {', '.join(sorted(unknown))}")
+if TARGET_REFS_ARG:
+    def _pair_touches_refs(pair_name):
+        net_p, net_n, _, _ = cfg.HS_PAIRS[pair_name]
+        for net in (net_p, net_n):
+            for pad in get_pads_on_net(net, skip_inline=False):
+                if pad["ref"] in TARGET_REFS_ARG:
+                    return True
+        return False
+    order = [p for p in order if _pair_touches_refs(p)]
+    log.append(f"(filtered by --refs {sorted(TARGET_REFS_ARG)}; {len(order)} pair(s) touch those refs)")
 log.append(f"Pairs to route ({len(order)}): {', '.join(order)}")
 if TARGET_PAIRS_ARG:
     log.append(f"(filtered by --pairs; full set has {len(routing_order())} pairs)")
 if TARGET_SEGS_ARG:
     log.append(f"(filtered by --segs; only segment(s) {sorted(TARGET_SEGS_ARG)} will be routed per pair)")
-else:
+if not TARGET_PAIRS_ARG and not TARGET_REFS_ARG:
     log.append("(pairs not in HS_ROUTE_WIDTHS are deferred to FreeRouting by config)")
 
 # Option C — pre-assign corridor trunk x-coordinates for parallel pair groups

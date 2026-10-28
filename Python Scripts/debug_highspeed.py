@@ -48,6 +48,10 @@ TARGET_PAIRS = ["USB2"]   # empty = route all pairs (same as route_highspeed.py 
 # Segment indices (0-based) to route within each pair.
 TARGET_SEGS  = [2]        # empty = route all segments
 
+# Component refs — route all pairs that have a pad on any of these refs.
+# Combines with TARGET_PAIRS (union after --pairs filter, then --refs filter).
+TARGET_REFS  = []         # empty = no ref filter
+
 # True  → rebuild from scratch (clear all → fanout → critical → snapshot → hs)
 # False → fast iteration (restore snapshot → hs)
 FULL_SETUP = False
@@ -56,6 +60,7 @@ FULL_SETUP = False
 
 pairs_arg = ",".join(TARGET_PAIRS)
 segs_arg  = ",".join(str(s) for s in TARGET_SEGS)
+refs_arg  = ",".join(TARGET_REFS)
 
 if FULL_SETUP:
     # ── Clear ALL unlocked tracks and vias ────────────────────────────────────
@@ -132,18 +137,22 @@ else:
 
 # ── Route target pairs ────────────────────────────────────────────────────────
 segs_label = f" segs '{segs_arg}'" if segs_arg else ""
-print(f"\n=== route_highspeed.py --apply --pairs '{pairs_arg}'{segs_label} ===")
+refs_label = f" refs '{refs_arg}'" if refs_arg else ""
+print(f"\n=== route_highspeed.py --apply --pairs '{pairs_arg}'{segs_label}{refs_label} ===")
 cmd = [PYTHON, os.path.join(SCRIPTS_DIR, "route_highspeed.py"),
        "--apply", "--pairs", pairs_arg]
 if segs_arg:
     cmd += ["--segs", segs_arg]
+if refs_arg:
+    cmd += ["--refs", refs_arg]
 r = subprocess.run(cmd, capture_output=True, text=True)
 print(r.stdout)
 if r.returncode != 0:
     print(f"[exit code {r.returncode} — conflicts present]")
 
 segs_note = f" seg(s) {TARGET_SEGS}" if TARGET_SEGS else ""
-print(f"\nBoard written: {TARGET_PAIRS if TARGET_PAIRS else 'all pairs'} routed{segs_note}.")
+refs_note = f" refs {TARGET_REFS}" if TARGET_REFS else ""
+print(f"\nBoard written: {TARGET_PAIRS if TARGET_PAIRS else 'all pairs'} routed{segs_note}{refs_note}.")
 if FULL_SETUP:
     print("Baseline snapshot saved. Set FULL_SETUP = False for fast iteration.")
 print("Reload in KiCad to inspect. DO NOT run DRC or Route and Verify — board is partial.")
