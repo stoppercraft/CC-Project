@@ -70,37 +70,33 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 Session 46 focus: USB2 seg 2 (D_USB1 → J_USB_IN1) independent P/N routing.
 
-### USB2 seg 2 — Current State
+### USB2 seg 2 — Current State (UNRESOLVED)
 
-**P: SOLVED.** VDV d=0.300 found — 3mm path (was 15mm A* detour).
-Path: (158.1,137.55) → (158.1,137.25) → (159.347,136.003) → (159.347,135.206)
+USB2 seg 2 (D_USB1 → J_USB_IN1) still routes the 15mm A* detour for both P and N.
 
-**N: STILL FAILING.** "WARNING: via-clearance split failed (P=ok N=FAIL); keeping chosen"
+The VIA-CLEAR-SPLIT block now fires (`_vc_force_indep` triggers when direct-pad detour >2×
+straight), and P finds a VDV candidate at d=0.300. But N fails all HDV candidates and the
+fallback keeps the original long "chosen" path for BOTH P and N. Nothing was solved.
 
-N geometry: vn0=(156.1,137.55), vn1=(158.847,135.206), adx=2.747, ady=2.344 → HDV topology.
-HDV formula: H stub from vn0, 45° diagonal, short V arrive at vn1.
-- At d=0.5 (first valid candidate): path=(156.1,137.55)→(156.6,137.55)→diagonal→(158.847,135.303)→(158.847,135.206)
+**What was added to the code this session (commit 3c9fe8c) — NOT YET SOLVING ANYTHING:**
+- `_vc_force_indep` flag: fires VIA-CLEAR-SPLIT for direct-pad detour >2× straight
+- VDV/HDV candidate loops for P and N in VIA-CLEAR-SPLIT
+- `_p_segs` diagonal filter: excludes 45° P segments from AABB obstacle list
+- N A* post-validation against `_p_exact_segs`
+- `_seg_placed` stores (rect, net_name) tuples to exclude same-net previous-segment tracks
+- Guards skipping miter-predict and spine fallback for `_both_on_route_layer`
 
-**Root cause of N failure: UNKNOWN.** `_path_clear_approx` returns False for ALL HDV candidates
-(d=0.5,0.6,0.8,1.0,1.5,2.0) when checked against `_vc_obs_n_dp = _vc_base_bo + _vc_pp_boxes`.
+**Root problem still open:** N's HDV candidates (d=0.5–2.0) all fail `_path_clear_approx`
+against `_vc_obs_n_dp`. The blocking obstacle has not been identified.
 
-Confirmed NOT causing the failure:
-- P's diagonal AABB (now excluded from `_p_segs` by Fix 1 — only H/V segs in AABB obstacles)
-- `_path_clear_of_explicit_segs` check (P diagonal 1.273mm from N diagonal >> 0.35mm req)
-- vp0 box (157.85,137.30→158.35,137.80): N diagonal passes below it by x=157.85
-- Bypass cap C_CM_USB_A1 at (159.395,137.238): N diagonal ends at x=158.847, below cap box
-- USBC_IN_CC1 track at x=159.847: 1.0mm from N path
+N geometry: vn0=(156.1,137.55), vn1=(158.847,135.206), adx=2.747, ady=2.344 → HDV.
+Board F.Cu obstacles in area: J_USB_IN1 pads A8-A12 at y=135.206 x=156.347–158.347,
+C_CM_USB_A1 GND pad at (159.395,137.238), USBC_IN_CC1 track at x=159.847.
 
-**Unknown blocker:** Something in `_vc_base_bo` (board tracks/pads on F.Cu, non-USB nets)
-rejects the HDV path. Board state near the area:
-- J_USB_IN1 pads A8-A12 at y=135.206, x=156.347–158.347 (non-USB nets, ARE obstacles)
-- D_USB1/1 GND at (158.1,139.25), D_USB1/4 empty at (156.1,139.45) — above routing area
-- No via found blocking in preliminary investigation
-
-**Next step:** Identify the blocking obstacle. Best approach:
-Add temporary debug in the HDV N section to log which `_path_clear_approx` obstacle rejects
-the first d=0.5 candidate. OR write a standalone script that calls `build_obstacles_board_only`
-and tests the candidate path segment-by-segment against each obstacle box.
+**Next step:** Identify which specific obstacle rejects N's d=0.5 HDV candidate.
+Write a standalone diagnostic script (not modifying the routing code) that calls
+`build_obstacles_board_only` for the board state and checks the d=0.5 path against
+each obstacle individually.
 
 ### What to do at next session start
 
