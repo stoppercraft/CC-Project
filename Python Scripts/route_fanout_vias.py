@@ -7561,13 +7561,54 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
         _so_net_obj = board.FindNet(_so_pv.net_name)
         if _so_net_obj is None:
             continue
+        _so_svx = _so_pv.stub_only_vx
+        _so_svy = _so_pv.stub_only_vy
+        # For HS auto-skip pads: if the stub tip has a lateral offset pointing
+        # away from the nearest same-net routing destination, the offset came
+        # from the face-fanout treating another skip-net "via" as an obstacle
+        # (no actual via copper exists there). Revert to straight-axial so the
+        # stub exits toward the destination rather than away from it.
+        if _so_pv.priority == PRIORITY_HS and _so_pv.net_name in skip_nets:
+            _so_ldx = -_so_pv.escape_dy
+            _so_ldy =  _so_pv.escape_dx
+            _so_stub_lat = ((_so_svx - _so_pv.pad_x) * _so_ldx
+                            + (_so_svy - _so_pv.pad_y) * _so_ldy)
+            if abs(_so_stub_lat) > 1e-4:
+                _so_dest_lat = None
+                _so_best_d   = float('inf')
+                for _so_fp2 in board.GetFootprints():
+                    for _so_pad2 in _so_fp2.Pads():
+                        if _so_pad2.GetNetname() != _so_pv.net_name:
+                            continue
+                        if (_so_fp2.GetReference() == _so_pv.ref
+                                and _so_pad2.GetNumber() == _so_pv.pad_num):
+                            continue
+                        _so_px2 = pcbnew.ToMM(_so_pad2.GetX())
+                        _so_py2 = pcbnew.ToMM(_so_pad2.GetY())
+                        _so_d2  = math.hypot(_so_px2 - _so_pv.pad_x,
+                                             _so_py2 - _so_pv.pad_y)
+                        if _so_d2 < _so_best_d:
+                            _so_best_d  = _so_d2
+                            _so_dest_lat = ((_so_px2 - _so_pv.pad_x) * _so_ldx
+                                            + (_so_py2 - _so_pv.pad_y) * _so_ldy)
+                if (_so_dest_lat is not None
+                        and abs(_so_dest_lat) > 1e-4
+                        and _so_stub_lat * _so_dest_lat < 0):
+                    # Lateral offset opposes destination — project tip onto axial
+                    _so_axial = ((_so_svx - _so_pv.pad_x) * _so_pv.escape_dx
+                                 + (_so_svy - _so_pv.pad_y) * _so_pv.escape_dy)
+                    _so_svx = _so_pv.pad_x + _so_pv.escape_dx * _so_axial
+                    _so_svy = _so_pv.pad_y + _so_pv.escape_dy * _so_axial
+                    print(f"  [stub-straight] {_so_pv.ref}/{_so_pv.pad_num}"
+                          f" ({_so_pv.net_name}): lateral offset removed"
+                          f" — stub was exiting away from destination")
         _so_segs = _route_45deg_stub(
             _so_pv.pad_x, _so_pv.pad_y,
-            _so_pv.stub_only_vx, _so_pv.stub_only_vy,
+            _so_svx, _so_svy,
             _so_pv.escape_dx, _so_pv.escape_dy, axial_first=True)
         if not _so_segs:
             _so_segs = [(_so_pv.pad_x, _so_pv.pad_y,
-                         _so_pv.stub_only_vx, _so_pv.stub_only_vy)]
+                         _so_svx, _so_svy)]
         for _sx1, _sy1, _sx2, _sy2 in _so_segs:
             if math.hypot(_sx2 - _sx1, _sy2 - _sy1) < 1e-6:
                 continue
@@ -7579,7 +7620,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
             _st.SetNet(_so_net_obj)
             board.Add(_st)
         if hasattr(_so_pv, 'stub_ext_vx'):
-            _ex1, _ey1 = _so_pv.stub_only_vx, _so_pv.stub_only_vy
+            _ex1, _ey1 = _so_svx, _so_svy
             _ex2, _ey2 = _so_pv.stub_ext_vx,  _so_pv.stub_ext_vy
             if math.hypot(_ex2 - _ex1, _ey2 - _ey1) >= 1e-6:
                 _et = pcbnew.PCB_TRACK(board)
