@@ -3,6 +3,22 @@
 
 ---
 
+## MASTER RULE — APPROVAL REQUIRED BEFORE ALL ACTIONS
+
+**This rule overrides every other rule in this file.**
+
+No code edit, script run, git commit, git push, board modification, or any other action may happen unless the user has explicitly approved it in that specific message.
+
+- "Follow the rules" is NOT approval.
+- "Yes" / "do it" / "implement that" / "go ahead" IS approval.
+- Describing a workflow (Steps A, B, C) or listing steps does NOT authorize executing them.
+- The pre-edit protocol, Route and Verify steps, and all other workflows describe HOW to act — they do not authorize WHEN to act.
+- Each user message is a discrete instruction. Do exactly what was asked, then stop and wait.
+
+**Pattern:** User asks a question → answer and stop. User proposes something → analyze and stop. User gives explicit approval → act.
+
+---
+
 ## Route and Verify — EXECUTE ALL SIX STEPS IN ORDER, NO EXCEPTIONS
 
 When the user says exactly "Route and Verify" (no other phrasing triggers this workflow):
