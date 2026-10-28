@@ -181,16 +181,10 @@ V1b project folder: `Frameline Generator PCB Version 1b\`
 
 ---
 
-# Fanout Via Script — Requirements and Refactor Plan
-# route_fanout_vias.py
-# Updated 2026-09-21
-
----
-
-## !! NEVER-AGAIN LIST — PROHIBITED APPROACHES !!
+## !! NEVER-AGAIN LIST — ALL ROUTING SCRIPTS !!
 
 The following patterns have been introduced and removed (or must be removed) from the
-script. They are WRONG. Do NOT re-introduce any of them under any circumstances,
+routing scripts. They are WRONG. Do NOT re-introduce any of them under any circumstances,
 including "just for this board" or "as a temporary workaround."
 
 ---
@@ -360,6 +354,12 @@ a side effect, etc. — must be inside `if live:`.
 **Applies to:** `route_fanout_vias.py`, `route_critical.py`, `route_highspeed.py`, and any
 future routing script. Before adding any `pcbnew.*()` call at module level or in a run
 function, ask: "Does this require a running KiCad GUI?" If yes, guard with `if live:`.
+
+---
+
+# Fanout Via Script — Requirements and Refactor Plan
+# route_fanout_vias.py
+# Updated 2026-09-21
 
 ---
 
