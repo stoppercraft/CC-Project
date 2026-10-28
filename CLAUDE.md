@@ -135,7 +135,7 @@ Do NOT run DRC or Route and Verify after debug_highspeed.py — the board shows 
 Before writing or modifying ANY code in ANY routing script in `Python Scripts/`, execute these steps in order. Skipping any step is a failure. This applies to route_fanout_vias.py, route_critical.py, route_highspeed.py, and any future routing script.
 
 **Step A — Read the PROHIBITED list.**
-Read the NEVER-AGAIN LIST in `E:\Claude Projects\CC Project Folder\SESSION_CONTEXT.md`. All 8 prohibited patterns must be fresh in context before any code is written.
+Read the NEVER-AGAIN LIST in `E:\Claude Projects\CC Project Folder\SESSION_CONTEXT.md`. Every prohibited pattern must be fresh in context before any code is written.
 
 **Step B — State which PROHIBITED items are relevant to the planned change.**
 In the response to the user, before any code, explicitly list:
