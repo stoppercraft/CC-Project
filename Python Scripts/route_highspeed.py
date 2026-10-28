@@ -65,11 +65,14 @@ _parser.add_argument("--segs",   default="",
                      help="comma-separated segment indices to route within each pair (0-based); default routes all segments")
 _parser.add_argument("--refs",   default="",
                      help="comma-separated component refs; route only pairs that have a pad on one of these refs")
+_parser.add_argument("--nets",   default="",
+                     help="comma-separated net names; route only pairs whose P or N net matches")
 _args, _ = _parser.parse_known_args()
 APPLY            = _args.apply
 TARGET_PAIRS_ARG = {p.strip() for p in _args.pairs.split(",") if p.strip()}
 TARGET_SEGS_ARG  = {int(s.strip()) for s in _args.segs.split(",") if s.strip()}
 TARGET_REFS_ARG  = {r.strip() for r in _args.refs.split(",") if r.strip()}
+TARGET_NETS_ARG  = {n.strip() for n in _args.nets.split(",") if n.strip()}
 
 CLEARANCE_MM         = 0.15
 STUB_W_MM            = 0.127  # narrow escape stub
@@ -4056,6 +4059,10 @@ if TARGET_REFS_ARG:
         return False
     order = [p for p in order if _pair_touches_refs(p)]
     log.append(f"(filtered by --refs {sorted(TARGET_REFS_ARG)}; {len(order)} pair(s) touch those refs)")
+if TARGET_NETS_ARG:
+    order = [p for p in order if cfg.HS_PAIRS[p][0] in TARGET_NETS_ARG
+                                  or cfg.HS_PAIRS[p][1] in TARGET_NETS_ARG]
+    log.append(f"(filtered by --nets {sorted(TARGET_NETS_ARG)}; {len(order)} pair(s) match)")
 log.append(f"Pairs to route ({len(order)}): {', '.join(order)}")
 if TARGET_PAIRS_ARG:
     log.append(f"(filtered by --pairs; full set has {len(routing_order())} pairs)")

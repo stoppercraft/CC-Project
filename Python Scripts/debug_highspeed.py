@@ -49,8 +49,10 @@ TARGET_PAIRS = ["USB2"]   # empty = route all pairs (same as route_highspeed.py 
 TARGET_SEGS  = [2]        # empty = route all segments
 
 # Component refs — route all pairs that have a pad on any of these refs.
-# Combines with TARGET_PAIRS (union after --pairs filter, then --refs filter).
 TARGET_REFS  = []         # empty = no ref filter
+
+# Net names — route only pairs whose P or N net matches.
+TARGET_NETS  = []         # empty = no net filter
 
 # True  → rebuild from scratch (clear all → fanout → critical → snapshot → hs)
 # False → fast iteration (restore snapshot → hs)
@@ -61,6 +63,7 @@ FULL_SETUP = False
 pairs_arg = ",".join(TARGET_PAIRS)
 segs_arg  = ",".join(str(s) for s in TARGET_SEGS)
 refs_arg  = ",".join(TARGET_REFS)
+nets_arg  = ",".join(TARGET_NETS)
 
 if FULL_SETUP:
     # ── Clear ALL unlocked tracks and vias ────────────────────────────────────
@@ -138,13 +141,16 @@ else:
 # ── Route target pairs ────────────────────────────────────────────────────────
 segs_label = f" segs '{segs_arg}'" if segs_arg else ""
 refs_label = f" refs '{refs_arg}'" if refs_arg else ""
-print(f"\n=== route_highspeed.py --apply --pairs '{pairs_arg}'{segs_label}{refs_label} ===")
+nets_label = f" nets '{nets_arg}'" if nets_arg else ""
+print(f"\n=== route_highspeed.py --apply --pairs '{pairs_arg}'{segs_label}{refs_label}{nets_label} ===")
 cmd = [PYTHON, os.path.join(SCRIPTS_DIR, "route_highspeed.py"),
        "--apply", "--pairs", pairs_arg]
 if segs_arg:
     cmd += ["--segs", segs_arg]
 if refs_arg:
     cmd += ["--refs", refs_arg]
+if nets_arg:
+    cmd += ["--nets", nets_arg]
 r = subprocess.run(cmd, capture_output=True, text=True)
 print(r.stdout)
 if r.returncode != 0:
@@ -152,7 +158,8 @@ if r.returncode != 0:
 
 segs_note = f" seg(s) {TARGET_SEGS}" if TARGET_SEGS else ""
 refs_note = f" refs {TARGET_REFS}" if TARGET_REFS else ""
-print(f"\nBoard written: {TARGET_PAIRS if TARGET_PAIRS else 'all pairs'} routed{segs_note}{refs_note}.")
+nets_note = f" nets {TARGET_NETS}" if TARGET_NETS else ""
+print(f"\nBoard written: {TARGET_PAIRS if TARGET_PAIRS else 'all pairs'} routed{segs_note}{refs_note}{nets_note}.")
 if FULL_SETUP:
     print("Baseline snapshot saved. Set FULL_SETUP = False for fast iteration.")
 print("Reload in KiCad to inspect. DO NOT run DRC or Route and Verify — board is partial.")
