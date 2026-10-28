@@ -7594,15 +7594,15 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
                 if (_so_dest_lat is not None
                         and abs(_so_dest_lat) > 1e-4
                         and _so_stub_lat * _so_dest_lat < 0):
-                    # Lateral offset opposes destination direction. The depth
-                    # was also computed against a skip-net "via" that has no
-                    # actual copper — so no stub of any length is needed here.
-                    # Collapse to pad position: zero-length → nothing emitted.
-                    _so_svx = _so_pv.pad_x
-                    _so_svy = _so_pv.pad_y
-                    print(f"  [stub-suppress] {_so_pv.ref}/{_so_pv.pad_num}"
-                          f" ({_so_pv.net_name}): stub suppressed"
-                          f" — lateral offset opposed destination")
+                    # Lateral offset opposes destination — project tip onto
+                    # the axial escape line, removing the lateral tail.
+                    _so_axial = ((_so_svx - _so_pv.pad_x) * _so_pv.escape_dx
+                                 + (_so_svy - _so_pv.pad_y) * _so_pv.escape_dy)
+                    _so_svx = _so_pv.pad_x + _so_pv.escape_dx * _so_axial
+                    _so_svy = _so_pv.pad_y + _so_pv.escape_dy * _so_axial
+                    print(f"  [stub-straight] {_so_pv.ref}/{_so_pv.pad_num}"
+                          f" ({_so_pv.net_name}): lateral tail removed"
+                          f" — stub exits straight toward destination")
         _so_segs = _route_45deg_stub(
             _so_pv.pad_x, _so_pv.pad_y,
             _so_svx, _so_svy,
