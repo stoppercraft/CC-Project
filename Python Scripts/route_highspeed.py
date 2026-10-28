@@ -3551,6 +3551,26 @@ def route_pair(pair_name):
                                 break
                         if _vc_pp is not None: break
                 if _vc_pp is None:
+                    # D-V-D jog: 45° diagonal exit, vertical column, 45° diagonal approach.
+                    # Tries both left and right jog columns — direction is not assumed.
+                    _dyp = 1.0 if vp1[1] >= vp0[1] else -1.0
+                    _dvd_p_done = False
+                    for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
+                        for _xj in (vp0[0] - _d, vp0[0] + _d):
+                            _y_top = vp0[1] + _d * _dyp
+                            _y_bot = vp1[1] - abs(vp1[0] - _xj) * _dyp
+                            if (_dyp > 0 and _y_top >= _y_bot) or (_dyp < 0 and _y_top <= _y_bot):
+                                continue
+                            _cj = merge_collinear([(vp0[0], vp0[1]), (_xj, _y_top),
+                                                   (_xj, _y_bot), (vp1[0], vp1[1])])
+                            if _path_clear_approx(_cj, width_mm, _vc_obs_p):
+                                _vc_pp = _cj
+                                log.append(f"    NOTE: via-clear-split P D-V-D jog x={_xj:.3f}")
+                                _dvd_p_done = True
+                                break
+                        if _dvd_p_done:
+                            break
+                if _vc_pp is None:
                     _adxp = abs(vp1[0]-vp0[0]); _adyp = abs(vp1[1]-vp0[1])
                     _sxp  = 1 if vp1[0] > vp0[0] else -1
                     _syp  = 1 if vp1[1] > vp0[1] else -1
@@ -3630,22 +3650,25 @@ def route_pair(pair_name):
                                 break
                         if _vc_nr is not None: break
                 if _vc_nr is None:
-                    # D-V-D jog: 45° SW exit from vn0, vertical column, 45° SE approach to vn1.
-                    # Needed when P and N start vias share the same y-level — H-V-H horizontal
-                    # first segment clips P's via AABB, but a diagonal departs in both x and y.
+                    # D-V-D jog: 45° diagonal exit, vertical column, 45° diagonal approach.
+                    # Tries both left and right jog columns — direction is not assumed.
                     _dyn = 1.0 if vn1[1] >= vn0[1] else -1.0
+                    _dvd_n_done = False
                     for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
-                        _xj = vn0[0] - _d
-                        _y_top = vn0[1] + _d * _dyn
-                        _y_bot = vn1[1] - abs(vn1[0] - _xj) * _dyn
-                        if (_dyn > 0 and _y_top >= _y_bot) or (_dyn < 0 and _y_top <= _y_bot):
-                            continue
-                        _cj = merge_collinear([(vn0[0], vn0[1]), (_xj, _y_top),
-                                               (_xj, _y_bot), (vn1[0], vn1[1])])
-                        if (_path_clear_approx(_cj, width_mm, _vc_obs_n_bo) and
-                                _path_clear_of_explicit_segs(_cj, width_mm / 2.0, _p_exact_segs)):
-                            _vc_nr = _cj
-                            log.append(f"    NOTE: via-clear-split N D-V-D jog x={_xj:.3f}")
+                        for _xj in (vn0[0] - _d, vn0[0] + _d):
+                            _y_top = vn0[1] + _d * _dyn
+                            _y_bot = vn1[1] - abs(vn1[0] - _xj) * _dyn
+                            if (_dyn > 0 and _y_top >= _y_bot) or (_dyn < 0 and _y_top <= _y_bot):
+                                continue
+                            _cj = merge_collinear([(vn0[0], vn0[1]), (_xj, _y_top),
+                                                   (_xj, _y_bot), (vn1[0], vn1[1])])
+                            if (_path_clear_approx(_cj, width_mm, _vc_obs_n_bo) and
+                                    _path_clear_of_explicit_segs(_cj, width_mm / 2.0, _p_exact_segs)):
+                                _vc_nr = _cj
+                                log.append(f"    NOTE: via-clear-split N D-V-D jog x={_xj:.3f}")
+                                _dvd_n_done = True
+                                break
+                        if _dvd_n_done:
                             break
                 if _vc_nr is None:
                     _adxn = abs(vn1[0]-vn0[0]); _adyn = abs(vn1[1]-vn0[1])
