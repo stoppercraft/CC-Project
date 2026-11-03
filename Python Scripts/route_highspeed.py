@@ -1036,17 +1036,32 @@ def _snap_canonical(ux, uy):
 
 
 def octilinear_paths(x1, y1, x2, y2):
-    """Return candidate H/V waypoint lists between the two points.
-    Main run uses only horizontal and vertical segments — no diagonals.
+    """Return candidate 0°/45°/90° waypoint lists between two points.
+    Includes H/V L-shapes and 45°-lead/trail two-segment paths.
+    All diagonal segments have |dx|=|dy| exactly (true 45°).
     """
-    paths = []
-    # H then V, V then H
-    paths.append([(x1, y1), (x2, y1), (x2, y2)])
-    paths.append([(x1, y1), (x1, y2), (x2, y2)])
-    # Straight line (if already H or V)
     adx, ady = abs(x2 - x1), abs(y2 - y1)
-    if adx < 1e-4 or ady < 1e-4:
-        paths.append([(x1, y1), (x2, y2)])
+    # Straight line (already H, V, or 45°)
+    if adx < 1e-4 or ady < 1e-4 or abs(adx - ady) < 1e-4:
+        return [[(x1, y1), (x2, y2)]]
+    paths = []
+    sx = 1.0 if x2 > x1 else -1.0
+    sy = 1.0 if y2 > y1 else -1.0
+    # H/V L-shapes
+    paths.append([(x1, y1), (x2, y1), (x2, y2)])   # HV
+    paths.append([(x1, y1), (x1, y2), (x2, y2)])   # VH
+    if adx > ady + 1e-4:
+        # Diagonal consumes ady in both axes; remainder is horizontal
+        xc = x1 + ady * sx
+        paths.append([(x1, y1), (xc, y2), (x2, y2)])   # D+H (diagonal lead)
+        xc = x2 - ady * sx
+        paths.append([(x1, y1), (xc, y1), (x2, y2)])   # H+D (diagonal trail)
+    else:
+        # Diagonal consumes adx in both axes; remainder is vertical
+        yc = y1 + adx * sy
+        paths.append([(x1, y1), (x2, yc), (x2, y2)])   # D+V (diagonal lead)
+        yc = y2 - adx * sy
+        paths.append([(x1, y1), (x1, yc), (x2, y2)])   # V+D (diagonal trail)
     return paths
 
 
@@ -3535,6 +3550,90 @@ def route_pair(pair_name):
                 _seg_placed.setdefault(layer_id, []).extend(
                     (r, net_n) for r in _poly_obs(_wep_nr, _hw))
                 continue  # skip VCS and emit_diffpair
+
+            # WIDE-EP2: co-y source + co-y dest with primarily horizontal spine.
+            # Standard 2-segment candidates are blocked by mid-corridor obstacles.
+            # Pre-flare each source pad perpendicular.  For N, _wep_obs excludes
+            # both nets so P's pad is invisible to N's path check — a real short
+            # when N's horizontal runs through P's SMD pad copper.  Use a per-net
+            # obs list for N (excludes only N) so P's pad is a detected obstacle,
+            # then search progressively larger south offsets for N's adjusted source
+            # until path_clear passes.
+            if (abs(vp0[1]-vn0[1]) < 1e-3 and abs(vp1[1]-vn1[1]) < 1e-3):
+                _wcx0 = (vp0[0]+vn0[0])/2;  _wcy0 = (vp0[1]+vn0[1])/2
+                _wcx1 = (vp1[0]+vn1[0])/2;  _wcy1 = (vp1[1]+vn1[1])/2
+                if abs(_wcx1-_wcx0) > abs(_wcy1-_wcy0):   # primarily horizontal
+                    # Source: pads co-y, perp = ±y. P north if left of N.
+                    _w2sp = -1.0 if vp0[0] < vn0[0] else 1.0
+                    _w2pa_src = (vp0[0], vp0[1] + _w2sp * (cc / 2))
+                    # Dest: pads co-y, perp = ±x from centerline. P on same side.
+                    _w2dp = -1.0 if vp1[0] < _wcx1 else 1.0
+                    _w2pa_dst = (_wcx1 + _w2dp * (cc / 2), vp1[1])
+                    _w2na_dst = (_wcx1 - _w2dp * (cc / 2), vn1[1])
+                    # P path: _wep_obs is fine (P does not cross N's pads).
+                    _w2pp = None
+                    for _wep_c in octilinear_paths(_w2pa_src[0], _w2pa_src[1],
+                                                   _w2pa_dst[0], _w2pa_dst[1]):
+                        if path_clear(_wep_c, width_mm, _wep_obs):
+                            _w2pp = merge_collinear(_wep_c); break
+                    # N path: use per-net obs so P's pad is a real obstacle for N.
+                    # Search progressively larger offsets away from P until clear.
+                    _wep_obs_n = list(build_obstacles(layer_id, {net_n},
+                                                      include_sibling_reserves=False))
+                    _w2nr = None
+                    _w2na_src = (vn0[0], vn0[1] - _w2sp * (cc / 2))
+                    for _w2n_extra in (i * 0.100 for i in range(10)):
+                        _try_y = vn0[1] - _w2sp * (cc / 2 + _w2n_extra)
+                        _try_src = (vn0[0], _try_y)
+                        if not path_clear([(vn0[0], vn0[1]), _try_src],
+                                          width_mm, _wep_obs_n):
+                            continue
+                        for _wep_c in octilinear_paths(_try_src[0], _try_src[1],
+                                                       _w2na_dst[0], _w2na_dst[1]):
+                            if path_clear(_wep_c, width_mm, _wep_obs_n):
+                                _w2nr = merge_collinear(_wep_c)
+                                _w2na_src = _try_src
+                                break
+                        if _w2nr is not None:
+                            break
+                    if _w2pp is not None and _w2nr is not None:
+                        # Verify flare (pad→adj_src) and last-mile (adj_dst→pad).
+                        _w2fp = [(vp0[0], vp0[1]), _w2pa_src]
+                        _w2fn = [(vn0[0], vn0[1]), _w2na_src]
+                        _w2lp = [_w2pa_dst, (vp1[0], vp1[1])]
+                        _w2ln = [_w2na_dst, (vn1[0], vn1[1])]
+                        if (path_clear(_w2fp, width_mm, _wep_obs) and
+                                path_clear(_w2fn, width_mm, _wep_obs_n) and
+                                path_clear(_w2lp, width_mm, _wep_obs) and
+                                path_clear(_w2ln, width_mm, _wep_obs_n)):
+                            _w2ppath = merge_collinear(
+                                [(vp0[0], vp0[1])] + _w2pp + [(vp1[0], vp1[1])])
+                            _w2npath = merge_collinear(
+                                [(vn0[0], vn0[1])] + _w2nr + [(vn1[0], vn1[1])])
+                            _lp2 = sum(math.hypot(_w2ppath[i+1][0]-_w2ppath[i][0],
+                                                  _w2ppath[i+1][1]-_w2ppath[i][1])
+                                       for i in range(len(_w2ppath)-1))
+                            _ln2 = sum(math.hypot(_w2npath[i+1][0]-_w2npath[i][0],
+                                                  _w2npath[i+1][1]-_w2npath[i][1])
+                                       for i in range(len(_w2npath)-1))
+                            _hw = width_mm / 2.0
+                            for _wi in range(len(_w2ppath)-1):
+                                add_track(_w2ppath[_wi][0], _w2ppath[_wi][1],
+                                          _w2ppath[_wi+1][0], _w2ppath[_wi+1][1],
+                                          width_mm, layer_id, net_p)
+                            for _wi in range(len(_w2npath)-1):
+                                add_track(_w2npath[_wi][0], _w2npath[_wi][1],
+                                          _w2npath[_wi+1][0], _w2npath[_wi+1][1],
+                                          width_mm, layer_id, net_n)
+                            total_p += _lp2;  total_n += _ln2
+                            log.append(f"    WIDE-EP2: P/N pre-flare"
+                                       f"  Lp={_lp2:.3f}mm  Ln={_ln2:.3f}mm"
+                                       f"  Δ={abs(_lp2-_ln2):.3f}mm")
+                            _seg_placed.setdefault(layer_id, []).extend(
+                                (r, net_p) for r in _poly_obs(_w2ppath, _hw))
+                            _seg_placed.setdefault(layer_id, []).extend(
+                                (r, net_n) for r in _poly_obs(_w2npath, _hw))
+                            continue
 
         # Force independent P/N routing when the centerline detour is >2× the
         # straight-line distance AND all endpoints are on the route layer (no
