@@ -3279,6 +3279,51 @@ def route_pair(pair_name):
                         log.append("    NOTE: octilinear path found (sibling reserves relaxed)")
                         break
 
+        # VHV / HVH fallback: scan an intermediate corner coordinate to find a
+        # 3-segment all-orthogonal path that bypasses congestion in the primary
+        # corridor.  VHV (for HV pairs): go vertical first at src_x to a scanned
+        # corner_y, then horizontal to cx1, then vertical to dst.  Avoids the case
+        # where HV horizontal legs at cy0 are blocked by orthogonal trunks from
+        # already-routed pairs (e.g. MIPI1_D3/D1/D0 blocked by HDMI0 and CLK).
+        # HVH (for VH pairs): go horizontal first at cy0 to a scanned east_x, then
+        # vertical to cy1, then horizontal to dst.  Avoids the case where VH vertical
+        # starts at src_x are blocked by sibling reserves at the same x (e.g. MIPI1_D2
+        # blocked by D3 sibling reserve sharing x=155.800 on SOM2).
+        # Both variants try full sibling reserves first, then relaxed; uses 0.5mm steps.
+        if chosen is None and _trunk_info is not None:
+            obs_no_sib = obs_no_sib or build_obstacles(layer_id, {net_p, net_n},
+                                                        include_sibling_reserves=False)
+            _step = 0.5
+            if _style == 'HV' and _trunk_x is not None:
+                # VHV: vertical at cx0 → corner_y, horizontal to cx1, vertical to cy1
+                _corner = cy0 + _step
+                while _corner < cy1 - 1e-6 and chosen is None:
+                    _cp = merge_collinear([(cx0, cy0), (cx0, _corner),
+                                           (cx1, _corner), (cx1, cy1)])
+                    for _vhv_obs in [obs_layer, obs_no_sib]:
+                        if path_clear(_cp, w_full, _vhv_obs):
+                            chosen = _cp
+                            _sib_note = "" if _vhv_obs is obs_layer else " (sibling relaxed)"
+                            log.append(f"    NOTE: corridor HV→VHV fallback "
+                                       f"corner_y={_corner:.3f}mm{_sib_note}")
+                            break
+                    _corner += _step
+            else:
+                # HVH: horizontal at cy0 east to cx0+east_off, vertical to cy1, horizontal to cx1
+                _east_off = _step
+                while _east_off <= 8.0 + 1e-6 and chosen is None:
+                    _ex = cx0 + _east_off
+                    _cp = merge_collinear([(cx0, cy0), (_ex, cy0),
+                                           (_ex, cy1), (cx1, cy1)])
+                    for _hvh_obs in [obs_layer, obs_no_sib]:
+                        if path_clear(_cp, w_full, _hvh_obs):
+                            chosen = _cp
+                            _sib_note = "" if _hvh_obs is obs_layer else " (sibling relaxed)"
+                            log.append(f"    NOTE: corridor VH→HVH fallback "
+                                       f"east_off={_east_off:.3f}mm{_sib_note}")
+                            break
+                    _east_off += _step
+
         # Spine-waypoint search: for multi-segment pairs, try routing through
         # intermediate waypoints from the previous segment's centerline.  This
         # lets the router reuse the already-established corridor (e.g. a long
