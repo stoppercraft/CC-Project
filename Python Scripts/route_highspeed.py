@@ -3485,6 +3485,57 @@ def route_pair(pair_name):
             if (round(x, 3), round(y, 3)) in _stub_tip_xy or _both_on_route_layer:
                 return width_mm / 2.0
             return VIA_PAD / 2.0
+        # Direct-pad wide-endpoint routing: when on-route-layer (F.Cu) and P-N
+        # separation at either end exceeds 2×cc, try clean L-shaped independent
+        # paths with direction-preferred ordering (VH-first when dy>dx, HV-first
+        # otherwise).  Avoids VCS HV-first ordering that starts seg N+1 in the
+        # same horizontal direction that seg N arrived from at a relay pad,
+        # producing overlapping tracks.  Falls through to VCS if no L-shaped
+        # path clears obstacles for both P and N.
+        _wep_src_sep = math.hypot(vp0[0]-vn0[0], vp0[1]-vn0[1])
+        _wep_dst_sep = math.hypot(vp1[0]-vn1[0], vp1[1]-vn1[1])
+        if _both_on_route_layer and max(_wep_src_sep, _wep_dst_sep) > 2.0 * cc:
+            _wep_obs = list(build_obstacles(layer_id, {net_p, net_n},
+                                            include_sibling_reserves=False))
+            _wep_p_cands = octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1])
+            if abs(vp1[1]-vp0[1]) > abs(vp1[0]-vp0[0]):
+                _wep_p_cands = list(reversed(_wep_p_cands))
+            _wep_pp = None
+            for _wep_c in _wep_p_cands:
+                if path_clear(_wep_c, width_mm, _wep_obs):
+                    _wep_pp = merge_collinear(_wep_c); break
+            _wep_n_cands = octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1])
+            if abs(vn1[1]-vn0[1]) > abs(vn1[0]-vn0[0]):
+                _wep_n_cands = list(reversed(_wep_n_cands))
+            _wep_nr = None
+            for _wep_c in _wep_n_cands:
+                if path_clear(_wep_c, width_mm, _wep_obs):
+                    _wep_nr = merge_collinear(_wep_c); break
+            if _wep_pp is not None and _wep_nr is not None:
+                _lp = sum(math.hypot(_wep_pp[i+1][0]-_wep_pp[i][0],
+                                     _wep_pp[i+1][1]-_wep_pp[i][1])
+                          for i in range(len(_wep_pp)-1))
+                _ln = sum(math.hypot(_wep_nr[i+1][0]-_wep_nr[i][0],
+                                     _wep_nr[i+1][1]-_wep_nr[i][1])
+                          for i in range(len(_wep_nr)-1))
+                for _wi in range(len(_wep_pp)-1):
+                    add_track(_wep_pp[_wi][0], _wep_pp[_wi][1],
+                              _wep_pp[_wi+1][0], _wep_pp[_wi+1][1],
+                              width_mm, layer_id, net_p)
+                for _wi in range(len(_wep_nr)-1):
+                    add_track(_wep_nr[_wi][0], _wep_nr[_wi][1],
+                              _wep_nr[_wi+1][0], _wep_nr[_wi+1][1],
+                              width_mm, layer_id, net_n)
+                total_p += _lp;  total_n += _ln
+                log.append(f"    WIDE-EP: P/N independent  Lp={_lp:.3f}mm  Ln={_ln:.3f}mm"
+                           f"  Δ={abs(_lp-_ln):.3f}mm")
+                _hw = width_mm / 2.0
+                _seg_placed.setdefault(layer_id, []).extend(
+                    (r, net_p) for r in _poly_obs(_wep_pp, _hw))
+                _seg_placed.setdefault(layer_id, []).extend(
+                    (r, net_n) for r in _poly_obs(_wep_nr, _hw))
+                continue  # skip VCS and emit_diffpair
+
         # Force independent P/N routing when the centerline detour is >2× the
         # straight-line distance AND all endpoints are on the route layer (no
         # escape vias).  Direct-pad segments can have varying cc (e.g. USB2:
