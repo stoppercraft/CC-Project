@@ -1027,6 +1027,21 @@ def _stub_pts(px, py, vx, vy, edx, edy):
     return pts
 
 
+def _fwd_stub_pts(px, py, vx, vy, edx, edy):
+    """Like _stub_pts but never goes backward in (edx,edy) direction.
+    When the target (vx,vy) is behind the source (px,py) along (edx,edy),
+    emit a purely lateral stub to the target's forward projection instead.
+    The lateral direction is always perpendicular to (edx,edy) = canonical.
+    """
+    ec = (vx - px) * edx + (vy - py) * edy
+    if ec < -1e-4:
+        # Target is behind source: go laterally to projection on target's line.
+        proj_x = vx - ec * edx  # = vx + |ec|*edx (move projection forward)
+        proj_y = vy - ec * edy
+        return [(px, py), (proj_x, proj_y)]
+    return _stub_pts(px, py, vx, vy, edx, edy)
+
+
 def _snap_canonical(ux, uy):
     """Snap a unit vector to the nearest of 8 canonical directions."""
     _S2 = 1.0 / math.sqrt(2.0)
@@ -2161,12 +2176,14 @@ def emit_diffpair(poly, vpa, vna, vpb, vnb, width_mm, cc, layer_id, net_p, net_n
         dL  = math.hypot(dxi, dyi) or 1.0
         seg_dirs.append((dxi / dL, dyi / dL))
 
-    # Source stubs: via → first-segment parallel start anchor
+    # Source stubs: via → first-segment parallel start anchor.
+    # Use _fwd_stub_pts to avoid backward stubs when the via center is "ahead"
+    # of the parallel track start in the first-segment direction.
     _edx0, _edy0 = seg_dirs[0]
     p_start = (poly[0][0] + p_sign * px0 * half, poly[0][1] + p_sign * py0 * half)
     n_start = (poly[0][0] - p_sign * px0 * half, poly[0][1] - p_sign * py0 * half)
-    p_pts = _stub_pts(vpa[0], vpa[1], p_start[0], p_start[1], _edx0, _edy0)
-    n_pts = _stub_pts(vna[0], vna[1], n_start[0], n_start[1], _edx0, _edy0)
+    p_pts = _fwd_stub_pts(vpa[0], vpa[1], p_start[0], p_start[1], _edx0, _edy0)
+    n_pts = _fwd_stub_pts(vna[0], vna[1], n_start[0], n_start[1], _edx0, _edy0)
 
     # Main run: per-segment parallel tracks joined at intersection corners.
     for i in range(n_segs):
@@ -4281,6 +4298,38 @@ def route_pair(pair_name):
                 _seg_placed.setdefault(_mc_nr_layer, []).extend((r, net_n) for r in _poly_obs(_mc_nr, _hw))
             continue  # skip emit_diffpair
 
+        # Anti-hook: if the chosen path's first segment is nearly parallel to the
+        # P-N via axis, emit_diffpair source stubs will go backward (hook at via).
+        # Try an alternative octilinear candidate whose first segment is more
+        # perpendicular to the via axis.  Only swaps if an alternative passes
+        # board-only clearance — never blocks a pair that would otherwise route.
+        if len(chosen) >= 2:
+            _ah_adx = vp0[0] - vn0[0]; _ah_ady = vp0[1] - vn0[1]
+            _ah_aL = math.hypot(_ah_adx, _ah_ady) or 1.0
+            _ah_adx /= _ah_aL; _ah_ady /= _ah_aL
+            _ah_fdx = chosen[1][0] - chosen[0][0]
+            _ah_fdy = chosen[1][1] - chosen[0][1]
+            _ah_fL = math.hypot(_ah_fdx, _ah_fdy) or 1.0
+            _ah_fdx /= _ah_fL; _ah_fdy /= _ah_fL
+            _ah_cross = abs(_ah_fdx * _ah_ady - _ah_fdy * _ah_adx)
+            if _ah_cross < 0.5:
+                obs_no_sib = obs_no_sib or build_obstacles(
+                    layer_id, {net_p, net_n}, include_sibling_reserves=False)
+                for _ahc in octilinear_paths(cx0, cy0, cx1, cy1):
+                    _ahc_m = merge_collinear(_ahc)
+                    if len(_ahc_m) < 2 or _ahc_m == chosen:
+                        continue
+                    _ahc_fdx = _ahc_m[1][0] - _ahc_m[0][0]
+                    _ahc_fdy = _ahc_m[1][1] - _ahc_m[0][1]
+                    _ahc_fL = math.hypot(_ahc_fdx, _ahc_fdy) or 1.0
+                    _ahc_fdx /= _ahc_fL; _ahc_fdy /= _ahc_fL
+                    _ahc_cross = abs(_ahc_fdx * _ah_ady - _ahc_fdy * _ah_adx)
+                    if (_ahc_cross > _ah_cross + 0.1 and
+                            path_clear(_ahc_m, w_full, obs_no_sib)):
+                        chosen = _ahc_m
+                        log.append(f"    NOTE: anti-hook reorder"
+                                   f" (cross {_ahc_cross:.2f} > {_ah_cross:.2f})")
+                        break
         bends = max(0, len(chosen) - 2)
         lp, ln = emit_diffpair(chosen, vp0, vn0, vp1, vn1,
                                 width_mm, cc, layer_id, net_p, net_n)

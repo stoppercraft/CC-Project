@@ -43,10 +43,10 @@ PCB = cfg.PCB_FILE
 # ── Configure here ────────────────────────────────────────────────────────────
 
 # Pair names from routing_config.HS_PAIRS to route and inspect.
-TARGET_PAIRS = ["USB2"]   # empty = route all pairs (same as route_highspeed.py default)
+TARGET_PAIRS = ["MIPI1_CLK", "MIPI1_D2", "HDMI0_CLK", "HDMI0_TX0"]
 
 # Segment indices (0-based) to route within each pair.
-TARGET_SEGS  = [2]        # empty = route all segments
+TARGET_SEGS  = []         # empty = route all segments
 
 # Component refs — route all pairs that have a pad on any of these refs.
 TARGET_REFS  = []         # empty = no ref filter
