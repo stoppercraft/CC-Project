@@ -4293,6 +4293,21 @@ _assign_corridor_trunks(order)
 
 # Main routing loop — track _run_obs range for each pair (used by Option D)
 for pair_name in order:
+    # Pre-emptive cleanup: remove any unlocked board tracks for this pair's nets
+    # that were placed by a previous highspeed run (not in _pre_existing_track_fps).
+    # Keeps the script idempotent when run multiple times on the same board.
+    if APPLY:
+        _pn, _nn, _, _ = cfg.HS_PAIRS[pair_name]
+        _pre_nets = {_pn, _nn}
+        _pre_trks = list(board.GetTracks())
+        for _pt in _pre_trks:
+            if (_pt.GetNetname() in _pre_nets
+                    and not _pt.IsLocked()
+                    and _track_fp(_pt) not in _pre_existing_track_fps):
+                board.Remove(_pt)
+        for _vk in list(_via_cache.keys()):
+            if _vk[3] in _pre_nets:
+                del _via_cache[_vk]
     _snap = len(_run_obs)
     route_pair(pair_name)
     _pair_obs_ranges[pair_name] = (_snap, len(_run_obs))
