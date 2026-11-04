@@ -477,7 +477,7 @@ def build_hs_map():
     """Return {net_name: (pair_name, width_mm)} for all HS pair nets."""
     hs_map = {}
     for pair_name, (p_net, n_net, _layer, _skew) in cfg.HS_PAIRS.items():
-        w, _ = cfg.HS_ROUTE_WIDTHS.get(pair_name, (0.127, 0.10))
+        w = cfg.HS_ROUTE_WIDTHS.get(pair_name, 0.127)
         for net in (p_net, n_net):
             hs_map[net] = (pair_name, w)
     return hs_map

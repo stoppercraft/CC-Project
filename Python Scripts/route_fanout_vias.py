@@ -455,9 +455,9 @@ def trace_width_for_net(net_name: str, priority: int) -> float:
     if priority == PRIORITY_HS:
         for pair_name, (p, n, _layer, _skew) in cfg.HS_PAIRS.items():
             if net_name in (p, n):
-                w, _gap = cfg.HS_ROUTE_WIDTHS.get(
+                w = cfg.HS_ROUTE_WIDTHS.get(
                     pair_name,
-                    (cfg.CLEARANCE_AUDIT["signal_trace_width_mm"], 0.0)
+                    cfg.CLEARANCE_AUDIT["signal_trace_width_mm"]
                 )
                 return w
     if priority == PRIORITY_SW:
@@ -479,7 +479,7 @@ def _collect_routing_widths() -> List[float]:
     widths: set = set()
     widths.add(cfg.CLEARANCE_AUDIT["signal_trace_width_mm"])
     widths.add(cfg.CLEARANCE_AUDIT["neckdown_stub_w_mm"])
-    for w, _gap in cfg.HS_ROUTE_WIDTHS.values():
+    for w in cfg.HS_ROUTE_WIDTHS.values():
         widths.add(w)
     for loop in cfg.SWITCHING_LOOPS:
         for key in ("sw_width_mm", "vin_width_mm", "out_width_mm", "bootstrap_width_mm"):
@@ -5797,7 +5797,7 @@ def _run(board, apply: bool, max_passes: int = 20, live: bool = False,
     _hs_via_pad_d = _ca["hs_via_drill_mm"] + 2 * _ca["hs_via_annular_ring_mm"]
     _hs_clr       = _ca["via_clearance_mm"]
     for _pair_name, (_p_net, _n_net, _layer, _skew) in cfg.HS_PAIRS.items():
-        _tw = cfg.HS_ROUTE_WIDTHS.get(_pair_name, (0.127, 0.1))[0]
+        _tw = cfg.HS_ROUTE_WIDTHS.get(_pair_name, 0.127)
         _min_sep = _hs_via_pad_d + 2 * _hs_clr + _tw
         for _ref, _net_map in _by_ref_net.items():
             _pv_p = _net_map.get(_p_net)

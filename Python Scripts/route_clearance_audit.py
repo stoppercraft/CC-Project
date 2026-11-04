@@ -207,9 +207,9 @@ def build_hs_net_widths():
         w = cfg.HS_ROUTE_WIDTHS.get(pair_name)
         if w is None:
             continue
-        width_mm = w[0]
-        m[p_net] = (pair_name, width_mm, w[1])
-        m[n_net] = (pair_name, width_mm, w[1])
+        width_mm = w
+        m[p_net] = (pair_name, width_mm)
+        m[n_net] = (pair_name, width_mm)
     return m
 
 
@@ -607,8 +607,10 @@ def analyze_hs_paths(fps, board):
     results = []
     for pair_name, (p_net, n_net, _layer, _skew) in cfg.HS_PAIRS.items():
         layer_id = board.GetLayerID(_layer)
-        w = cfg.HS_ROUTE_WIDTHS.get(pair_name, (0.127, 0.10))
-        trace_w, gap = w
+        trace_w = cfg.HS_ROUTE_WIDTHS.get(pair_name, 0.127)
+        ns  = board.GetDesignSettings().m_NetSettings
+        ns.RecomputeEffectiveNetclasses()
+        gap = ns.GetEffectiveNetClass(p_net).GetClearance() / 1e6
         corridor_w = 2 * trace_w + gap + 2 * DRC_MIN_CLEARANCE
 
         pads = _pad_positions_on_net(fp_list, p_net) + \
