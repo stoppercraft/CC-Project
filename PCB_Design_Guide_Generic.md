@@ -2509,9 +2509,8 @@ Include rule classes:
   - Intra-pair skew <= 0.01 mm (design target); protocol spec <= 0.127 mm; inter-lane skew per PROJECT_PARAMS
   - Netclass "HighSpeed" covering all buried-layer `[HS_PAIR_*]` nets (assigned via Step 5b below) — set netclass clearance = S (intra-pair gap from compute_impedance.py)
   - **Two DRU clearance rules are required** (keyed on NetClass, not net name):
-    - **Intra-pair rule** — overrides the board default clearance for P/N running parallel: `condition "A.NetClass == 'HighSpeed' && B.NetClass == 'HighSpeed'"` with `clearance (min <S>mm)`. Without this rule the board default clearance fires against every parallel P/N section.
-    - **Track-to-pad clearance rule** — `condition "A.Type == 'Track' && B.Type == 'Pad'"` with `clearance (min <fab_floor>mm)` (typically 0.08 mm). The board default clearance governs track-to-track spacing. At tight-pitch IC pad zones, escape stubs physically cannot meet the default clearance to neighboring pads — track-to-pad clearance only needs to satisfy the fab minimum. Without this rule every escape stub at a tight-pitch IC flags a false DRC violation.
-  - **Do NOT add a 3W DRU rule.** The 3W requirement (HS trace >= 2×W from neighboring non-HS copper) is enforced by the routing scripts' obstacle model in the routing corridor. A DRU 3W rule fires in the IC pad fanout zone where HS and non-HS stub tracks exit adjacent pads at IC pitch — those stubs physically cannot maintain 2×W from each other and the violations are false. The routing scripts are the correct enforcement mechanism for 3W.
+    - **Intra-pair rule**: `condition "A.NetClass == 'HighSpeed' && B.NetClass == 'HighSpeed'"` with `clearance (min <S>mm)`
+    - **Track-to-pad clearance**: `condition "A.Type == 'Track' && B.Type == 'Pad'"` with `clearance (min 0.08mm)`
   - Routing scripts derive intra-pair gap from `_nc_clearance(net)` at runtime — no hardcoded gap in routing config
 - **Component-specific overrides** — for tight-pitch resistor arrays or connectors
   where the geometry cannot meet the default clearance, add per-reference rules:
