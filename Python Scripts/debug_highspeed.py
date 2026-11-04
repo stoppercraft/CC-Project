@@ -43,7 +43,7 @@ PCB = cfg.PCB_FILE
 # ── Configure here ────────────────────────────────────────────────────────────
 
 # Pair names from routing_config.HS_PAIRS to route and inspect.
-TARGET_PAIRS = ["MIPI1_CLK", "MIPI1_D2", "HDMI0_CLK", "HDMI0_TX0"]
+TARGET_PAIRS = []
 
 # Segment indices (0-based) to route within each pair.
 TARGET_SEGS  = []         # empty = route all segments

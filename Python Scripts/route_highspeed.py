@@ -84,7 +84,20 @@ COMP_KEEPOUT_MM      = 0.5    # footprint bbox keepout margin for trunk routes
 board   = pcbnew.LoadBoard(cfg.PCB_FILE)
 F_CU    = board.GetLayerID("F.Cu")
 B_CU    = board.GetLayerID("B.Cu")
-HS_LAYER = board.GetLayerID("In2.Cu")
+
+_nc_clearance_cache: dict = {}
+
+def _nc_clearance(net_name):
+    """Return the DRC clearance (mm) for net_name from the board's netclass rules."""
+    if net_name in _nc_clearance_cache:
+        return _nc_clearance_cache[net_name]
+    try:
+        nc  = board.GetDesignSettings().m_NetSettings.GetEffectiveNetClass(net_name)
+        val = pcbnew.ToMM(nc.GetClearance())
+    except Exception:
+        val = CLEARANCE_MM
+    _nc_clearance_cache[net_name] = val
+    return val
 
 def _track_fp(t):
     s, e = t.GetStart(), t.GetEnd()
@@ -580,7 +593,7 @@ def _build_obstacles_impl(layer_id, net_excl_pads, net_excl_tracks=None,
     if net_excl_tracks is None:
         net_excl_tracks = net_excl_pads
     obs = []
-    c = 0.15 if layer_id == HS_LAYER else CLEARANCE_MM
+    c_routing = max((_nc_clearance(n) for n in net_excl_pads), default=CLEARANCE_MM)
 
     for fp in board.GetFootprints():
         for pad in fp.Pads():
@@ -588,11 +601,13 @@ def _build_obstacles_impl(layer_id, net_excl_pads, net_excl_tracks=None,
                 continue
             if not pad.GetLayerSet().Contains(layer_id):
                 continue
+            c = max(c_routing, _nc_clearance(pad.GetNetname()))
             obs.append(pad_obs_rect(pad, c))
 
     for track in board.GetTracks():
         if track.GetNetname() in net_excl_tracks:
             continue
+        c = max(c_routing, _nc_clearance(track.GetNetname()))
         if track.GetClass() == "PCB_VIA":
             if not track.GetLayerSet().Contains(layer_id):
                 continue
@@ -612,6 +627,7 @@ def _build_obstacles_impl(layer_id, net_excl_pads, net_excl_tracks=None,
     for rx1, ry1, rx2, ry2, rhw, rlayer, rnet in _run_obs:
         if rnet in net_excl_tracks or rlayer != layer_id:
             continue
+        c = max(c_routing, _nc_clearance(rnet))
         obs.append((min(rx1, rx2) - rhw - c, min(ry1, ry2) - rhw - c,
                     max(rx1, rx2) + rhw + c, max(ry1, ry2) + rhw + c))
 
@@ -620,7 +636,8 @@ def _build_obstacles_impl(layer_id, net_excl_pads, net_excl_tracks=None,
         for (res_net, rx, ry) in _sibling_reserves:
             if res_net in net_excl_pads:
                 continue  # our own net — no need to reserve against ourselves
-            r = via_r + c + sibling_extra
+            c_sib = max(c_routing, _nc_clearance(res_net))
+            r = via_r + c_sib + sibling_extra
             obs.append((rx - r, ry - r, rx + r, ry + r))
 
     if comp_keepout_mm > 0:
@@ -652,17 +669,19 @@ def _build_obstacles_board_only_impl(layer_id, net_excl, track_excl=None):
     if track_excl is None:
         track_excl = net_excl
     obs = []
-    c = 0.15 if layer_id == HS_LAYER else CLEARANCE_MM
+    c_routing = max((_nc_clearance(n) for n in net_excl), default=CLEARANCE_MM)
     for fp in board.GetFootprints():
         for pad in fp.Pads():
             if pad.GetNetname() in net_excl:
                 continue
             if not pad.GetLayerSet().Contains(layer_id):
                 continue
+            c = max(c_routing, _nc_clearance(pad.GetNetname()))
             obs.append(pad_obs_rect(pad, c))
     for track in board.GetTracks():
         if track.GetNetname() in track_excl:
             continue
+        c = max(c_routing, _nc_clearance(track.GetNetname()))
         if track.GetClass() == "PCB_VIA":
             if not track.GetLayerSet().Contains(layer_id):
                 continue
@@ -808,7 +827,7 @@ def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
     pads_only=True: omit board tracks and _run_obs — returns board pads only.
     """
     obs = []
-    c = 0.15 if layer_id == HS_LAYER else CLEARANCE_MM
+    c_routing = max((_nc_clearance(n) for n in net_excl_pads), default=CLEARANCE_MM)
 
     for fp in board.GetFootprints():
         for pad in fp.Pads():
@@ -816,6 +835,7 @@ def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
                 continue
             if not pad.GetLayerSet().Contains(layer_id):
                 continue
+            c = max(c_routing, _nc_clearance(pad.GetNetname()))
             obs.append(pad_obs_rect(pad, c))
 
     if pads_only:
@@ -825,6 +845,7 @@ def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
     for track in board.GetTracks():
         if track.GetNetname() in excl:
             continue
+        c = max(c_routing, _nc_clearance(track.GetNetname()))
         if track.GetClass() == "PCB_VIA":
             if not track.GetLayerSet().Contains(layer_id):
                 continue
@@ -844,6 +865,7 @@ def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
     for rx1, ry1, rx2, ry2, rhw, rlayer, rnet in _run_obs:
         if rnet in excl or rlayer != layer_id:
             continue
+        c = max(c_routing, _nc_clearance(rnet))
         obs.append((min(rx1, rx2) - rhw - c, min(ry1, ry2) - rhw - c,
                     max(rx1, rx2) + rhw + c, max(ry1, ry2) + rhw + c))
     ec = BOARD_EDGE_CLEARANCE; INF = 9999.0
