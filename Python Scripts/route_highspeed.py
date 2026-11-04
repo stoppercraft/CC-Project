@@ -438,6 +438,57 @@ def seg_rect(x1, y1, x2, y2, w):
     return (min(x1, x2) - hw, min(y1, y2) - hw,
             max(x1, x2) + hw, max(y1, y2) + hw)
 
+def seg_to_rect_dist(x1, y1, x2, y2, ox1, oy1, ox2, oy2):
+    """Min distance from segment to AABB. Returns 0 if they intersect."""
+    dx, dy = x2 - x1, y2 - y1
+    len2 = dx*dx + dy*dy
+    def _closest_on_seg(px, py):
+        if len2 < 1e-12: return x1, y1
+        t = max(0.0, min(1.0, ((px-x1)*dx + (py-y1)*dy) / len2))
+        return x1 + t*dx, y1 + t*dy
+    min_d = float('inf')
+    for cx, cy in ((ox1,oy1),(ox2,oy1),(ox1,oy2),(ox2,oy2)):
+        sx, sy = _closest_on_seg(cx, cy)
+        min_d = min(min_d, math.hypot(cx-sx, cy-sy))
+    for px, py in ((x1,y1),(x2,y2)):
+        if ox1 <= px <= ox2 and oy1 <= py <= oy2: return 0.0
+        cx = max(ox1, min(ox2, px)); cy = max(oy1, min(oy2, py))
+        min_d = min(min_d, math.hypot(px-cx, py-cy))
+    def _segs_cross(ax1,ay1,ax2,ay2, bx1,by1,bx2,by2):
+        d1x,d1y = ax2-ax1,ay2-ay1; d2x,d2y = bx2-bx1,by2-by1
+        den = d1x*d2y - d1y*d2x
+        if abs(den) < 1e-12: return False
+        t = ((bx1-ax1)*d2y - (by1-ay1)*d2x) / den
+        u = ((bx1-ax1)*d1y - (by1-ay1)*d1x) / den
+        return 0.0 <= t <= 1.0 and 0.0 <= u <= 1.0
+    if (_segs_cross(x1,y1,x2,y2, ox1,oy1,ox2,oy1) or
+        _segs_cross(x1,y1,x2,y2, ox2,oy1,ox2,oy2) or
+        _segs_cross(x1,y1,x2,y2, ox1,oy2,ox2,oy2) or
+        _segs_cross(x1,y1,x2,y2, ox1,oy1,ox1,oy2)):
+        return 0.0
+    return min_d
+
+def seg_to_seg_dist(ax1, ay1, ax2, ay2, bx1, by1, bx2, by2):
+    """Minimum distance between two 2D line segments. Returns 0 if they intersect."""
+    def _pt_seg(px, py, x1, y1, x2, y2):
+        dx, dy = x2-x1, y2-y1
+        len2 = dx*dx + dy*dy
+        if len2 < 1e-12: return math.hypot(px-x1, py-y1)
+        t = max(0.0, min(1.0, ((px-x1)*dx + (py-y1)*dy) / len2))
+        return math.hypot(px-(x1+t*dx), py-(y1+t*dy))
+    def _cross(ox, oy, ax, ay, bx, by):
+        return (ax-ox)*(by-oy) - (ay-oy)*(bx-ox)
+    d1 = _cross(ax1,ay1,ax2,ay2, bx1,by1)
+    d2 = _cross(ax1,ay1,ax2,ay2, bx2,by2)
+    d3 = _cross(bx1,by1,bx2,by2, ax1,ay1)
+    d4 = _cross(bx1,by1,bx2,by2, ax2,ay2)
+    if ((d1 > 0) != (d2 > 0)) and ((d3 > 0) != (d4 > 0)):
+        return 0.0
+    return min(_pt_seg(ax1,ay1, bx1,by1,bx2,by2),
+               _pt_seg(ax2,ay2, bx1,by1,bx2,by2),
+               _pt_seg(bx1,by1, ax1,ay1,ax2,ay2),
+               _pt_seg(bx2,by2, ax1,ay1,ax2,ay2))
+
 def point_to_seg_dist(px, py, x1, y1, x2, y2):
     dx, dy = x2 - x1, y2 - y1
     if dx == 0 and dy == 0:
@@ -1180,10 +1231,32 @@ def octilinear_paths(x1, y1, x2, y2):
 
 
 def path_clear(pts, w, obstacles):
+    hw = w / 2
     for i in range(len(pts) - 1):
-        r = seg_rect(pts[i][0], pts[i][1], pts[i+1][0], pts[i+1][1], w)
-        for o in obstacles:
-            if rect_overlap(r, o):
+        x1, y1 = pts[i]; x2, y2 = pts[i+1]
+        dx, dy = x2 - x1, y2 - y1
+        if abs(abs(dx) - abs(dy)) < 1e-4 and abs(dx) > 1e-4:
+            # 45° diagonal: use actual segment-to-rect distance (AABB over-expands)
+            for o in obstacles:
+                if seg_to_rect_dist(x1, y1, x2, y2, o[0], o[1], o[2], o[3]) < hw:
+                    return False
+        else:
+            # H/V segment: AABB is exact
+            r = seg_rect(x1, y1, x2, y2, w)
+            for o in obstacles:
+                if rect_overlap(r, o):
+                    return False
+    return True
+
+
+def path_clear_vs_exact_segs(pts, min_gap, exact_segs):
+    """Check if a polyline path clears all exact segment obstacles by min_gap.
+    exact_segs: list of (x1,y1,x2,y2). Uses actual segment-to-segment distance,
+    avoiding AABB over-expansion for diagonal obstacles."""
+    for i in range(len(pts) - 1):
+        x1, y1 = pts[i]; x2, y2 = pts[i+1]
+        for (ex1, ey1, ex2, ey2) in exact_segs:
+            if seg_to_seg_dist(x1, y1, x2, y2, ex1, ey1, ex2, ey2) < min_gap:
                 return False
     return True
 
@@ -3065,8 +3138,14 @@ def route_pair(pair_name):
                     # P: leg 1 vp0→vp1, leg 2 vp1→p2
                     # Leg 2 uses _obs_ms (not leg1's obstacle rects) because leg1 is
                     # same-net — adding it as an obstacle blocks leg2 at its own start.
+                    # Candidates reordered [HV, D+H, H+D, VH]: diagonal-lead paths are
+                    # tried before VH so the horizontal stub at the via level is as short
+                    # as possible, reducing the obstacle footprint for the N signal.
+                    def _ms_cands(x1, y1, x2, y2):
+                        c = octilinear_paths(x1, y1, x2, y2)
+                        return [c[0], c[2], c[3], c[1]] if len(c) == 4 else c
                     _ms_p_l1 = None; _ms_p_l2 = None
-                    for _c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
+                    for _c in _ms_cands(vp0[0], vp0[1], vp1[0], vp1[1]):
                         if path_clear(_c, _wf_ms, _obs_ms):
                             _ms_p_l1 = merge_collinear(_c); break
                     if _ms_p_l1 is None:
@@ -3074,7 +3153,19 @@ def route_pair(pair_name):
                                                       _wf_ms, _obs_ms,
                                                       snap_toward_dest=True)
                     if _ms_p_l1 is not None:
-                        for _c in octilinear_paths(vp1[0], vp1[1], _p2x, _p2y):
+                        # Leg1 P arrival direction at vp1 — skip leg2 candidates that
+                        # start going in the opposite direction (would retrace leg1).
+                        _l1p_dx = _ms_p_l1[-1][0] - _ms_p_l1[-2][0]
+                        _l1p_dy = _ms_p_l1[-1][1] - _ms_p_l1[-2][1]
+                        _l1p_n  = math.hypot(_l1p_dx, _l1p_dy)
+                        if _l1p_n > 1e-9:
+                            _l1p_dx /= _l1p_n; _l1p_dy /= _l1p_n
+                        for _c in _ms_cands(vp1[0], vp1[1], _p2x, _p2y):
+                            if len(_c) >= 2 and _l1p_n > 1e-9:
+                                _c2dx = _c[1][0] - _c[0][0]; _c2dy = _c[1][1] - _c[0][1]
+                                _c2n  = math.hypot(_c2dx, _c2dy)
+                                if _c2n > 1e-9 and (_c2dx/_c2n)*_l1p_dx + (_c2dy/_c2n)*_l1p_dy < -0.9:
+                                    continue  # would retrace P leg1
                             if path_clear(_c, _wf_ms, _obs_ms):
                                 _ms_p_l2 = merge_collinear(_c); break
                         if _ms_p_l2 is None:
@@ -3092,17 +3183,35 @@ def route_pair(pair_name):
                                       max(a[0],b[0])+_pw_ms, max(a[1],b[1])+_pw_ms)
                                      for a, b in zip(_ms_p, _ms_p[1:])]
                         _obs_ms_n = list(_obs_ms) + _ms_p_obs
+                        # Exact P segment coords for N candidate clearance checking.
+                        # Diagonal P segments create AABB obstacles ~8× larger than their
+                        # actual copper strip, falsely blocking N diagonal candidates that
+                        # physically clear P. Use seg_to_seg_dist for exact geometry.
+                        _ms_p_exact = [(a[0], a[1], b[0], b[1])
+                                       for a, b in zip(_ms_p, _ms_p[1:])]
                         _ms_n_l1 = None; _ms_n_l2 = None
-                        for _c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                            if path_clear(_c, _wf_ms, _obs_ms_n):
+                        for _c in _ms_cands(vn0[0], vn0[1], vn1[0], vn1[1]):
+                            if (path_clear(_c, _wf_ms, _obs_ms) and
+                                    path_clear_vs_exact_segs(_c, _wf_ms, _ms_p_exact)):
                                 _ms_n_l1 = merge_collinear(_c); break
                         if _ms_n_l1 is None:
                             _ms_n_l1 = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                           _wf_ms, _obs_ms_n,
                                                           snap_toward_dest=True)
                         if _ms_n_l1 is not None:
-                            for _c in octilinear_paths(vn1[0], vn1[1], _n2x, _n2y):
-                                if path_clear(_c, _wf_ms, _obs_ms_n):
+                            _l1n_dx = _ms_n_l1[-1][0] - _ms_n_l1[-2][0]
+                            _l1n_dy = _ms_n_l1[-1][1] - _ms_n_l1[-2][1]
+                            _l1n_n  = math.hypot(_l1n_dx, _l1n_dy)
+                            if _l1n_n > 1e-9:
+                                _l1n_dx /= _l1n_n; _l1n_dy /= _l1n_n
+                            for _c in _ms_cands(vn1[0], vn1[1], _n2x, _n2y):
+                                if len(_c) >= 2 and _l1n_n > 1e-9:
+                                    _c2dx = _c[1][0] - _c[0][0]; _c2dy = _c[1][1] - _c[0][1]
+                                    _c2n  = math.hypot(_c2dx, _c2dy)
+                                    if _c2n > 1e-9 and (_c2dx/_c2n)*_l1n_dx + (_c2dy/_c2n)*_l1n_dy < -0.9:
+                                        continue  # would retrace N leg1
+                                if (path_clear(_c, _wf_ms, _obs_ms) and
+                                        path_clear_vs_exact_segs(_c, _wf_ms, _ms_p_exact)):
                                     _ms_n_l2 = merge_collinear(_c); break
                             if _ms_n_l2 is None:
                                 _ms_n_l2 = _astar_centerline(vn1[0], vn1[1], _n2x, _n2y,
