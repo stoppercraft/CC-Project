@@ -84,6 +84,7 @@ COMP_KEEPOUT_MM      = 0.5    # footprint bbox keepout margin for trunk routes
 board   = pcbnew.LoadBoard(cfg.PCB_FILE)
 F_CU    = board.GetLayerID("F.Cu")
 B_CU    = board.GetLayerID("B.Cu")
+HS_LAYER = board.GetLayerID("In2.Cu")
 
 def _track_fp(t):
     s, e = t.GetStart(), t.GetEnd()
@@ -496,7 +497,7 @@ def point_to_seg_dist(px, py, x1, y1, x2, y2):
     t = max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / (dx * dx + dy * dy)))
     return math.hypot(px - (x1 + t * dx), py - (y1 + t * dy))
 
-def pad_obs_rect(pad):
+def pad_obs_rect(pad, c=CLEARANCE_MM):
     pos = pad.GetPosition()
     px, py = tomm(pos.x), tomm(pos.y)
     size = pad.GetSize()
@@ -506,8 +507,8 @@ def pad_obs_rect(pad):
     except AttributeError:
         ang = 0.0
     ca_, sa_ = abs(math.cos(ang)), abs(math.sin(ang))
-    hx = sx * ca_ + sy * sa_ + CLEARANCE_MM
-    hy = sx * sa_ + sy * ca_ + CLEARANCE_MM
+    hx = sx * ca_ + sy * sa_ + c
+    hy = sx * sa_ + sy * ca_ + c
     return (px - hx, py - hy, px + hx, py + hy)
 
 
@@ -579,7 +580,7 @@ def _build_obstacles_impl(layer_id, net_excl_pads, net_excl_tracks=None,
     if net_excl_tracks is None:
         net_excl_tracks = net_excl_pads
     obs = []
-    c   = CLEARANCE_MM
+    c = 0.15 if layer_id == HS_LAYER else CLEARANCE_MM
 
     for fp in board.GetFootprints():
         for pad in fp.Pads():
@@ -587,7 +588,7 @@ def _build_obstacles_impl(layer_id, net_excl_pads, net_excl_tracks=None,
                 continue
             if not pad.GetLayerSet().Contains(layer_id):
                 continue
-            obs.append(pad_obs_rect(pad))
+            obs.append(pad_obs_rect(pad, c))
 
     for track in board.GetTracks():
         if track.GetNetname() in net_excl_tracks:
@@ -651,14 +652,14 @@ def _build_obstacles_board_only_impl(layer_id, net_excl, track_excl=None):
     if track_excl is None:
         track_excl = net_excl
     obs = []
-    c = CLEARANCE_MM
+    c = 0.15 if layer_id == HS_LAYER else CLEARANCE_MM
     for fp in board.GetFootprints():
         for pad in fp.Pads():
             if pad.GetNetname() in net_excl:
                 continue
             if not pad.GetLayerSet().Contains(layer_id):
                 continue
-            obs.append(pad_obs_rect(pad))
+            obs.append(pad_obs_rect(pad, c))
     for track in board.GetTracks():
         if track.GetNetname() in track_excl:
             continue
@@ -807,7 +808,7 @@ def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
     pads_only=True: omit board tracks and _run_obs — returns board pads only.
     """
     obs = []
-    c   = CLEARANCE_MM
+    c = 0.15 if layer_id == HS_LAYER else CLEARANCE_MM
 
     for fp in board.GetFootprints():
         for pad in fp.Pads():
@@ -815,7 +816,7 @@ def build_obstacles_fine(layer_id, net_excl_pads, own_ref, pads_only=False):
                 continue
             if not pad.GetLayerSet().Contains(layer_id):
                 continue
-            obs.append(pad_obs_rect(pad))
+            obs.append(pad_obs_rect(pad, c))
 
     if pads_only:
         return obs
