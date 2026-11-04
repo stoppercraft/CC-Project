@@ -3063,6 +3063,8 @@ def route_pair(pair_name):
                     _wf_ms = width_mm + cc
 
                     # P: leg 1 vp0→vp1, leg 2 vp1→p2
+                    # Leg 2 uses _obs_ms (not leg1's obstacle rects) because leg1 is
+                    # same-net — adding it as an obstacle blocks leg2 at its own start.
                     _ms_p_l1 = None; _ms_p_l2 = None
                     for _c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
                         if path_clear(_c, _wf_ms, _obs_ms):
@@ -3072,22 +3074,18 @@ def route_pair(pair_name):
                                                       _wf_ms, _obs_ms,
                                                       snap_toward_dest=True)
                     if _ms_p_l1 is not None:
-                        _pw_ms = width_mm / 2.0 + CLEARANCE_MM
-                        _l1p_obs = [(min(a[0],b[0])-_pw_ms, min(a[1],b[1])-_pw_ms,
-                                     max(a[0],b[0])+_pw_ms, max(a[1],b[1])+_pw_ms)
-                                    for a, b in zip(_ms_p_l1, _ms_p_l1[1:])]
-                        _obs_ms_l2p = list(_obs_ms) + _l1p_obs
                         for _c in octilinear_paths(vp1[0], vp1[1], _p2x, _p2y):
-                            if path_clear(_c, _wf_ms, _obs_ms_l2p):
+                            if path_clear(_c, _wf_ms, _obs_ms):
                                 _ms_p_l2 = merge_collinear(_c); break
                         if _ms_p_l2 is None:
                             _ms_p_l2 = _astar_centerline(vp1[0], vp1[1], _p2x, _p2y,
-                                                          _wf_ms, _obs_ms_l2p,
+                                                          _wf_ms, _obs_ms,
                                                           snap_toward_dest=True)
                     if _ms_p_l1 is not None and _ms_p_l2 is not None:
-                        _ms_p = merge_collinear(_ms_p_l1 + _ms_p_l2[1:])
+                        _ms_p = _ms_p_l1 + _ms_p_l2[1:]
 
-                    # N: leg 1 vn0→vn1, leg 2 vn1→n2 — avoiding P's full path
+                    # N: leg 1 vn0→vn1, leg 2 vn1→n2 — avoiding P's full path.
+                    # Leg 2 uses _obs_ms_n (not + leg1 rects) for the same reason.
                     if _ms_p is not None:
                         _pw_ms = width_mm / 2.0 + CLEARANCE_MM
                         _ms_p_obs = [(min(a[0],b[0])-_pw_ms, min(a[1],b[1])-_pw_ms,
@@ -3103,19 +3101,15 @@ def route_pair(pair_name):
                                                           _wf_ms, _obs_ms_n,
                                                           snap_toward_dest=True)
                         if _ms_n_l1 is not None:
-                            _l1n_obs = [(min(a[0],b[0])-_pw_ms, min(a[1],b[1])-_pw_ms,
-                                         max(a[0],b[0])+_pw_ms, max(a[1],b[1])+_pw_ms)
-                                        for a, b in zip(_ms_n_l1, _ms_n_l1[1:])]
-                            _obs_ms_l2n = _obs_ms_n + _l1n_obs
                             for _c in octilinear_paths(vn1[0], vn1[1], _n2x, _n2y):
-                                if path_clear(_c, _wf_ms, _obs_ms_l2n):
+                                if path_clear(_c, _wf_ms, _obs_ms_n):
                                     _ms_n_l2 = merge_collinear(_c); break
                             if _ms_n_l2 is None:
                                 _ms_n_l2 = _astar_centerline(vn1[0], vn1[1], _n2x, _n2y,
-                                                              _wf_ms, _obs_ms_l2n,
+                                                              _wf_ms, _obs_ms_n,
                                                               snap_toward_dest=True)
                         if _ms_n_l1 is not None and _ms_n_l2 is not None:
-                            _ms_n = merge_collinear(_ms_n_l1 + _ms_n_l2[1:])
+                            _ms_n = _ms_n_l1 + _ms_n_l2[1:]
 
                 if _ms_p is not None and _ms_n is not None:
                     _lp_ms = sum(math.hypot(_ms_p[i+1][0]-_ms_p[i][0],
