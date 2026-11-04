@@ -1253,6 +1253,24 @@ def octilinear_paths(x1, y1, x2, y2):
     return paths
 
 
+def _path_len(pts):
+    """Total Euclidean length of a polyline."""
+    return sum(math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1])
+               for i in range(len(pts)-1))
+
+
+def _best_clear_path(candidates, predicate):
+    """Return the shortest-length candidate for which predicate(cand) is True."""
+    best, best_len = None, float('inf')
+    for cand in candidates:
+        if predicate(cand):
+            L = _path_len(cand)
+            if L < best_len:
+                best_len = L
+                best = cand
+    return best
+
+
 def path_clear(pts, w, obstacles):
     hw = w / 2
     for i in range(len(pts) - 1):
@@ -3185,16 +3203,12 @@ def route_pair(pair_name):
                     # P: leg 1 vp0→vp1, leg 2 vp1→p2
                     # Leg 2 uses _obs_ms (not leg1's obstacle rects) because leg1 is
                     # same-net — adding it as an obstacle blocks leg2 at its own start.
-                    # Candidates reordered [HV, D+H, H+D, VH]: diagonal-lead paths are
-                    # tried before VH so the horizontal stub at the via level is as short
-                    # as possible, reducing the obstacle footprint for the N signal.
-                    def _ms_cands(x1, y1, x2, y2):
-                        c = octilinear_paths(x1, y1, x2, y2)
-                        return [c[0], c[2], c[3], c[1]] if len(c) == 4 else c
                     _ms_p_l1 = None; _ms_p_l2 = None
-                    for _c in _ms_cands(vp0[0], vp0[1], vp1[0], vp1[1]):
-                        if path_clear(_c, _wf_ms, _obs_ms):
-                            _ms_p_l1 = merge_collinear(_c); break
+                    _bc = _best_clear_path(
+                        octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                        lambda c: path_clear(c, _wf_ms, _obs_ms))
+                    if _bc is not None:
+                        _ms_p_l1 = merge_collinear(_bc)
                     if _ms_p_l1 is None:
                         _ms_p_l1 = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                       _wf_ms, _obs_ms,
@@ -3207,14 +3221,17 @@ def route_pair(pair_name):
                         _l1p_n  = math.hypot(_l1p_dx, _l1p_dy)
                         if _l1p_n > 1e-9:
                             _l1p_dx /= _l1p_n; _l1p_dy /= _l1p_n
-                        for _c in _ms_cands(vp1[0], vp1[1], _p2x, _p2y):
-                            if len(_c) >= 2 and _l1p_n > 1e-9:
-                                _c2dx = _c[1][0] - _c[0][0]; _c2dy = _c[1][1] - _c[0][1]
-                                _c2n  = math.hypot(_c2dx, _c2dy)
-                                if _c2n > 1e-9 and (_c2dx/_c2n)*_l1p_dx + (_c2dy/_c2n)*_l1p_dy < -0.9:
-                                    continue  # would retrace P leg1
-                            if path_clear(_c, _wf_ms, _obs_ms):
-                                _ms_p_l2 = merge_collinear(_c); break
+                        def _ms_p_l2_pred(c, _dx=_l1p_dx, _dy=_l1p_dy, _n=_l1p_n):
+                            if len(c) >= 2 and _n > 1e-9:
+                                _cn = math.hypot(c[1][0]-c[0][0], c[1][1]-c[0][1])
+                                if _cn > 1e-9 and ((c[1][0]-c[0][0])/_cn*_dx +
+                                                   (c[1][1]-c[0][1])/_cn*_dy) < -0.9:
+                                    return False
+                            return path_clear(c, _wf_ms, _obs_ms)
+                        _bc = _best_clear_path(
+                            octilinear_paths(vp1[0], vp1[1], _p2x, _p2y), _ms_p_l2_pred)
+                        if _bc is not None:
+                            _ms_p_l2 = merge_collinear(_bc)
                         if _ms_p_l2 is None:
                             _ms_p_l2 = _astar_centerline(vp1[0], vp1[1], _p2x, _p2y,
                                                           _wf_ms, _obs_ms,
@@ -3237,10 +3254,12 @@ def route_pair(pair_name):
                         _ms_p_exact = [(a[0], a[1], b[0], b[1])
                                        for a, b in zip(_ms_p, _ms_p[1:])]
                         _ms_n_l1 = None; _ms_n_l2 = None
-                        for _c in _ms_cands(vn0[0], vn0[1], vn1[0], vn1[1]):
-                            if (path_clear(_c, _wf_ms, _obs_ms) and
-                                    path_clear_vs_exact_segs(_c, _wf_ms, _ms_p_exact)):
-                                _ms_n_l1 = merge_collinear(_c); break
+                        _bc = _best_clear_path(
+                            octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                            lambda c: (path_clear(c, _wf_ms, _obs_ms) and
+                                       path_clear_vs_exact_segs(c, _wf_ms, _ms_p_exact)))
+                        if _bc is not None:
+                            _ms_n_l1 = merge_collinear(_bc)
                         if _ms_n_l1 is None:
                             _ms_n_l1 = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                           _wf_ms, _obs_ms_n,
@@ -3251,15 +3270,18 @@ def route_pair(pair_name):
                             _l1n_n  = math.hypot(_l1n_dx, _l1n_dy)
                             if _l1n_n > 1e-9:
                                 _l1n_dx /= _l1n_n; _l1n_dy /= _l1n_n
-                            for _c in _ms_cands(vn1[0], vn1[1], _n2x, _n2y):
-                                if len(_c) >= 2 and _l1n_n > 1e-9:
-                                    _c2dx = _c[1][0] - _c[0][0]; _c2dy = _c[1][1] - _c[0][1]
-                                    _c2n  = math.hypot(_c2dx, _c2dy)
-                                    if _c2n > 1e-9 and (_c2dx/_c2n)*_l1n_dx + (_c2dy/_c2n)*_l1n_dy < -0.9:
-                                        continue  # would retrace N leg1
-                                if (path_clear(_c, _wf_ms, _obs_ms) and
-                                        path_clear_vs_exact_segs(_c, _wf_ms, _ms_p_exact)):
-                                    _ms_n_l2 = merge_collinear(_c); break
+                            def _ms_n_l2_pred(c, _dx=_l1n_dx, _dy=_l1n_dy, _n=_l1n_n):
+                                if len(c) >= 2 and _n > 1e-9:
+                                    _cn = math.hypot(c[1][0]-c[0][0], c[1][1]-c[0][1])
+                                    if _cn > 1e-9 and ((c[1][0]-c[0][0])/_cn*_dx +
+                                                       (c[1][1]-c[0][1])/_cn*_dy) < -0.9:
+                                        return False
+                                return (path_clear(c, _wf_ms, _obs_ms) and
+                                        path_clear_vs_exact_segs(c, _wf_ms, _ms_p_exact))
+                            _bc = _best_clear_path(
+                                octilinear_paths(vn1[0], vn1[1], _n2x, _n2y), _ms_n_l2_pred)
+                            if _bc is not None:
+                                _ms_n_l2 = merge_collinear(_bc)
                             if _ms_n_l2 is None:
                                 _ms_n_l2 = _astar_centerline(vn1[0], vn1[1], _n2x, _n2y,
                                                               _wf_ms, _obs_ms_n,
@@ -3300,9 +3322,11 @@ def route_pair(pair_name):
                 _obs_sl_board = build_obstacles_board_only(layer_id, {net_p, net_n})
                 _pp_sl = None
                 for _obs_try_p in (_obs_sl, _obs_sl_board):
-                    for _c2 in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                        if path_clear(_c2, _wf_sl, _obs_try_p):
-                            _pp_sl = merge_collinear(_c2); break
+                    _bc = _best_clear_path(
+                        octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                        lambda c, _o=_obs_try_p: path_clear(c, _wf_sl, _o))
+                    if _bc is not None:
+                        _pp_sl = merge_collinear(_bc)
                     if _pp_sl is None:
                         _pp_sl = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                    _wf_sl, _obs_try_p,
@@ -3324,9 +3348,11 @@ def route_pair(pair_name):
                                   for a, b in zip(_pp_sl, _pp_sl[1:])]
                     for _obs_try_n in (_obs_sl, _obs_sl_board):
                         _obs_n_sl = list(_obs_try_n) + _pp_sl_obs
-                        for _c2 in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                            if path_clear(_c2, _wf_sl, _obs_n_sl):
-                                _nr_sl = merge_collinear(_c2); break
+                        _bc = _best_clear_path(
+                            octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                            lambda c, _o=_obs_n_sl: path_clear(c, _wf_sl, _o))
+                        if _bc is not None:
+                            _nr_sl = merge_collinear(_bc)
                         if _nr_sl is None:
                             _nr_sl = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                        _wf_sl, _obs_n_sl,
@@ -3414,19 +3440,23 @@ def route_pair(pair_name):
                                   + _pboxes)
                     _obs_nb_try = (list(build_obstacles_board_only(_try_nl, {net_p, net_n}))
                                    + _pboxes)
-                    for _c2 in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                        if path_clear(_c2, _wf, _obs_n_try):
-                            _nr = merge_collinear(_c2); break
+                    _bc = _best_clear_path(
+                        octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                        lambda c, _o=_obs_n_try: path_clear(c, _wf, _o))
+                    if _bc is not None:
+                        _nr = merge_collinear(_bc)
                     if _nr is None:
                         _nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                 _wf, _obs_n_try,
                                                 snap_toward_dest=True)
                     if _nr is None:
-                        for _c2 in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                            if (path_clear(_c2, _wf, _obs_nb_try) and
-                                    _path_clear_of_run_obs(_c2, width_mm / 2.0,
-                                                           net_n, _try_nl)):
-                                _nr = merge_collinear(_c2); break
+                        _bc = _best_clear_path(
+                            octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                            lambda c, _o=_obs_nb_try: (
+                                path_clear(c, _wf, _o) and
+                                _path_clear_of_run_obs(c, width_mm / 2.0, net_n, _try_nl)))
+                        if _bc is not None:
+                            _nr = merge_collinear(_bc)
                     if _nr is None:
                         _astar_board = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                          _wf, _obs_nb_try,
@@ -3462,19 +3492,23 @@ def route_pair(pair_name):
                     _obs_try = build_obstacles(_try_layer, {net_p, net_n})
                     _obs_try_board = build_obstacles_board_only(
                         _try_layer, {net_p, net_n})
-                    for _c2 in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                        if path_clear(_c2, _wf, _obs_try):
-                            _pp = merge_collinear(_c2); break
+                    _bc = _best_clear_path(
+                        octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                        lambda c, _o=_obs_try: path_clear(c, _wf, _o))
+                    if _bc is not None:
+                        _pp = merge_collinear(_bc)
                     if _pp is None:
                         _pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                 _wf, _obs_try,
                                                 snap_toward_dest=True)
                     if _pp is None:
-                        for _c2 in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                            if (path_clear(_c2, _wf, _obs_try_board) and
-                                    _path_clear_of_run_obs(_c2, width_mm / 2.0,
-                                                           net_p, _try_layer)):
-                                _pp = merge_collinear(_c2); break
+                        _bc = _best_clear_path(
+                            octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                            lambda c, _o=_obs_try_board: (
+                                path_clear(c, _wf, _o) and
+                                _path_clear_of_run_obs(c, width_mm / 2.0, net_p, _try_layer)))
+                        if _bc is not None:
+                            _pp = merge_collinear(_bc)
                     if _pp is None:
                         _astar_b = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                      _wf, _obs_try_board,
@@ -3501,19 +3535,22 @@ def route_pair(pair_name):
                                    + [b for b in (_vp0_box, _vp1_box) if b is not None])
                     _swap_obs_pb = (list(build_obstacles_board_only(layer_id, {net_p, net_n}))
                                     + [b for b in (_vp0_box, _vp1_box) if b is not None])
-                    for _sc in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                        if path_clear(_sc, _wf, _swap_obs_p):
-                            _swap_n_pp = merge_collinear(_sc); break
+                    _bc = _best_clear_path(
+                        octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                        lambda c: path_clear(c, _wf, _swap_obs_p))
+                    if _bc is not None:
+                        _swap_n_pp = merge_collinear(_bc)
                     if _swap_n_pp is None:
                         _swap_n_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                         _wf, _swap_obs_p,
                                                         snap_toward_dest=True)
                     if _swap_n_pp is None:
-                        for _sc in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                            if (path_clear(_sc, _wf, _swap_obs_pb) and
-                                    _path_clear_of_run_obs(_sc, width_mm / 2.0,
-                                                           net_p, layer_id)):
-                                _swap_n_pp = merge_collinear(_sc); break
+                        _bc = _best_clear_path(
+                            octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                            lambda c: (path_clear(c, _wf, _swap_obs_pb) and
+                                       _path_clear_of_run_obs(c, width_mm / 2.0, net_p, layer_id)))
+                        if _bc is not None:
+                            _swap_n_pp = merge_collinear(_bc)
                     if _swap_n_pp is None:
                         _sb = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                 _wf, _swap_obs_pb,
@@ -3529,19 +3566,23 @@ def route_pair(pair_name):
                                            + _swap_p_boxes)
                             _swap_obs_nb = (list(build_obstacles_board_only(_snl, {net_p, net_n}))
                                             + _swap_p_boxes)
-                            for _sc in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                                if path_clear(_sc, _wf, _swap_obs_n):
-                                    _swap_n_nr = merge_collinear(_sc); break
+                            _bc = _best_clear_path(
+                                octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                                lambda c, _o=_swap_obs_n: path_clear(c, _wf, _o))
+                            if _bc is not None:
+                                _swap_n_nr = merge_collinear(_bc)
                             if _swap_n_nr is None:
                                 _swap_n_nr = _astar_centerline(
                                     vn0[0], vn0[1], vn1[0], vn1[1], _wf, _swap_obs_n,
                                     snap_toward_dest=True)
                             if _swap_n_nr is None:
-                                for _sc in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                                    if (path_clear(_sc, _wf, _swap_obs_nb) and
-                                            _path_clear_of_run_obs(
-                                                _sc, width_mm / 2.0, net_n, _snl)):
-                                        _swap_n_nr = merge_collinear(_sc); break
+                                _bc = _best_clear_path(
+                                    octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                                    lambda c, _o=_swap_obs_nb: (
+                                        path_clear(c, _wf, _o) and
+                                        _path_clear_of_run_obs(c, width_mm / 2.0, net_n, _snl)))
+                                if _bc is not None:
+                                    _swap_n_nr = merge_collinear(_bc)
                             if _swap_n_nr is None:
                                 _sb = _astar_centerline(
                                     vn0[0], vn0[1], vn1[0], vn1[1], _wf, _swap_obs_nb,
@@ -3620,10 +3661,10 @@ def route_pair(pair_name):
                 log.append(f"    NOTE: corridor {_style} trunk {_label}")
 
         if chosen is None:
-            for cand in octilinear_paths(cx0, cy0, cx1, cy1):
-                if path_clear(cand, w_full, obs_layer):
-                    chosen = merge_collinear(cand)
-                    break
+            _bc = _best_clear_path(octilinear_paths(cx0, cy0, cx1, cy1),
+                                    lambda c: path_clear(c, w_full, obs_layer))
+            if _bc is not None:
+                chosen = merge_collinear(_bc)
 
         if chosen is None:
             # Progressive sibling-reserve relaxation: try sibling_extra=0 (pad
@@ -3642,11 +3683,11 @@ def route_pair(pair_name):
                     log.append(f"    NOTE: corridor {_style} trunk {_label} "
                                f"(sibling extra relaxed)")
             if chosen is None:
-                for cand in octilinear_paths(cx0, cy0, cx1, cy1):
-                    if path_clear(cand, w_full, _obs_mid):
-                        chosen = merge_collinear(cand)
-                        log.append("    NOTE: octilinear path found (sibling extra relaxed)")
-                        break
+                _bc = _best_clear_path(octilinear_paths(cx0, cy0, cx1, cy1),
+                                        lambda c: path_clear(c, w_full, _obs_mid))
+                if _bc is not None:
+                    chosen = merge_collinear(_bc)
+                    log.append("    NOTE: octilinear path found (sibling extra relaxed)")
 
         if chosen is None:
             obs_no_sib = build_obstacles(layer_id, {net_p, net_n},
@@ -3664,11 +3705,11 @@ def route_pair(pair_name):
                     log.append(f"    NOTE: corridor {_style} trunk {_label} "
                                f"(sibling reserves relaxed)")
             if chosen is None:
-                for cand in octilinear_paths(cx0, cy0, cx1, cy1):
-                    if path_clear(cand, w_full, obs_no_sib):
-                        chosen = merge_collinear(cand)
-                        log.append("    NOTE: octilinear path found (sibling reserves relaxed)")
-                        break
+                _bc = _best_clear_path(octilinear_paths(cx0, cy0, cx1, cy1),
+                                        lambda c: path_clear(c, w_full, obs_no_sib))
+                if _bc is not None:
+                    chosen = merge_collinear(_bc)
+                    log.append("    NOTE: octilinear path found (sibling reserves relaxed)")
 
         # VHV / HVH fallback: scan an intermediate corner coordinate to find a
         # 3-segment all-orthogonal path that bypasses congestion in the primary
@@ -3730,18 +3771,16 @@ def route_pair(pair_name):
                 for _sx, _sy in _seg_spine:
                     if chosen is not None:
                         break
-                    for _l1 in octilinear_paths(cx0, cy0, _sx, _sy):
-                        if not path_clear(_l1, w_full, _obs_sp):
-                            continue
-                        for _l2 in octilinear_paths(_sx, _sy, cx1, cy1):
-                            if not path_clear(_l2, w_full, _obs_sp):
-                                continue
-                            chosen = merge_collinear(_l1[:-1] + _l2)
-                            log.append(f"    NOTE: spine-waypoint via "
-                                       f"({_sx:.3f},{_sy:.3f}){_sp_lbl}")
-                            break
-                        if chosen is not None:
-                            break
+                    _bl1 = _best_clear_path(
+                        octilinear_paths(cx0, cy0, _sx, _sy),
+                        lambda c, _o=_obs_sp: path_clear(c, w_full, _o))
+                    _bl2 = _best_clear_path(
+                        octilinear_paths(_sx, _sy, cx1, cy1),
+                        lambda c, _o=_obs_sp: path_clear(c, w_full, _o))
+                    if _bl1 is not None and _bl2 is not None:
+                        chosen = merge_collinear(_bl1[:-1] + _bl2)
+                        log.append(f"    NOTE: spine-waypoint via "
+                                   f"({_sx:.3f},{_sy:.3f}){_sp_lbl}")
 
         if chosen is None:
             obs_no_sib = obs_no_sib or build_obstacles(layer_id, {net_p, net_n},
@@ -3765,13 +3804,14 @@ def route_pair(pair_name):
                     # tracks can be over-conservative; retry with board-level obstacles
                     # only and verify the candidate against exact segment distances.
                     _obs_bo = build_obstacles_board_only(layer_id, {net_p, net_n})
-                    for _bc in octilinear_paths(cx0, cy0, cx1, cy1):
-                        if (path_clear(_bc, w_full, _obs_bo) and
-                                _path_clear_of_run_obs(_bc, w_full / 2.0, net_p, layer_id) and
-                                _path_clear_of_run_obs(_bc, w_full / 2.0, net_n, layer_id)):
-                            chosen = merge_collinear(_bc)
-                            log.append("    NOTE: octilinear path found (board-only + exact run_obs)")
-                            break
+                    _bc = _best_clear_path(
+                        octilinear_paths(cx0, cy0, cx1, cy1),
+                        lambda c: (path_clear(c, w_full, _obs_bo) and
+                                   _path_clear_of_run_obs(c, w_full / 2.0, net_p, layer_id) and
+                                   _path_clear_of_run_obs(c, w_full / 2.0, net_n, layer_id)))
+                    if _bc is not None:
+                        chosen = merge_collinear(_bc)
+                        log.append("    NOTE: octilinear path found (board-only + exact run_obs)")
                     if chosen is None:
                         _astar_bo = _astar_centerline(cx0, cy0, cx1, cy1, w_full, _obs_bo)
                         if (_astar_bo is not None and
@@ -3791,12 +3831,13 @@ def route_pair(pair_name):
                                 obs_no_sib = build_obstacles(layer_id, {net_p, net_n},
                                                              include_sibling_reserves=False)
                             for _nko, _nkl in [(obs_no_sib, ""), (_obs_bo, " board-only")]:
-                                for _nc in octilinear_paths(cx0, cy0, cx1, cy1):
-                                    if path_clear(_nc, _w_neck, _nko):
-                                        chosen = merge_collinear(_nc)
-                                        log.append(f"    NOTE: neckdown path found "
-                                                   f"(w={_w_neck:.3f}mm{_nkl}) — may DRC")
-                                        break
+                                _bc = _best_clear_path(
+                                    octilinear_paths(cx0, cy0, cx1, cy1),
+                                    lambda c, _o=_nko: path_clear(c, _w_neck, _o))
+                                if _bc is not None:
+                                    chosen = merge_collinear(_bc)
+                                    log.append(f"    NOTE: neckdown path found "
+                                               f"(w={_w_neck:.3f}mm{_nkl}) — may DRC")
                                 if chosen is None:
                                     _nk_a = _astar_centerline(cx0, cy0, cx1, cy1,
                                                                _w_neck, _nko)
@@ -3863,19 +3904,22 @@ def route_pair(pair_name):
                                                        include_sibling_reserves=False))
                         _ip_obs_bo = list(build_obstacles_board_only(layer_id, {net_p, net_n}))
                         _ip_pp = None
-                        for _ip_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                            if path_clear(_ip_c, width_mm, _ip_obs):
-                                _ip_pp = merge_collinear(_ip_c); break
+                        _bc = _best_clear_path(
+                            octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                            lambda c: path_clear(c, width_mm, _ip_obs))
+                        if _bc is not None:
+                            _ip_pp = merge_collinear(_bc)
                         if _ip_pp is None:
                             _ip_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                        width_mm, _ip_obs,
                                                        snap_toward_dest=True)
                         if _ip_pp is None:
-                            for _ip_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                                if (path_clear(_ip_c, width_mm, _ip_obs_bo) and
-                                        _path_clear_of_run_obs(_ip_c, width_mm/2.0,
-                                                               net_p, layer_id)):
-                                    _ip_pp = merge_collinear(_ip_c); break
+                            _bc = _best_clear_path(
+                                octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                                lambda c: (path_clear(c, width_mm, _ip_obs_bo) and
+                                           _path_clear_of_run_obs(c, width_mm/2.0, net_p, layer_id)))
+                            if _bc is not None:
+                                _ip_pp = merge_collinear(_bc)
                         if _ip_pp is None:
                             _ip_r = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                       width_mm, _ip_obs_bo,
@@ -3885,19 +3929,22 @@ def route_pair(pair_name):
                                                            net_p, layer_id)):
                                 _ip_pp = _ip_r
                         _ip_nr = None
-                        for _ip_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                            if path_clear(_ip_c, width_mm, _ip_obs):
-                                _ip_nr = merge_collinear(_ip_c); break
+                        _bc = _best_clear_path(
+                            octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                            lambda c: path_clear(c, width_mm, _ip_obs))
+                        if _bc is not None:
+                            _ip_nr = merge_collinear(_bc)
                         if _ip_nr is None:
                             _ip_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                        width_mm, _ip_obs,
                                                        snap_toward_dest=True)
                         if _ip_nr is None:
-                            for _ip_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                                if (path_clear(_ip_c, width_mm, _ip_obs_bo) and
-                                        _path_clear_of_run_obs(_ip_c, width_mm/2.0,
-                                                               net_n, layer_id)):
-                                    _ip_nr = merge_collinear(_ip_c); break
+                            _bc = _best_clear_path(
+                                octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                                lambda c: (path_clear(c, width_mm, _ip_obs_bo) and
+                                           _path_clear_of_run_obs(c, width_mm/2.0, net_n, layer_id)))
+                            if _bc is not None:
+                                _ip_nr = merge_collinear(_bc)
                         if _ip_nr is None:
                             _ip_r = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                       width_mm, _ip_obs_bo,
@@ -3952,20 +3999,18 @@ def route_pair(pair_name):
         if _both_on_route_layer and max(_wep_src_sep, _wep_dst_sep) > 2.0 * cc:
             _wep_obs = list(build_obstacles(layer_id, {net_p, net_n},
                                             include_sibling_reserves=False))
-            _wep_p_cands = octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1])
-            if abs(vp1[1]-vp0[1]) > abs(vp1[0]-vp0[0]):
-                _wep_p_cands = list(reversed(_wep_p_cands))
             _wep_pp = None
-            for _wep_c in _wep_p_cands:
-                if path_clear(_wep_c, width_mm, _wep_obs):
-                    _wep_pp = merge_collinear(_wep_c); break
-            _wep_n_cands = octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1])
-            if abs(vn1[1]-vn0[1]) > abs(vn1[0]-vn0[0]):
-                _wep_n_cands = list(reversed(_wep_n_cands))
+            _bc = _best_clear_path(
+                octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                lambda c: path_clear(c, width_mm, _wep_obs))
+            if _bc is not None:
+                _wep_pp = merge_collinear(_bc)
             _wep_nr = None
-            for _wep_c in _wep_n_cands:
-                if path_clear(_wep_c, width_mm, _wep_obs):
-                    _wep_nr = merge_collinear(_wep_c); break
+            _bc = _best_clear_path(
+                octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                lambda c: path_clear(c, width_mm, _wep_obs))
+            if _bc is not None:
+                _wep_nr = merge_collinear(_bc)
             if _wep_pp is not None and _wep_nr is not None:
                 _lp = sum(math.hypot(_wep_pp[i+1][0]-_wep_pp[i][0],
                                      _wep_pp[i+1][1]-_wep_pp[i][1])
@@ -4012,10 +4057,12 @@ def route_pair(pair_name):
                     _w2na_dst = (_wcx1 - _w2dp * (cc / 2), vn1[1])
                     # P path: _wep_obs is fine (P does not cross N's pads).
                     _w2pp = None
-                    for _wep_c in octilinear_paths(_w2pa_src[0], _w2pa_src[1],
-                                                   _w2pa_dst[0], _w2pa_dst[1]):
-                        if path_clear(_wep_c, width_mm, _wep_obs):
-                            _w2pp = merge_collinear(_wep_c); break
+                    _bc = _best_clear_path(
+                        octilinear_paths(_w2pa_src[0], _w2pa_src[1],
+                                         _w2pa_dst[0], _w2pa_dst[1]),
+                        lambda c: path_clear(c, width_mm, _wep_obs))
+                    if _bc is not None:
+                        _w2pp = merge_collinear(_bc)
                     # N path: use per-net obs so P's pad is a real obstacle for N.
                     # Search progressively larger offsets away from P until clear.
                     _wep_obs_n = list(build_obstacles(layer_id, {net_n},
@@ -4028,12 +4075,13 @@ def route_pair(pair_name):
                         if not path_clear([(vn0[0], vn0[1]), _try_src],
                                           width_mm, _wep_obs_n):
                             continue
-                        for _wep_c in octilinear_paths(_try_src[0], _try_src[1],
-                                                       _w2na_dst[0], _w2na_dst[1]):
-                            if path_clear(_wep_c, width_mm, _wep_obs_n):
-                                _w2nr = merge_collinear(_wep_c)
-                                _w2na_src = _try_src
-                                break
+                        _bc = _best_clear_path(
+                            octilinear_paths(_try_src[0], _try_src[1],
+                                             _w2na_dst[0], _w2na_dst[1]),
+                            lambda c: path_clear(c, width_mm, _wep_obs_n))
+                        if _bc is not None:
+                            _w2nr = merge_collinear(_bc)
+                            _w2na_src = _try_src
                         if _w2nr is not None:
                             break
                     if _w2pp is not None and _w2nr is not None:
@@ -4099,16 +4147,16 @@ def route_pair(pair_name):
             else:
                 _vc_obs_list.append(obs_no_sib)
             for _vc_obs in _vc_obs_list:
-                for _vc_cand in octilinear_paths(cx0, cy0, cx1, cy1):
-                    _vc_m = merge_collinear(_vc_cand)
-                    if (path_clear(_vc_m, w_full, _vc_obs) and
-                            not _chosen_has_via_clearance_issue(
-                                _vc_m, vp0, vn0, vp1, vn1, cc, width_mm,
-                                clearance_mm=gap_mm)):
-                        _vc_alt = _vc_m
-                        log.append("    NOTE: via-clearance overlap — switched to alternate path")
-                        break
-                if _vc_alt is not None:
+                _bc = _best_clear_path(
+                    octilinear_paths(cx0, cy0, cx1, cy1),
+                    lambda c, _o=_vc_obs: (
+                        path_clear(merge_collinear(c), w_full, _o) and
+                        not _chosen_has_via_clearance_issue(
+                            merge_collinear(c), vp0, vn0, vp1, vn1, cc, width_mm,
+                            clearance_mm=gap_mm)))
+                if _bc is not None:
+                    _vc_alt = merge_collinear(_bc)
+                    log.append("    NOTE: via-clearance overlap — switched to alternate path")
                     break
             if _vc_alt is not None:
                 chosen = _vc_alt
@@ -4131,9 +4179,11 @@ def route_pair(pair_name):
                 _vc_obs_p_bo = _vc_base_bo + _vc_np_boxes
                 _vc_obs_n_bo = _vc_base_bo + _vc_pp_boxes
                 _vc_pp = None
-                for _vc_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                    if path_clear(_vc_c, width_mm, _vc_obs_p):
-                        _vc_pp = merge_collinear(_vc_c); break
+                _bc = _best_clear_path(
+                    octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                    lambda c: path_clear(c, width_mm, _vc_obs_p))
+                if _bc is not None:
+                    _vc_pp = merge_collinear(_bc)
                 if _vc_pp is None:
                     _xp_lo = min(vp0[0], vp1[0]); _xp_hi = max(vp0[0], vp1[0])
                     for _jdx in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
@@ -4234,10 +4284,12 @@ def route_pair(pair_name):
                                                width_mm, _vc_obs_p,
                                                snap_toward_dest=True)
                 if _vc_pp is None:
-                    for _vc_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                        if (path_clear(_vc_c, width_mm, _vc_obs_p_bo) and
-                                _path_clear_of_run_obs(_vc_c, width_mm / 2.0, net_p, layer_id)):
-                            _vc_pp = merge_collinear(_vc_c); break
+                    _bc = _best_clear_path(
+                        octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                        lambda c: (path_clear(c, width_mm, _vc_obs_p_bo) and
+                                   _path_clear_of_run_obs(c, width_mm / 2.0, net_p, layer_id)))
+                    if _bc is not None:
+                        _vc_pp = merge_collinear(_bc)
                 if _vc_pp is None:
                     _vc_board = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                   width_mm, _vc_obs_p_bo,
@@ -4267,10 +4319,12 @@ def route_pair(pair_name):
                     _vc_obs_n_bo = _vc_obs_n_bo + _p_segs
 
                 _vc_nr = None
-                for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                    if (_path_clear_approx(_vc_c, width_mm, _vc_obs_n_bo) and
-                            _path_clear_of_explicit_segs(_vc_c, width_mm / 2.0, _p_exact_segs)):
-                        _vc_nr = merge_collinear(_vc_c); break
+                _bc = _best_clear_path(
+                    octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                    lambda c: (_path_clear_approx(c, width_mm, _vc_obs_n_bo) and
+                               _path_clear_of_explicit_segs(c, width_mm / 2.0, _p_exact_segs)))
+                if _bc is not None:
+                    _vc_nr = merge_collinear(_bc)
                 if _vc_nr is None:
                     _adxn = abs(vn1[0]-vn0[0]); _adyn = abs(vn1[1]-vn0[1])
                     _sxn  = 1 if vn1[0] > vn0[0] else -1
@@ -4387,10 +4441,12 @@ def route_pair(pair_name):
                             not _path_clear_of_explicit_segs(_vc_nr, width_mm/2.0, _p_exact_segs)):
                         _vc_nr = None
                 if _vc_nr is None:
-                    for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                        if (path_clear(_vc_c, width_mm, _vc_obs_n_bo) and
-                                _path_clear_of_run_obs(_vc_c, width_mm / 2.0, net_n, layer_id)):
-                            _vc_nr = merge_collinear(_vc_c); break
+                    _bc = _best_clear_path(
+                        octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                        lambda c: (path_clear(c, width_mm, _vc_obs_n_bo) and
+                                   _path_clear_of_run_obs(c, width_mm / 2.0, net_n, layer_id)))
+                    if _bc is not None:
+                        _vc_nr = merge_collinear(_bc)
                 if _vc_nr is None:
                     _vc_board = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                   width_mm, _vc_obs_n_bo,
@@ -4413,10 +4469,12 @@ def route_pair(pair_name):
                         if _vc_pp is None:
                             _vc_obs_pal  = _vc_base_al  + _vc_np_boxes
                             _vc_obs_pabo = _vc_base_abo + _vc_np_boxes
-                            for _vc_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                                if path_clear(_vc_c, width_mm, _vc_obs_pal):
-                                    _vc_pp = merge_collinear(_vc_c)
-                                    _vc_pp_layer = _vcal; break
+                            _bc = _best_clear_path(
+                                octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                                lambda c, _o=_vc_obs_pal: path_clear(c, width_mm, _o))
+                            if _bc is not None:
+                                _vc_pp = merge_collinear(_bc)
+                                _vc_pp_layer = _vcal
                             if _vc_pp is None:
                                 _r = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                        width_mm, _vc_obs_pal,
@@ -4424,12 +4482,14 @@ def route_pair(pair_name):
                                 if _r is not None:
                                     _vc_pp = _r; _vc_pp_layer = _vcal
                             if _vc_pp is None:
-                                for _vc_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                                    if (path_clear(_vc_c, width_mm, _vc_obs_pabo) and
-                                            _path_clear_of_run_obs(_vc_c, width_mm/2.0,
-                                                                    net_p, _vcal)):
-                                        _vc_pp = merge_collinear(_vc_c)
-                                        _vc_pp_layer = _vcal; break
+                                _bc = _best_clear_path(
+                                    octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                                    lambda c, _o=_vc_obs_pabo: (
+                                        path_clear(c, width_mm, _o) and
+                                        _path_clear_of_run_obs(c, width_mm/2.0, net_p, _vcal)))
+                                if _bc is not None:
+                                    _vc_pp = merge_collinear(_bc)
+                                    _vc_pp_layer = _vcal
                             if _vc_pp is None:
                                 _r = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                        width_mm, _vc_obs_pabo,
@@ -4440,10 +4500,12 @@ def route_pair(pair_name):
                         if _vc_nr is None:
                             _vc_obs_nal  = _vc_base_al  + _vc_pp_boxes
                             _vc_obs_nabo = _vc_base_abo + _vc_pp_boxes
-                            for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                                if path_clear(_vc_c, width_mm, _vc_obs_nal):
-                                    _vc_nr = merge_collinear(_vc_c)
-                                    _vc_nr_layer = _vcal; break
+                            _bc = _best_clear_path(
+                                octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                                lambda c, _o=_vc_obs_nal: path_clear(c, width_mm, _o))
+                            if _bc is not None:
+                                _vc_nr = merge_collinear(_bc)
+                                _vc_nr_layer = _vcal
                             if _vc_nr is None:
                                 _r = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                        width_mm, _vc_obs_nal,
@@ -4451,12 +4513,14 @@ def route_pair(pair_name):
                                 if _r is not None:
                                     _vc_nr = _r; _vc_nr_layer = _vcal
                             if _vc_nr is None:
-                                for _vc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                                    if (path_clear(_vc_c, width_mm, _vc_obs_nabo) and
-                                            _path_clear_of_run_obs(_vc_c, width_mm/2.0,
-                                                                    net_n, _vcal)):
-                                        _vc_nr = merge_collinear(_vc_c)
-                                        _vc_nr_layer = _vcal; break
+                                _bc = _best_clear_path(
+                                    octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                                    lambda c, _o=_vc_obs_nabo: (
+                                        path_clear(c, width_mm, _o) and
+                                        _path_clear_of_run_obs(c, width_mm/2.0, net_n, _vcal)))
+                                if _bc is not None:
+                                    _vc_nr = merge_collinear(_bc)
+                                    _vc_nr_layer = _vcal
                             if _vc_nr is None:
                                 _r = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                        width_mm, _vc_obs_nabo,
@@ -4501,9 +4565,11 @@ def route_pair(pair_name):
                                                      width_mm, _vc_base_bo,
                                                      snap_toward_dest=True)
                         if _ind_nr is None:
-                            for _ind_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                                if path_clear(_ind_c, width_mm, _vc_base_bo):
-                                    _ind_nr = merge_collinear(_ind_c); break
+                            _bc = _best_clear_path(
+                                octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                                lambda c: path_clear(c, width_mm, _vc_base_bo))
+                            if _bc is not None:
+                                _ind_nr = merge_collinear(_bc)
                         if _ind_nr is not None:
                             _ind_nr = [vn0] + list(_ind_nr[1:-1]) + [vn1]
                             _ind_nr = merge_collinear(_ind_nr)
@@ -4532,9 +4598,11 @@ def route_pair(pair_name):
                                                      width_mm, _vc_base_bo,
                                                      snap_toward_dest=True)
                         if _ind_pp is None:
-                            for _ind_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                                if path_clear(_ind_c, width_mm, _vc_base_bo):
-                                    _ind_pp = merge_collinear(_ind_c); break
+                            _bc = _best_clear_path(
+                                octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                                lambda c: path_clear(c, width_mm, _vc_base_bo))
+                            if _bc is not None:
+                                _ind_pp = merge_collinear(_bc)
                         if _ind_pp is not None:
                             _ind_pp = [vp0] + list(_ind_pp[1:-1]) + [vp1]
                             _ind_pp = merge_collinear(_ind_pp)
@@ -4583,9 +4651,11 @@ def route_pair(pair_name):
             _mc_obs_p = build_obstacles(layer_id, {net_p, net_n},
                                         include_sibling_reserves=True,
                                         sibling_extra=cc / 2.0)
-            for _mc_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                if path_clear(_mc_c, _mc_wf, _mc_obs_p):
-                    _mc_pp = merge_collinear(_mc_c); break
+            _bc = _best_clear_path(
+                octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                lambda c: path_clear(c, _mc_wf, _mc_obs_p))
+            if _bc is not None:
+                _mc_pp = merge_collinear(_bc)
             if _mc_pp is None:
                 _mc_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                            _mc_wf, _mc_obs_p,
@@ -4599,12 +4669,13 @@ def route_pair(pair_name):
                                                   include_sibling_reserves=True,
                                                   sibling_extra=cc / 2.0))
                              + [b for b in (_mc_p0b, _mc_p1b) if b is not None])
-                for _mc_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                    if path_clear(_mc_c, _mc_wf, _mc_obs_n):
-                        _mc_nr = merge_collinear(_mc_c)
-                        _mc_nr_layer = _mc_try_lid
-                        _mc_nr_name  = _mc_try_name
-                        break
+                _bc = _best_clear_path(
+                    octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                    lambda c, _o=_mc_obs_n: path_clear(c, _mc_wf, _o))
+                if _bc is not None:
+                    _mc_nr = merge_collinear(_bc)
+                    _mc_nr_layer = _mc_try_lid
+                    _mc_nr_name  = _mc_try_name
                 if _mc_nr is None:
                     _mc_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                _mc_wf, _mc_obs_n,
@@ -4620,18 +4691,22 @@ def route_pair(pair_name):
                                                include_sibling_reserves=False))
                 _mi_obs_bo = list(build_obstacles_board_only(layer_id, {net_p, net_n}))
                 _mi_pp = None
-                for _mi_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                    if path_clear(_mi_c, width_mm, _mi_obs):
-                        _mi_pp = merge_collinear(_mi_c); break
+                _bc = _best_clear_path(
+                    octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                    lambda c: path_clear(c, width_mm, _mi_obs))
+                if _bc is not None:
+                    _mi_pp = merge_collinear(_bc)
                 if _mi_pp is None:
                     _mi_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                width_mm, _mi_obs,
                                                snap_toward_dest=True)
                 if _mi_pp is None:
-                    for _mi_c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
-                        if (path_clear(_mi_c, width_mm, _mi_obs_bo) and
-                                _path_clear_of_run_obs(_mi_c, width_mm/2.0, net_p, layer_id)):
-                            _mi_pp = merge_collinear(_mi_c); break
+                    _bc = _best_clear_path(
+                        octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                        lambda c: (path_clear(c, width_mm, _mi_obs_bo) and
+                                   _path_clear_of_run_obs(c, width_mm/2.0, net_p, layer_id)))
+                    if _bc is not None:
+                        _mi_pp = merge_collinear(_bc)
                 if _mi_pp is None:
                     _mi_r = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                               width_mm, _mi_obs_bo,
@@ -4640,18 +4715,22 @@ def route_pair(pair_name):
                             _path_clear_of_run_obs(_mi_r, width_mm/2.0, net_p, layer_id)):
                         _mi_pp = _mi_r
                 _mi_nr = None
-                for _mi_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                    if path_clear(_mi_c, width_mm, _mi_obs):
-                        _mi_nr = merge_collinear(_mi_c); break
+                _bc = _best_clear_path(
+                    octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                    lambda c: path_clear(c, width_mm, _mi_obs))
+                if _bc is not None:
+                    _mi_nr = merge_collinear(_bc)
                 if _mi_nr is None:
                     _mi_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                                width_mm, _mi_obs,
                                                snap_toward_dest=True)
                 if _mi_nr is None:
-                    for _mi_c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
-                        if (path_clear(_mi_c, width_mm, _mi_obs_bo) and
-                                _path_clear_of_run_obs(_mi_c, width_mm/2.0, net_n, layer_id)):
-                            _mi_nr = merge_collinear(_mi_c); break
+                    _bc = _best_clear_path(
+                        octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                        lambda c: (path_clear(c, width_mm, _mi_obs_bo) and
+                                   _path_clear_of_run_obs(c, width_mm/2.0, net_n, layer_id)))
+                    if _bc is not None:
+                        _mi_nr = merge_collinear(_bc)
                 if _mi_nr is None:
                     _mi_r = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
                                               width_mm, _mi_obs_bo,
