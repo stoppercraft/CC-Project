@@ -196,6 +196,40 @@ def _snap_ep_to_via(vxy, net_name):
     return best if best is not None else vxy
 
 
+def _snap_track_endpoints_to_vias():
+    """Snap any track endpoint within 5 µm of a same-net via to the exact via nm coordinate.
+
+    Guarantees chain terminals land at exact via centers regardless of any
+    accumulated floating-point rounding in the routing arithmetic.
+    Returns the number of endpoints snapped.
+    """
+    SNAP_NM = 5000  # 5 µm — well inside any real clearance, well outside nm-level FP drift
+    via_map: dict = {}  # net → list of (x_nm, y_nm)
+    for trk in board.GetTracks():
+        if trk.GetClass() == "PCB_VIA":
+            via_map.setdefault(trk.GetNetname(), []).append((trk.GetX(), trk.GetY()))
+
+    snapped = 0
+    for trk in board.GetTracks():
+        if trk.GetClass() != "PCB_TRACK":
+            continue
+        net = trk.GetNetname()
+        vias = via_map.get(net)
+        if not vias:
+            continue
+        for get_ep, set_ep in ((trk.GetStart, trk.SetStart), (trk.GetEnd, trk.SetEnd)):
+            ep = get_ep()
+            ex, ey = ep.x, ep.y
+            for vx, vy in vias:
+                dx, dy = ex - vx, ey - vy
+                if dx * dx + dy * dy < SNAP_NM * SNAP_NM:
+                    if dx != 0 or dy != 0:
+                        set_ep(pcbnew.VECTOR2I(vx, vy))
+                        snapped += 1
+                    break
+    return snapped
+
+
 _fanout_stubs: dict = {}  # (net, px, py) → (vx, vy) — via at end of fanout stub
 _stub_tips:    dict = {}  # (net, px, py) → (tx, ty) — tip of no-via locked stub
 _stub_bends:   dict = {}  # (net, px, py) → (bx, by) — bend point (second-to-last node) of no-via stub
@@ -4521,6 +4555,9 @@ log.append("\n[Option D — rip-up and retry]")
 _rip_up_retry(order)
 
 if APPLY:
+    _snapped = _snap_track_endpoints_to_vias()
+    if _snapped:
+        log.append(f"\nSnapped {_snapped} track endpoint(s) to exact via centers.")
     board.Save(cfg.PCB_FILE)
     log.append("\nBoard saved.")
 
