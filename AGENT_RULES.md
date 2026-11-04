@@ -30,17 +30,17 @@ When the user says exactly "Route and Verify" (no other phrasing triggers this w
 
 **Step 2a — route_fanout_vias.py --apply (once)**
 ```
-"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_fanout_vias.py" --apply 2>&1
+"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_fanout_vias.py" --apply
 ```
 
 **Step 2b — route_critical.py --apply (once)**
 ```
-"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_critical.py" --apply 2>&1
+"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_critical.py" --apply
 ```
 
 **Step 2c — route_highspeed.py --apply (once)**
 ```
-"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_highspeed.py" --apply 2>&1
+"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_highspeed.py" --apply
 ```
 
 Each script runs ONCE. Never re-run to filter output.
@@ -70,14 +70,18 @@ Never present results without completing all steps.
 
 ---
 
-## "Run route_highspeed.py" — 4-step sequence
+## "Run route_highspeed.py"
 
-1. Clear all unlocked tracks and vias
-2. route_fanout_vias.py --apply
-3. route_critical.py --apply
-4. route_highspeed.py --apply
+Run ONLY `route_highspeed.py --apply`. Nothing else. No clearing, no fanout, no critical.
+The board is assumed to already be in the correct state.
 
-Never skip upstream steps. To debug a specific pair: run debug_highspeed.py.
+```
+"C:\Program Files\KiCad\10.0\bin\python.exe" "E:\Claude Projects\CC Project Folder\Python Scripts\route_highspeed.py" --apply
+```
+
+Run EXACTLY ONCE. Never re-run to retrieve more output — read `Reports/fix_log_phase10.txt` instead.
+
+To debug a specific pair: run debug_highspeed.py.
 - FULL_SETUP = True (first run): clear all → fanout → critical → snapshot all track fingerprints to hs_debug_baseline.json → highspeed --pairs. No locking — fanout/critical tracks stay unlocked.
 - FULL_SETUP = False (fast iteration): load snapshot → remove non-snapshot tracks (removes HS routes, fanout/critical survive unlocked) → highspeed --pairs.
 Do NOT run DRC or Route and Verify after debug_highspeed.py — board is partial.
