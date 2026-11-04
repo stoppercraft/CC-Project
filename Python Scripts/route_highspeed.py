@@ -2710,9 +2710,13 @@ def route_pair(pair_name):
     _seg_spine = []  # intermediate centerline waypoints from previous segment
     _seg_placed.clear()    # reset inter-segment obstacle accumulator for this pair
     _seg_reserved.clear()  # reset look-ahead reservations for this pair
+    _skip_segs = set()     # segments already covered by a multi-seg in-series route
     for seg in range(len(pairs) - 1):
         if TARGET_SEGS_ARG and seg not in TARGET_SEGS_ARG:
             log.append(f"  seg {seg}: skipped (--segs filter)")
+            continue
+        if seg in _skip_segs:
+            log.append(f"  seg {seg}: skipped (covered by multi-seg in-series route)")
             continue
         layer_id = board.GetLayerID(layer_name)  # reset per iteration; may be overridden below
         sub_pairs = [pairs[seg], pairs[seg + 1]]
@@ -3044,10 +3048,10 @@ def route_pair(pair_name):
                 # placed, so layer-split would create dangling buried tracks.
                 # Route P then N sequentially on the route layer; N avoids P's track.
 
-                # Multi-segment path awareness: when a next segment exists (seg+2),
-                # route each signal from its source directly to seg K+1's destination
-                # as a natural waypoint instead of fighting the tight crossing corridor.
-                # Seg K+1 then handles its own src→dst normally.
+                # Multi-segment in-series routing: when a next segment exists (seg+2),
+                # route each signal vp0→vp1→p2 as a two-leg path so vp1 (the
+                # intermediate connector pad) is a mandatory in-series through-point,
+                # not a T-branch stub. Seg K+1 is then skipped — it is already covered.
                 _ms_p = None; _ms_n = None
                 if seg + 2 < len(pairs):
                     _p2, _n2 = pairs[seg + 2]
@@ -3057,26 +3061,62 @@ def route_pair(pair_name):
                                               include_sibling_reserves=True,
                                               sibling_extra=cc / 2.0)
                     _wf_ms = width_mm + cc
-                    for _c in octilinear_paths(vp0[0], vp0[1], _p2x, _p2y):
+
+                    # P: leg 1 vp0→vp1, leg 2 vp1→p2
+                    _ms_p_l1 = None; _ms_p_l2 = None
+                    for _c in octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]):
                         if path_clear(_c, _wf_ms, _obs_ms):
-                            _ms_p = merge_collinear(_c); break
-                    if _ms_p is None:
-                        _ms_p = _astar_centerline(vp0[0], vp0[1], _p2x, _p2y,
-                                                   _wf_ms, _obs_ms,
-                                                   snap_toward_dest=True)
+                            _ms_p_l1 = merge_collinear(_c); break
+                    if _ms_p_l1 is None:
+                        _ms_p_l1 = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
+                                                      _wf_ms, _obs_ms,
+                                                      snap_toward_dest=True)
+                    if _ms_p_l1 is not None:
+                        _pw_ms = width_mm / 2.0 + CLEARANCE_MM
+                        _l1p_obs = [(min(a[0],b[0])-_pw_ms, min(a[1],b[1])-_pw_ms,
+                                     max(a[0],b[0])+_pw_ms, max(a[1],b[1])+_pw_ms)
+                                    for a, b in zip(_ms_p_l1, _ms_p_l1[1:])]
+                        _obs_ms_l2p = list(_obs_ms) + _l1p_obs
+                        for _c in octilinear_paths(vp1[0], vp1[1], _p2x, _p2y):
+                            if path_clear(_c, _wf_ms, _obs_ms_l2p):
+                                _ms_p_l2 = merge_collinear(_c); break
+                        if _ms_p_l2 is None:
+                            _ms_p_l2 = _astar_centerline(vp1[0], vp1[1], _p2x, _p2y,
+                                                          _wf_ms, _obs_ms_l2p,
+                                                          snap_toward_dest=True)
+                    if _ms_p_l1 is not None and _ms_p_l2 is not None:
+                        _ms_p = merge_collinear(_ms_p_l1 + _ms_p_l2[1:])
+
+                    # N: leg 1 vn0→vn1, leg 2 vn1→n2 — avoiding P's full path
                     if _ms_p is not None:
                         _pw_ms = width_mm / 2.0 + CLEARANCE_MM
-                        _ms_p_obs = [(min(a[0], b[0]) - _pw_ms, min(a[1], b[1]) - _pw_ms,
-                                      max(a[0], b[0]) + _pw_ms, max(a[1], b[1]) + _pw_ms)
+                        _ms_p_obs = [(min(a[0],b[0])-_pw_ms, min(a[1],b[1])-_pw_ms,
+                                      max(a[0],b[0])+_pw_ms, max(a[1],b[1])+_pw_ms)
                                      for a, b in zip(_ms_p, _ms_p[1:])]
                         _obs_ms_n = list(_obs_ms) + _ms_p_obs
-                        for _c in octilinear_paths(vn0[0], vn0[1], _n2x, _n2y):
+                        _ms_n_l1 = None; _ms_n_l2 = None
+                        for _c in octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]):
                             if path_clear(_c, _wf_ms, _obs_ms_n):
-                                _ms_n = merge_collinear(_c); break
-                        if _ms_n is None:
-                            _ms_n = _astar_centerline(vn0[0], vn0[1], _n2x, _n2y,
-                                                       _wf_ms, _obs_ms_n,
-                                                       snap_toward_dest=True)
+                                _ms_n_l1 = merge_collinear(_c); break
+                        if _ms_n_l1 is None:
+                            _ms_n_l1 = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
+                                                          _wf_ms, _obs_ms_n,
+                                                          snap_toward_dest=True)
+                        if _ms_n_l1 is not None:
+                            _l1n_obs = [(min(a[0],b[0])-_pw_ms, min(a[1],b[1])-_pw_ms,
+                                         max(a[0],b[0])+_pw_ms, max(a[1],b[1])+_pw_ms)
+                                        for a, b in zip(_ms_n_l1, _ms_n_l1[1:])]
+                            _obs_ms_l2n = _obs_ms_n + _l1n_obs
+                            for _c in octilinear_paths(vn1[0], vn1[1], _n2x, _n2y):
+                                if path_clear(_c, _wf_ms, _obs_ms_l2n):
+                                    _ms_n_l2 = merge_collinear(_c); break
+                            if _ms_n_l2 is None:
+                                _ms_n_l2 = _astar_centerline(vn1[0], vn1[1], _n2x, _n2y,
+                                                              _wf_ms, _obs_ms_l2n,
+                                                              snap_toward_dest=True)
+                        if _ms_n_l1 is not None and _ms_n_l2 is not None:
+                            _ms_n = merge_collinear(_ms_n_l1 + _ms_n_l2[1:])
+
                 if _ms_p is not None and _ms_n is not None:
                     _lp_ms = sum(math.hypot(_ms_p[i+1][0]-_ms_p[i][0],
                                             _ms_p[i+1][1]-_ms_p[i][1])
@@ -3093,14 +3133,15 @@ def route_pair(pair_name):
                                   _ms_n[_i+1][0], _ms_n[_i+1][1],
                                   width_mm, layer_id, net_n)
                     total_p += _lp_ms; total_n += _ln_ms
-                    log.append(f"    MULTI-SEG WAYPOINT: P={_lp_ms:.3f}mm N={_ln_ms:.3f}mm"
-                               f"  via {_p2['ref']} on {layer_name}")
+                    log.append(f"    MULTI-SEG IN-SERIES: P={_lp_ms:.3f}mm N={_ln_ms:.3f}mm"
+                               f"  through {pairs[seg+1][0]['ref']} → {_p2['ref']} on {layer_name}")
                     _hw_ms = width_mm / 2.0
                     _seg_placed.setdefault(layer_id, []).extend(
                         (r, net_p) for r in _poly_obs(_ms_p, _hw_ms))
                     _seg_placed.setdefault(layer_id, []).extend(
                         (r, net_n) for r in _poly_obs(_ms_n, _hw_ms))
-                    continue  # seg K+1 connects vp1→p2 as normal
+                    _skip_segs.add(seg + 1)  # seg K+1 (vp1→p2) already covered
+                    continue
 
                 _wf_sl = width_mm + cc
                 _obs_sl = build_obstacles(layer_id, {net_p, net_n},
