@@ -2265,29 +2265,36 @@ def _miter_predict_crossing(poly, vpa_xy, vpb_xy, cc):
     return p_sign_src != p_sign_dst
 
 
+def _pt_to_seg_dist(px, py, ax, ay, bx, by):
+    """Minimum distance from point (px,py) to line segment (ax,ay)-(bx,by)."""
+    dx, dy = bx - ax, by - ay
+    l2 = dx*dx + dy*dy
+    if l2 < 1e-12:
+        return math.hypot(px - ax, py - ay)
+    t = max(0.0, min(1.0, ((px - ax)*dx + (py - ay)*dy) / l2))
+    return math.hypot(px - (ax + t*dx), py - (ay + t*dy))
+
+
 def _chosen_has_via_clearance_issue(poly, vp0_xy, vn0_xy, vp1_xy, vn1_xy, cc, width_mm,
-                                     direct_pad=False):
-    """Return True if the chosen path's P or N track would physically overlap a
-    cross-net endpoint via (creating a true electrical short).
+                                     direct_pad=False, clearance_mm=0.0):
+    """Return True if the chosen path's P or N track would violate endpoint via clearance.
 
     Checks all four endpoint vias: P track vs N vias (vn0, vn1); N track vs P
-    vias (vp0, vp1).  Uses overlap-only threshold VIA_PAD/2 + width/2 (no
-    clearance margin) so only actual conductor overlaps are flagged — tight but
-    legal spacings are left to DRC.  Simulates cur_p_sign propagation matching
-    emit_diffpair for accurate track positions.
+    vias (vp0, vp1).  Threshold = ep_r + width/2 + clearance_mm:
+      clearance_mm=0  → overlap-only (conductor touching conductor)
+      clearance_mm>0  → enforce DRC clearance margin as well
 
-    direct_pad=True: endpoints are SMT pads, not through-hole vias.  Uses
-    width_mm/2 as endpoint radius so fine-pitch pads (e.g. 0.5mm-pitch USB-C)
-    do not trigger false positives that would fire at a legal 0.19mm spacing.
+    Handles vertical, horizontal, and 45° diagonal segments.  Simulates
+    cur_p_sign propagation matching emit_diffpair for accurate track positions.
+
+    direct_pad=True: endpoints are SMT pads; uses width_mm/2 as endpoint radius
+    so fine-pitch connectors don't produce false positives.
     """
     if len(poly) < 2:
         return False
     half = cc / 2.0
-    # Overlap threshold: track edge touches endpoint conductor edge.
-    # SMT pad endpoints use track half-width as radius (not the larger VIA_PAD/2)
-    # so fine-pitch connectors don't produce false positives.
     ep_r = width_mm / 2.0 if direct_pad else VIA_PAD / 2.0
-    overlap_thr = ep_r + width_mm / 2.0
+    overlap_thr = ep_r + width_mm / 2.0 + clearance_mm
 
     px0, py0 = _perp_of(*poly[0], *poly[1])
     cur_ps = 1.0 if (px0*(vp0_xy[0]-poly[0][0]) + py0*(vp0_xy[1]-poly[0][1])) >= 0 else -1.0
@@ -2323,6 +2330,22 @@ def _chosen_has_via_clearance_issue(poly, vp0_xy, vn0_xy, vp1_xy, vn1_xy, cc, wi
                 if x_lo - overlap_thr <= vxy[0] <= x_hi + overlap_thr:
                     if abs(n_y - vxy[1]) < overlap_thr:
                         return True
+
+        else:  # Diagonal segment — check point-to-segment distance for P and N tracks
+            a_px = a[0] + cur_ps * pax * half
+            a_py = a[1] + cur_ps * pay * half
+            b_px = b[0] + cur_ps * pax * half
+            b_py = b[1] + cur_ps * pay * half
+            a_nx = a[0] - cur_ps * pax * half
+            a_ny = a[1] - cur_ps * pay * half
+            b_nx = b[0] - cur_ps * pax * half
+            b_ny = b[1] - cur_ps * pay * half
+            for vxy in (vn0_xy, vn1_xy):  # P track vs N vias
+                if _pt_to_seg_dist(vxy[0], vxy[1], a_px, a_py, b_px, b_py) < overlap_thr:
+                    return True
+            for vxy in (vp0_xy, vp1_xy):  # N track vs P vias
+                if _pt_to_seg_dist(vxy[0], vxy[1], a_nx, a_ny, b_nx, b_ny) < overlap_thr:
+                    return True
 
         # Propagate cur_ps through bend at b
         if i < len(poly) - 2:
@@ -4065,7 +4088,7 @@ def route_pair(pair_name):
                            > math.hypot(cx1-cx0, cy1-cy0) * 2.0)
         if _vc_force_indep or _chosen_has_via_clearance_issue(
                 chosen, vp0, vn0, vp1, vn1, cc, width_mm,
-                direct_pad=_both_on_route_layer):
+                direct_pad=_both_on_route_layer, clearance_mm=gap_mm):
             if _vc_force_indep:
                 log.append("    NOTE: direct-pad detour >2× straight — routing P/N independently")
             _vc_alt = None
@@ -4080,7 +4103,8 @@ def route_pair(pair_name):
                     _vc_m = merge_collinear(_vc_cand)
                     if (path_clear(_vc_m, w_full, _vc_obs) and
                             not _chosen_has_via_clearance_issue(
-                                _vc_m, vp0, vn0, vp1, vn1, cc, width_mm)):
+                                _vc_m, vp0, vn0, vp1, vn1, cc, width_mm,
+                                clearance_mm=gap_mm)):
                         _vc_alt = _vc_m
                         log.append("    NOTE: via-clearance overlap — switched to alternate path")
                         break
