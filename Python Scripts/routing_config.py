@@ -144,32 +144,32 @@ LANE_GROUPS = {
     "MIPI1 lanes (limit 0.50mm)":         (["MIPI1_CLK", "MIPI1_D0",  "MIPI1_D1", "MIPI1_D2", "MIPI1_D3"],        0.50),
 }
 
-# Routing widths and gap per diff pair — used by route_highspeed.py
-# name -> (width_mm, gap_mm)  — both in mm, determines edge-to-edge copper gap
+# Routing widths per diff pair — used by route_highspeed.py
+# name -> width_mm  (gap_mm is derived at runtime from the pair's netclass clearance)
 HS_ROUTE_WIDTHS = {
     # HDMI0 and LT6711A outputs — 100Ω diff, fine pitch
-    "HDMI0_CLK": (0.127, 0.10),
-    "HDMI0_TX0": (0.127, 0.10),
-    "HDMI0_TX1": (0.127, 0.10),
-    "HDMI0_TX2": (0.127, 0.10),
-    "LT_TX1":    (0.127, 0.10),
-    "LT_TX2":    (0.127, 0.10),
-    "LT_AUX":    (0.127, 0.10),
+    "HDMI0_CLK": 0.127,
+    "HDMI0_TX0": 0.127,
+    "HDMI0_TX1": 0.127,
+    "HDMI0_TX2": 0.127,
+    "LT_TX1":    0.127,
+    "LT_TX2":    0.127,
+    "LT_AUX":    0.127,
     # DP connector — 100Ω diff, standard pitch
-    "DP_TX1":    (0.150, 0.15),
-    "DP_TX2":    (0.150, 0.15),
-    "DP_AUX":    (0.127, 0.10),
+    "DP_TX1":    0.150,
+    "DP_TX2":    0.150,
+    "DP_AUX":    0.127,
     # MIPI1 — In2.Cu buried stripline, 100Ω diff
-    "MIPI1_CLK": (0.127, 0.10),
-    "MIPI1_D0":  (0.127, 0.10),
-    "MIPI1_D1":  (0.127, 0.10),
-    "MIPI1_D2":  (0.127, 0.10),
-    "MIPI1_D3":  (0.127, 0.10),
+    "MIPI1_CLK": 0.127,
+    "MIPI1_D0":  0.127,
+    "MIPI1_D1":  0.127,
+    "MIPI1_D2":  0.127,
+    "MIPI1_D3":  0.127,
     # DP RX inputs — 100Ω diff, fine-pitch side at U3
-    "DP_RX1":    (0.127, 0.10),
-    "DP_RX2":    (0.127, 0.10),
+    "DP_RX1":    0.127,
+    "DP_RX2":    0.127,
     # USB 2.0 — F.Cu microstrip, 90Ω diff
-    "USB2":      (0.20, 0.15),
+    "USB2":      0.20,
 }
 
 # ── Layer scheme ─────────────────────────────────────────────────────────────

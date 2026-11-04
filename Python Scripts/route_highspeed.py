@@ -2783,7 +2783,8 @@ def _count_crossings(order):
 def route_pair(pair_name):
     global _conflict_count
     net_p, net_n, layer_name, skew_limit = cfg.HS_PAIRS[pair_name]
-    width_mm, gap_mm = cfg.HS_ROUTE_WIDTHS[pair_name]
+    width_mm = cfg.HS_ROUTE_WIDTHS[pair_name]
+    gap_mm   = max(_nc_clearance(net_p), _nc_clearance(net_n))
     cc       = width_mm + gap_mm
     layer_id = board.GetLayerID(layer_name)
 

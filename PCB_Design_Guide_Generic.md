@@ -2507,8 +2507,11 @@ Include rule classes:
   - Target impedance (100 ohm / 90 ohm / 85 ohm) per pair class
   - Width and spacing seeded from fab impedance calculator for the Phase 6 stackup
   - Intra-pair skew <= 0.01 mm (design target); protocol spec <= 0.127 mm; inter-lane skew per PROJECT_PARAMS
-  - Clearance to any other copper on HS layer >= 2 × trace width (3W rule)
-  - Custom rule class "HighSpeed" covering all `[HS_PAIR_*]` nets
+  - Netclass "HighSpeed" covering all buried-layer `[HS_PAIR_*]` nets (assigned via Step 5b below) — set netclass clearance = S (intra-pair gap from compute_impedance.py)
+  - **Two DRU clearance rules are required** (keyed on NetClass, not net name):
+    - **3W rule** — HS to non-HS copper only: `condition "A.NetClass == 'HighSpeed' && B.NetClass != 'HighSpeed'"` with `clearance (min <2×W>mm)`. Writing this rule without the `B.NetClass != 'HighSpeed'` exclusion causes it to flag P vs N of the same pair.
+    - **Intra-pair rule** — overrides the board default clearance for P/N running parallel: `condition "A.NetClass == 'HighSpeed' && B.NetClass == 'HighSpeed'"` with `clearance (min <S>mm)`. Without this rule the board default clearance (typically 0.15 mm) fires against every parallel P/N section.
+  - Routing scripts derive intra-pair gap from `_nc_clearance(net)` at runtime — no hardcoded gap in routing config
 - **Component-specific overrides** — for tight-pitch resistor arrays or connectors
   where the geometry cannot meet the default clearance, add per-reference rules:
   ```
@@ -2567,11 +2570,47 @@ PROJECT_PARAMS and use them as the HS trace width/spacing in the DRU file.
 
 Validate: matching parens; valid constraint type names; no empty condition strings.
 
+**Step 5b — Assign nets to netclasses**
+
+After the DRU file is written, assign nets to the netclasses it references. Netclass
+assignments are stored in the board file and must be kept in sync with the DRU rules.
+
+```
+"C:\Program Files\KiCad\10.0\bin\python.exe" -c "
+import sys
+sys.path.insert(0, '[KICAD_SITE_PKGS]')
+sys.path.insert(0, '[SCRIPTS_DIR]')
+import pcbnew, routing_config as cfg
+
+board = pcbnew.LoadBoard('[PCB_FILE]')
+ns    = board.GetDesignSettings().m_NetSettings
+
+# Assign buried-layer HS pair nets to HighSpeed netclass.
+# F.Cu diff pairs (e.g. USB2) stay in Default — different clearance rules apply.
+for pair_name, (net_p, net_n, layer, _) in cfg.HS_PAIRS.items():
+    if layer != 'F.Cu':
+        ns.SetNetclassPatternAssignment(net_p, 'HighSpeed')
+        ns.SetNetclassPatternAssignment(net_n, 'HighSpeed')
+
+# Assign power rail nets to Power netclass.
+for net in cfg.POWER_NETS:
+    ns.SetNetclassPatternAssignment(net, 'Power')
+
+ns.RecomputeEffectiveNetclasses()
+board.Save('[PCB_FILE]')
+print('Netclass assignment complete.')
+"
+```
+
+Verify: for each HS net, `GetEffectiveNetClass(net).GetName()` must return `'HighSpeed'`
+and `GetEffectiveNetClass(net).GetClearance()` must match S from compute_impedance.py.
+Re-run DRC — HS intra-pair clearance violations must be gone.
+
 **Outputs:** `[PROJECT_DIR]/[PROJECT_NAME].kicad_dru`,
 `[PROJECT_DIR]/compliance_rules_summary.txt`,
 `[SCRIPTS_DIR]/compute_impedance.py` with computed W/S values.
 
-**Loop exit criteria:** DRU file syntactically valid.
+**Loop exit criteria:** DRU file syntactically valid; all HS nets confirmed in HighSpeed netclass; DRC reports no HS intra-pair clearance violations.
 
 **SESSION_CONTEXT:** Phase 5 complete, rules classes list.
 
