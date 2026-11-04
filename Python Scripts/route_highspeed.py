@@ -3043,6 +3043,65 @@ def route_pair(pair_name):
                 # Both endpoints are SMT pads on the route layer — no escape vias
                 # placed, so layer-split would create dangling buried tracks.
                 # Route P then N sequentially on the route layer; N avoids P's track.
+
+                # Multi-segment path awareness: when a next segment exists (seg+2),
+                # route each signal from its source directly to seg K+1's destination
+                # as a natural waypoint instead of fighting the tight crossing corridor.
+                # Seg K+1 then handles its own src→dst normally.
+                _ms_p = None; _ms_n = None
+                if seg + 2 < len(pairs):
+                    _p2, _n2 = pairs[seg + 2]
+                    _p2x, _p2y = _p2["x"], _p2["y"]
+                    _n2x, _n2y = _n2["x"], _n2["y"]
+                    _obs_ms = build_obstacles(layer_id, {net_p, net_n},
+                                              include_sibling_reserves=True,
+                                              sibling_extra=cc / 2.0)
+                    _wf_ms = width_mm + cc
+                    for _c in octilinear_paths(vp0[0], vp0[1], _p2x, _p2y):
+                        if path_clear(_c, _wf_ms, _obs_ms):
+                            _ms_p = merge_collinear(_c); break
+                    if _ms_p is None:
+                        _ms_p = _astar_centerline(vp0[0], vp0[1], _p2x, _p2y,
+                                                   _wf_ms, _obs_ms,
+                                                   snap_toward_dest=True)
+                    if _ms_p is not None:
+                        _pw_ms = width_mm / 2.0 + CLEARANCE_MM
+                        _ms_p_obs = [(min(a[0], b[0]) - _pw_ms, min(a[1], b[1]) - _pw_ms,
+                                      max(a[0], b[0]) + _pw_ms, max(a[1], b[1]) + _pw_ms)
+                                     for a, b in zip(_ms_p, _ms_p[1:])]
+                        _obs_ms_n = list(_obs_ms) + _ms_p_obs
+                        for _c in octilinear_paths(vn0[0], vn0[1], _n2x, _n2y):
+                            if path_clear(_c, _wf_ms, _obs_ms_n):
+                                _ms_n = merge_collinear(_c); break
+                        if _ms_n is None:
+                            _ms_n = _astar_centerline(vn0[0], vn0[1], _n2x, _n2y,
+                                                       _wf_ms, _obs_ms_n,
+                                                       snap_toward_dest=True)
+                if _ms_p is not None and _ms_n is not None:
+                    _lp_ms = sum(math.hypot(_ms_p[i+1][0]-_ms_p[i][0],
+                                            _ms_p[i+1][1]-_ms_p[i][1])
+                                 for i in range(len(_ms_p)-1))
+                    _ln_ms = sum(math.hypot(_ms_n[i+1][0]-_ms_n[i][0],
+                                            _ms_n[i+1][1]-_ms_n[i][1])
+                                 for i in range(len(_ms_n)-1))
+                    for _i in range(len(_ms_p) - 1):
+                        add_track(_ms_p[_i][0], _ms_p[_i][1],
+                                  _ms_p[_i+1][0], _ms_p[_i+1][1],
+                                  width_mm, layer_id, net_p)
+                    for _i in range(len(_ms_n) - 1):
+                        add_track(_ms_n[_i][0], _ms_n[_i][1],
+                                  _ms_n[_i+1][0], _ms_n[_i+1][1],
+                                  width_mm, layer_id, net_n)
+                    total_p += _lp_ms; total_n += _ln_ms
+                    log.append(f"    MULTI-SEG WAYPOINT: P={_lp_ms:.3f}mm N={_ln_ms:.3f}mm"
+                               f"  via {_p2['ref']} on {layer_name}")
+                    _hw_ms = width_mm / 2.0
+                    _seg_placed.setdefault(layer_id, []).extend(
+                        (r, net_p) for r in _poly_obs(_ms_p, _hw_ms))
+                    _seg_placed.setdefault(layer_id, []).extend(
+                        (r, net_n) for r in _poly_obs(_ms_n, _hw_ms))
+                    continue  # seg K+1 connects vp1→p2 as normal
+
                 _wf_sl = width_mm + cc
                 _obs_sl = build_obstacles(layer_id, {net_p, net_n},
                                           include_sibling_reserves=True,
