@@ -176,6 +176,26 @@ def _is_fanout_via(ax, ay, net_name):
     return False
 
 
+def _snap_ep_to_via(vxy, net_name):
+    """Snap vxy to the exact via center in _fanout_via_index if within 0.001mm.
+
+    Covers any floating-point drift in escape_endpoint's arithmetic so every
+    returned endpoint that corresponds to a fanout via lands at the true integer
+    position stored in the index.  Returns vxy unchanged if no via is nearby
+    (direct-pad or stub-tip endpoints remain unaffected).
+    """
+    if vxy is None:
+        return None
+    best_d, best = 0.001, None
+    for vnet, vx, vy in _fanout_via_index:
+        if vnet != net_name:
+            continue
+        d = math.hypot(vx - vxy[0], vy - vxy[1])
+        if d < best_d:
+            best_d, best = d, (vx, vy)
+    return best if best is not None else vxy
+
+
 _fanout_stubs: dict = {}  # (net, px, py) → (vx, vy) — via at end of fanout stub
 _stub_tips:    dict = {}  # (net, px, py) → (tx, ty) — tip of no-via locked stub
 _stub_bends:   dict = {}  # (net, px, py) → (bx, by) — bend point (second-to-last node) of no-via stub
@@ -196,6 +216,10 @@ def _build_fanout_stub_index():
 
     via_pos: set = {(vnet, round(vx, 3), round(vy, 3))
                     for vnet, vx, vy in _fanout_via_index}
+    # Map rounded position → exact float so _fanout_stubs stores the true via center,
+    # not the 3-decimal-place approximation used for adjacency matching.
+    via_exact: dict = {(vnet, round(vx, 3), round(vy, 3)): (vx, vy)
+                       for vnet, vx, vy in _fanout_via_index}
 
     for fp in board.GetFootprints():
         for pad in fp.Pads():
@@ -214,7 +238,7 @@ def _build_fanout_stub_index():
                         continue
                     visited.add((nx, ny))
                     if (pnet, nx, ny) in via_pos:
-                        found = (nx, ny)
+                        found = via_exact.get((pnet, nx, ny), (nx, ny))
                         break
                     frontier.append((nx, ny))
             if found is not None:
@@ -2081,7 +2105,8 @@ def escape_endpoint(p_pad, n_pad, net_p, net_n, route_layer_id,
             results = {}; from_cache = set(); on_layer = set()
             _run_order(order, results, from_cache, on_layer)
 
-    return results["P"], results["N"]
+    return (_snap_ep_to_via(results["P"], net_p),
+            _snap_ep_to_via(results["N"], net_n))
 
 
 # ── Emit centerline + offsets ─────────────────────────────────────────────────
