@@ -145,6 +145,7 @@ Before proposing any fix, ask: "Would this work on a completely different PCB wi
 - **Debug workflow and Route and Verify are separate.** Never switch from debug to Route and Verify without explicit instruction. Code change during debug → test with debug script, not Route and Verify.
 - **Never declare a problem geometrically/algorithmically impossible.** Find the upstream fix instead.
 - **Never describe what code does from memory.** Always read the actual source first.
+- **Never analyze script output without being asked.** After running any routing script, report that the run completed and where the log is. Do NOT summarize results, list pairs, count conflicts, or draw conclusions unless the user asks.
 
 ---
 
