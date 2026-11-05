@@ -3997,18 +3997,22 @@ def route_pair(pair_name):
         _wep_src_sep = math.hypot(vp0[0]-vn0[0], vp0[1]-vn0[1])
         _wep_dst_sep = math.hypot(vp1[0]-vn1[0], vp1[1]-vn1[1])
         if _both_on_route_layer and max(_wep_src_sep, _wep_dst_sep) > 2.0 * cc:
-            _wep_obs = list(build_obstacles(layer_id, {net_p, net_n},
-                                            include_sibling_reserves=False))
+            _wep_obs_p = list(build_obstacles(layer_id, {net_p},
+                                              net_excl_tracks={net_p, net_n},
+                                              include_sibling_reserves=False))
+            _wep_obs_n = list(build_obstacles(layer_id, {net_n},
+                                              net_excl_tracks={net_p, net_n},
+                                              include_sibling_reserves=False))
             _wep_pp = None
             _bc = _best_clear_path(
                 octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
-                lambda c: path_clear(c, width_mm, _wep_obs))
+                lambda c: path_clear(c, width_mm, _wep_obs_p))
             if _bc is not None:
                 _wep_pp = merge_collinear(_bc)
             _wep_nr = None
             _bc = _best_clear_path(
                 octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
-                lambda c: path_clear(c, width_mm, _wep_obs))
+                lambda c: path_clear(c, width_mm, _wep_obs_n))
             if _bc is not None:
                 _wep_nr = merge_collinear(_bc)
             if _wep_pp is not None and _wep_nr is not None:
@@ -4055,17 +4059,18 @@ def route_pair(pair_name):
                     _w2dp = -1.0 if vp1[0] < _wcx1 else 1.0
                     _w2pa_dst = (_wcx1 + _w2dp * (cc / 2), vp1[1])
                     _w2na_dst = (_wcx1 - _w2dp * (cc / 2), vn1[1])
-                    # P path: _wep_obs is fine (P does not cross N's pads).
+                    # P path: use per-net obs so N's pad is a real obstacle for P.
                     _w2pp = None
                     _bc = _best_clear_path(
                         octilinear_paths(_w2pa_src[0], _w2pa_src[1],
                                          _w2pa_dst[0], _w2pa_dst[1]),
-                        lambda c: path_clear(c, width_mm, _wep_obs))
+                        lambda c: path_clear(c, width_mm, _wep_obs_p))
                     if _bc is not None:
                         _w2pp = merge_collinear(_bc)
                     # N path: use per-net obs so P's pad is a real obstacle for N.
                     # Search progressively larger offsets away from P until clear.
                     _wep_obs_n = list(build_obstacles(layer_id, {net_n},
+                                                      net_excl_tracks={net_p, net_n},
                                                       include_sibling_reserves=False))
                     _w2nr = None
                     _w2na_src = (vn0[0], vn0[1] - _w2sp * (cc / 2))
@@ -4090,9 +4095,9 @@ def route_pair(pair_name):
                         _w2fn = [(vn0[0], vn0[1]), _w2na_src]
                         _w2lp = [_w2pa_dst, (vp1[0], vp1[1])]
                         _w2ln = [_w2na_dst, (vn1[0], vn1[1])]
-                        if (path_clear(_w2fp, width_mm, _wep_obs) and
+                        if (path_clear(_w2fp, width_mm, _wep_obs_p) and
                                 path_clear(_w2fn, width_mm, _wep_obs_n) and
-                                path_clear(_w2lp, width_mm, _wep_obs) and
+                                path_clear(_w2lp, width_mm, _wep_obs_p) and
                                 path_clear(_w2ln, width_mm, _wep_obs_n)):
                             _w2ppath = merge_collinear(
                                 [(vp0[0], vp0[1])] + _w2pp + [(vp1[0], vp1[1])])
@@ -4171,13 +4176,20 @@ def route_pair(pair_name):
                     return (xy[0]-m, xy[1]-m, xy[0]+m, xy[1]+m)
                 _vc_np_boxes = [_vc_box(vn0), _vc_box(vn1)]
                 _vc_pp_boxes = [_vc_box(vp0), _vc_box(vp1)]
-                _vc_base = list(build_obstacles(layer_id, {net_p, net_n},
-                                                include_sibling_reserves=False))
-                _vc_base_bo = list(build_obstacles_board_only(layer_id, {net_p, net_n}))
-                _vc_obs_p    = _vc_base    + _vc_np_boxes
-                _vc_obs_n    = _vc_base    + _vc_pp_boxes
-                _vc_obs_p_bo = _vc_base_bo + _vc_np_boxes
-                _vc_obs_n_bo = _vc_base_bo + _vc_pp_boxes
+                _vc_base_p    = list(build_obstacles(layer_id, {net_p},
+                                                     net_excl_tracks={net_p, net_n},
+                                                     include_sibling_reserves=False))
+                _vc_base_n    = list(build_obstacles(layer_id, {net_n},
+                                                     net_excl_tracks={net_p, net_n},
+                                                     include_sibling_reserves=False))
+                _vc_base_p_bo = list(build_obstacles_board_only(layer_id, {net_p},
+                                                                 track_excl={net_p, net_n}))
+                _vc_base_n_bo = list(build_obstacles_board_only(layer_id, {net_n},
+                                                                 track_excl={net_p, net_n}))
+                _vc_obs_p    = _vc_base_p    + _vc_np_boxes
+                _vc_obs_n    = _vc_base_n    + _vc_pp_boxes
+                _vc_obs_p_bo = _vc_base_p_bo + _vc_np_boxes
+                _vc_obs_n_bo = _vc_base_n_bo + _vc_pp_boxes
                 _vc_pp = None
                 _bc = _best_clear_path(
                     octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
@@ -4333,7 +4345,7 @@ def route_pair(pair_name):
                     # P's diagonal AABB is square (dx=dy for 45°), which the square-
                     # obstacle check treats as a via circle — falsely over-conservative.
                     # Exact P clearance is guaranteed by _path_clear_of_explicit_segs.
-                    _vc_obs_n_dp = _vc_base_bo + _vc_pp_boxes
+                    _vc_obs_n_dp = _vc_base_n_bo + _vc_pp_boxes
                     if _adyn > _adxn + 1e-3:  # VDV: V stub, 45° diagonal, V arrive
                         for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
                             if _d >= _adyn - _adxn - 1e-3:
@@ -4363,7 +4375,7 @@ def route_pair(pair_name):
                     _adxn = abs(vn1[0]-vn0[0]); _adyn = abs(vn1[1]-vn0[1])
                     _sxn  = 1 if vn1[0] > vn0[0] else -1
                     _syn  = 1 if vn1[1] > vn0[1] else -1
-                    _vc_obs_n_dp = _vc_base_bo + _vc_pp_boxes
+                    _vc_obs_n_dp = _vc_base_n_bo + _vc_pp_boxes
                     if _adyn > _adxn + 1e-3:  # VDV-rev: stub away from dest y, diagonal, V arrive
                         for _d in (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.8, 1.0, 1.5, 2.0):
                             if _d >= _adxn - 1e-3:
@@ -4463,12 +4475,19 @@ def route_pair(pair_name):
                     if layer_id != B_CU:
                         _vc_alt_layers.append((B_CU, "B.Cu"))
                     for _vcal, _vcaln in _vc_alt_layers:
-                        _vc_base_al  = list(build_obstacles(_vcal, {net_p, net_n},
-                                                             include_sibling_reserves=False))
-                        _vc_base_abo = list(build_obstacles_board_only(_vcal, {net_p, net_n}))
+                        _vc_base_al_p  = list(build_obstacles(_vcal, {net_p},
+                                                              net_excl_tracks={net_p, net_n},
+                                                              include_sibling_reserves=False))
+                        _vc_base_al_n  = list(build_obstacles(_vcal, {net_n},
+                                                              net_excl_tracks={net_p, net_n},
+                                                              include_sibling_reserves=False))
+                        _vc_base_abo_p = list(build_obstacles_board_only(_vcal, {net_p},
+                                                                          track_excl={net_p, net_n}))
+                        _vc_base_abo_n = list(build_obstacles_board_only(_vcal, {net_n},
+                                                                          track_excl={net_p, net_n}))
                         if _vc_pp is None:
-                            _vc_obs_pal  = _vc_base_al  + _vc_np_boxes
-                            _vc_obs_pabo = _vc_base_abo + _vc_np_boxes
+                            _vc_obs_pal  = _vc_base_al_p  + _vc_np_boxes
+                            _vc_obs_pabo = _vc_base_abo_p + _vc_np_boxes
                             _bc = _best_clear_path(
                                 octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
                                 lambda c, _o=_vc_obs_pal: path_clear(c, width_mm, _o))
@@ -4498,8 +4517,8 @@ def route_pair(pair_name):
                                         _path_clear_of_run_obs(_r, width_mm/2.0, net_p, _vcal)):
                                     _vc_pp = _r; _vc_pp_layer = _vcal
                         if _vc_nr is None:
-                            _vc_obs_nal  = _vc_base_al  + _vc_pp_boxes
-                            _vc_obs_nabo = _vc_base_abo + _vc_pp_boxes
+                            _vc_obs_nal  = _vc_base_al_n  + _vc_pp_boxes
+                            _vc_obs_nabo = _vc_base_abo_n + _vc_pp_boxes
                             _bc = _best_clear_path(
                                 octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
                                 lambda c, _o=_vc_obs_nal: path_clear(c, width_mm, _o))
@@ -4562,12 +4581,12 @@ def route_pair(pair_name):
                         _seg_placed.setdefault(_vc_pp_layer, []).extend(
                             (r, net_p) for r in _poly_obs(_vc_pp, _hw))
                         _ind_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
-                                                     width_mm, _vc_base_bo,
+                                                     width_mm, _vc_base_n_bo,
                                                      snap_toward_dest=True)
                         if _ind_nr is None:
                             _bc = _best_clear_path(
                                 octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
-                                lambda c: path_clear(c, width_mm, _vc_base_bo))
+                                lambda c: path_clear(c, width_mm, _vc_base_n_bo))
                             if _bc is not None:
                                 _ind_nr = merge_collinear(_bc)
                         if _ind_nr is not None:
@@ -4595,12 +4614,12 @@ def route_pair(pair_name):
                         _seg_placed.setdefault(_vc_nr_layer, []).extend(
                             (r, net_n) for r in _poly_obs(_vc_nr, _hw))
                         _ind_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
-                                                     width_mm, _vc_base_bo,
+                                                     width_mm, _vc_base_p_bo,
                                                      snap_toward_dest=True)
                         if _ind_pp is None:
                             _bc = _best_clear_path(
                                 octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
-                                lambda c: path_clear(c, width_mm, _vc_base_bo))
+                                lambda c: path_clear(c, width_mm, _vc_base_p_bo))
                             if _bc is not None:
                                 _ind_pp = merge_collinear(_bc)
                         if _ind_pp is not None:
@@ -4648,7 +4667,8 @@ def route_pair(pair_name):
                        vp1[0]+_ep_r(vp1)+_mc_cl, vp1[1]+_ep_r(vp1)+_mc_cl)
             # Route P on route layer
             _mc_pp = None
-            _mc_obs_p = build_obstacles(layer_id, {net_p, net_n},
+            _mc_obs_p = build_obstacles(layer_id, {net_p},
+                                        net_excl_tracks={net_p, net_n},
                                         include_sibling_reserves=True,
                                         sibling_extra=cc / 2.0)
             _bc = _best_clear_path(
@@ -4665,7 +4685,8 @@ def route_pair(pair_name):
             for _mc_try_lid, _mc_try_name in [
                     (layer_id, layer_name),
                     *(([(B_CU, "B.Cu")] if layer_id != B_CU else []))]:
-                _mc_obs_n = (list(build_obstacles(_mc_try_lid, {net_p, net_n},
+                _mc_obs_n = (list(build_obstacles(_mc_try_lid, {net_n},
+                                                  net_excl_tracks={net_p, net_n},
                                                   include_sibling_reserves=True,
                                                   sibling_extra=cc / 2.0))
                              + [b for b in (_mc_p0b, _mc_p1b) if b is not None])
@@ -4687,29 +4708,36 @@ def route_pair(pair_name):
                     break
             if _mc_pp is None or _mc_nr is None:
                 # Layer-split failed — try independent P/N routing as last resort
-                _mi_obs = list(build_obstacles(layer_id, {net_p, net_n},
-                                               include_sibling_reserves=False))
-                _mi_obs_bo = list(build_obstacles_board_only(layer_id, {net_p, net_n}))
+                _mi_obs_p    = list(build_obstacles(layer_id, {net_p},
+                                                    net_excl_tracks={net_p, net_n},
+                                                    include_sibling_reserves=False))
+                _mi_obs_n    = list(build_obstacles(layer_id, {net_n},
+                                                    net_excl_tracks={net_p, net_n},
+                                                    include_sibling_reserves=False))
+                _mi_obs_p_bo = list(build_obstacles_board_only(layer_id, {net_p},
+                                                                track_excl={net_p, net_n}))
+                _mi_obs_n_bo = list(build_obstacles_board_only(layer_id, {net_n},
+                                                                track_excl={net_p, net_n}))
                 _mi_pp = None
                 _bc = _best_clear_path(
                     octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
-                    lambda c: path_clear(c, width_mm, _mi_obs))
+                    lambda c: path_clear(c, width_mm, _mi_obs_p))
                 if _bc is not None:
                     _mi_pp = merge_collinear(_bc)
                 if _mi_pp is None:
                     _mi_pp = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
-                                               width_mm, _mi_obs,
+                                               width_mm, _mi_obs_p,
                                                snap_toward_dest=True)
                 if _mi_pp is None:
                     _bc = _best_clear_path(
                         octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
-                        lambda c: (path_clear(c, width_mm, _mi_obs_bo) and
+                        lambda c: (path_clear(c, width_mm, _mi_obs_p_bo) and
                                    _path_clear_of_run_obs(c, width_mm/2.0, net_p, layer_id)))
                     if _bc is not None:
                         _mi_pp = merge_collinear(_bc)
                 if _mi_pp is None:
                     _mi_r = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
-                                              width_mm, _mi_obs_bo,
+                                              width_mm, _mi_obs_p_bo,
                                               snap_toward_dest=True)
                     if (_mi_r is not None and
                             _path_clear_of_run_obs(_mi_r, width_mm/2.0, net_p, layer_id)):
@@ -4717,23 +4745,23 @@ def route_pair(pair_name):
                 _mi_nr = None
                 _bc = _best_clear_path(
                     octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
-                    lambda c: path_clear(c, width_mm, _mi_obs))
+                    lambda c: path_clear(c, width_mm, _mi_obs_n))
                 if _bc is not None:
                     _mi_nr = merge_collinear(_bc)
                 if _mi_nr is None:
                     _mi_nr = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
-                                               width_mm, _mi_obs,
+                                               width_mm, _mi_obs_n,
                                                snap_toward_dest=True)
                 if _mi_nr is None:
                     _bc = _best_clear_path(
                         octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
-                        lambda c: (path_clear(c, width_mm, _mi_obs_bo) and
+                        lambda c: (path_clear(c, width_mm, _mi_obs_n_bo) and
                                    _path_clear_of_run_obs(c, width_mm/2.0, net_n, layer_id)))
                     if _bc is not None:
                         _mi_nr = merge_collinear(_bc)
                 if _mi_nr is None:
                     _mi_r = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
-                                              width_mm, _mi_obs_bo,
+                                              width_mm, _mi_obs_n_bo,
                                               snap_toward_dest=True)
                     if (_mi_r is not None and
                             _path_clear_of_run_obs(_mi_r, width_mm/2.0, net_n, layer_id)):
