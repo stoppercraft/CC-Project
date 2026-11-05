@@ -714,7 +714,7 @@ _seg_reserved = {}   # look-ahead corridor reservations for the next segment
 
 
 def build_obstacles(layer_id, net_excl_pads, **kw):
-    _net_excl_sp = net_excl_pads | kw.get('net_excl_tracks', set())
+    _net_excl_sp = net_excl_pads
     _sp = [r for r, n in _seg_placed.get(layer_id, []) if n not in _net_excl_sp]
     return (_build_obstacles_impl(layer_id, net_excl_pads, **kw)
             + _sp
@@ -3249,11 +3249,11 @@ def route_pair(pair_name):
                     _p2, _n2 = pairs[seg + 2]
                     _p2x, _p2y = _p2["x"], _p2["y"]
                     _n2x, _n2y = _n2["x"], _n2["y"]
-                    _obs_ms_p = build_obstacles(layer_id, {net_p},
+                    _obs_ms_p = build_obstacles(layer_id, {net_p, net_n},
                                                net_excl_tracks={net_p, net_n},
                                                include_sibling_reserves=True,
                                                sibling_extra=cc / 2.0)
-                    _obs_ms_n_base = build_obstacles(layer_id, {net_n},
+                    _obs_ms_n_base = build_obstacles(layer_id, {net_p, net_n},
                                                      net_excl_tracks={net_p, net_n},
                                                      include_sibling_reserves=True,
                                                      sibling_extra=cc / 2.0)
@@ -3347,11 +3347,11 @@ def route_pair(pair_name):
                                         if _cn > 1e-9 and ((c[1][0]-c[0][0])/_cn*_dx +
                                                            (c[1][1]-c[0][1])/_cn*_dy) < -0.9:
                                             return False
-                                    return (path_clear(c, _wf_ms, _obs_ms_n) and
+                                    return (path_clear(c, _wf_ms, _obs_ms_n_base) and
                                             path_clear_vs_exact_segs(c, _wf_ms, _ms_p_exact))
                             else:
                                 def _ms_n_l2_pred(c):
-                                    return (path_clear(c, _wf_ms, _obs_ms_n) and
+                                    return (path_clear(c, _wf_ms, _obs_ms_n_base) and
                                             path_clear_vs_exact_segs(c, _wf_ms, _ms_p_exact))
                             _bc = _best_clear_path(
                                 octilinear_paths(vn1[0], vn1[1], _n2x, _n2y) +
