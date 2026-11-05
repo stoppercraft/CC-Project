@@ -4039,6 +4039,13 @@ def route_pair(pair_name):
                                     _path_clear_of_run_obs(_ip_r, width_mm/2.0,
                                                            net_p, layer_id)):
                                 _ip_pp = _ip_r
+                        if _ip_pp is not None:
+                            _ip_phw = width_mm / 2.0 + CLEARANCE_MM
+                            _ip_p_obs = [(min(a[0],b[0])-_ip_phw, min(a[1],b[1])-_ip_phw,
+                                          max(a[0],b[0])+_ip_phw, max(a[1],b[1])+_ip_phw)
+                                         for a, b in zip(_ip_pp, _ip_pp[1:])]
+                            _ip_obs_n = _ip_obs_n + _ip_p_obs
+                            _ip_obs_n_bo = _ip_obs_n_bo + _ip_p_obs
                         _ip_nr = None
                         _bc = _best_clear_path(
                             octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
