@@ -62,48 +62,49 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-# Updated 2026-11-04 (session 54 — end).
+# Updated 2026-11-05 (session 55 — end).
 
 **route_fanout_vias.py:** COMPLETE. commit `015b30f`
 **route_critical.py:** COMPLETE. commits `bf77af2`, `836e1a5`
-**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. latest commit `ce50a2e` (session 54)
+**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. latest commit `46860aa` (session 55)
 
-### Current HS state: 13 conflicts, 5 pairs with unrouted segments
+### Current HS state: 17 conflicts, 5 pairs with unrouted segments
 
-Per-net obstacle exclusion applied this session (commits 2609b5a, f657e70, ce50a2e). Conflict count unchanged at 13 — MIPI/DP_RX1 blockages are caused by corridor ordering, not obstacle exclusion.
+5 unrouted: MIPI1_CLK, MIPI1_D0, MIPI1_D1, MIPI1_D2, USB2.
+Run log: `Reports/hs_run_20261105b.txt`
 
-**Snapshot board:** `ref_temp/Frameline_Compute_V2.kicad_pcb` — 400 tracks/vias, FRESH (2026-11-04, correct component board). `hs_debug_baseline.json` is FRESH — FULL_SETUP=False fast iteration will work immediately.
+**Snapshot board:** `ref_temp/Frameline_Compute_V2.kicad_pcb` — 400 tracks/vias, FRESH (2026-11-04, correct component board). `hs_debug_baseline.json` is STALE — was generated before session 55 routing-order changes. Run FULL_SETUP=True to regenerate before fast-iteration.
+
+### What was fixed this session (session 55, 2026-11-05)
+
+- **Fix 7** (commit in session 55): MULTI-SEG leg 1 N now uses `_obs_ms_n_base` (without P's AABB) + `path_clear_vs_exact_segs` for exact geometry check. Eliminated DP_TX1 N's 32mm detour; DP_TX1 now routes cleanly on In2.Cu.
+- **Fix 6** (commit `b097ee7`): MIPI1 corridor reorder — HV (non-crossing) pairs before VH (crossing). MIPI1_D3 now routes.
+- **Fix 5**: Independent routing exact geometry already applied; committed.
+- **New `routing_order()`** (commit `46860aa`): sorts all pairs by distance of their closest individual pad to the origin component (component closest to board centroid). Currently detects C_TX2P1 (148.2, 124.7) as origin. Routing order: DP_TX2, LT_TX2, DP_TX1, LT_TX1, DP_RX2, DP_RX1, DP_AUX, LT_AUX, HDMI0_TX2, HDMI0_TX1, HDMI0_TX0, HDMI0_CLK, USB2, MIPI1_D3, MIPI1_D0, MIPI1_D1, MIPI1_CLK, MIPI1_D2.
+- DP_RX1: now routes (was always blocked before).
+- DP_AUX: now routes all 3 segments.
 
 ### What to do at next session start
 
-**Priority 1 — Fix MIPI1_D3/D1/D0 (all paths blocked)**
+**Priority 1 — Investigate MIPI1_D0/D1/D2/CLK still blocked in rip-up retry**
 
-Root cause: corridor reordering puts VH pairs (D2, CLK) first. CLK takes a 27-seg winding A* path that physically blocks D3/D1/D0's corridor on In2.Cu.
+MIPI1_D3 routes first (closest to origin by pad distance, HV non-crossing). But D3's N path may wind through In2.Cu corridor space that D0/D1/CLK need on retry. Suggested investigation approach:
+- Run `debug_highspeed.py` FULL_SETUP=True targeting `MIPI1_D3` only — inspect the D3 N path geometry.
+- Check if D3_N takes a winding route that consumes the corridor x=144–150, y=100–152.
+- If so, consider whether a tighter `_best_clear_path` check or corridor sub-ordering within MIPI1 can produce a shorter D3 path.
 
-Fix location: `_corridor_trunk` reordering block at ~line 2691 of route_highspeed.py:
-```python
-# CURRENT (VH first — crossing_pairs first):
-reordered = ([p for p in pairs_in_order if p in crossing_pairs] +
-             [p for p in pairs_in_order if p not in crossing_pairs])
-# FIX (HV first — non-crossing first):
-reordered = ([p for p in pairs_in_order if p not in crossing_pairs] +
-             [p for p in pairs_in_order if p in crossing_pairs])
-```
-Test with `debug_highspeed.py` FULL_SETUP=False targeting MIPI1_D3.
+**Priority 2 — USB2 all 3 segments blocked on F.Cu**
 
-**Priority 2 — Fix MIPI1_D2_N routing on F.Cu instead of In2.Cu**
+USB2 fails even in rip-up retry. SOM2→J_USB_OUT1 (seg 0), J_USB_OUT1→D_USB1 (seg 1), D_USB1→J_USB_IN1 (seg 2) all blocked. Root cause not yet investigated.
 
-When VCS routes D2 P and N independently, N falls back to F.Cu (54mm zigzag). Root cause not yet identified — suspected bug in VCS independent-routing fallback.
+**Priority 3 — DP_RX2 layer-split N fail**
 
-**Priority 3 — Investigate USB2 segs 0-1 and DP_RX1**
-
-USB2 segs 0-1: SOM2→J_USB_OUT1 and J_USB_OUT1→D_USB1 blocked on F.Cu.
-DP_RX1: U3 (155.250,121.618) → J_USB_OUT1 (137.100,130.600) blocked on In2.Cu.
+Crossing pair — P-alt ok, layer-split N routing fails. Root cause not yet investigated.
 
 ### Debug workflow for route_highspeed.py
 
-- `debug_highspeed.py` FULL_SETUP=False → load snapshot → remove non-snapshot tracks → highspeed --pairs TARGET_PAIRS (fast iteration, baseline is fresh)
-- `debug_highspeed.py` FULL_SETUP=True → clear all → fanout → critical → snapshot fingerprints → highspeed --pairs
+- `debug_highspeed.py` FULL_SETUP=True → clear all → fanout → critical → snapshot fingerprints → highspeed --pairs (required since baseline is stale)
+- `debug_highspeed.py` FULL_SETUP=False → load snapshot → remove non-snapshot tracks → highspeed --pairs TARGET_PAIRS (fast iteration — only after FULL_SETUP=True regenerates baseline)
 - Never run DRC or Route and Verify after debug_highspeed.py — board is partial
 
 #### Unresolved fanout bug (deferred) — `last_blk` overwrite in `_face_fanout`
