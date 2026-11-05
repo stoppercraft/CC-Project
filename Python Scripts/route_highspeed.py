@@ -3050,6 +3050,15 @@ def route_pair(pair_name):
                           abs(_st_p[0] - vp0[0]) < 0.005 and abs(_st_p[1] - vp0[1]) < 0.005)
             _n_is_stub = (_st_n is not None and
                           abs(_st_n[0] - vn0[0]) < 0.005 and abs(_st_n[1] - vn0[1]) < 0.005)
+            # When both endpoints are stub-tips that are wider-spaced than cc,
+            # skip independent stub-tip routing — it produces winding N paths.
+            # Fall through to VIA-CLEAR-SPLIT + wide-sep coupled routing instead.
+            _st_actual_sep = math.hypot(vp0[0]-vn0[0], vp0[1]-vn0[1])
+            if _p_is_stub and _n_is_stub and _st_actual_sep > cc * 1.5:
+                _p_is_stub = False
+                _n_is_stub = False
+                log.append(f"    NOTE: stub-tip skipped (both stubs, sep={_st_actual_sep:.3f}mm"
+                            f" > 1.5×cc={cc * 1.5:.3f}mm) — using wide-sep coupled routing")
             if _p_is_stub or _n_is_stub:
                 _sext_obs_p = build_obstacles(layer_id, {net_p},
                                               net_excl_tracks={net_p, net_n},
