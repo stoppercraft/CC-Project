@@ -140,6 +140,7 @@ Before proposing any fix, ask: "Would this work on a completely different PCB wi
 - **Never state facts about code without reading it.** Always use Read tool on the actual source. Code is truth; context files can be stale.
 - **Never save backup copies** of the PCB to the backups dir. Live file is the baseline.
 - **Never run commands with runaway/destructive potential** (e.g., `find /`, `rm -rf` broad paths). Flag and propose safe alternative instead.
+- **NEVER use `2>&1` in any shell command.** Stderr redirection (`2>&1`, `2>/dev/null`, `2>file`) is PROHIBITED in all Bash tool calls. Capture stdout only; if stderr is needed, use a log file written by the script itself.
 - **Debug script does not replace Route and Verify.** `debug_fanout.py` is algorithm verification only. Never tell user to reload KiCad after a debug script run — run Route and Verify first.
 - **Debug workflow and Route and Verify are separate.** Never switch from debug to Route and Verify without explicit instruction. Code change during debug → test with debug script, not Route and Verify.
 - **Never declare a problem geometrically/algorithmically impossible.** Find the upstream fix instead.
@@ -150,6 +151,9 @@ Before proposing any fix, ask: "Would this work on a completely different PCB wi
 ## Board Reference
 - Live board: `E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Frameline_Compute_V2.kicad_pcb`
 - Known-good reference: root-level `Frameline_Compute_V2.kicad_pcb` from zip `Frameline_Compute_V2-2026-09-21_100203.zip` (115 vias, F.Cu↔B.Cu 0.4mm drill)
+- **Snapshot board (fanout + critical state, 382 tracks/vias, updated 2026-11-04):** `E:\Claude Projects\CC Project Folder\ref_temp\Frameline_Compute_V2.kicad_pcb`
+  - "Revert to snapshot" = `cp "E:/Claude Projects/CC Project Folder/ref_temp/Frameline_Compute_V2.kicad_pcb" "E:/Claude Projects/Frame Line Device/Frameline Generator PCB Version 2/Frameline_Compute_V2.kicad_pcb"`
+  - Never re-run fanout+critical to restore — always use this file copy.
 - DRC output: `C:/Temp/drc_fanout.json`
 - Script: `E:\Claude Projects\CC Project Folder\Python Scripts\route_fanout_vias.py`
 - Session context: `E:\Claude Projects\CC Project Folder\SESSION_CONTEXT.md`

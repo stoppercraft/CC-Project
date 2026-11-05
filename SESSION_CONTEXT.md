@@ -167,6 +167,10 @@ Result: U3/6, U3/7, U3/9, U3/10, U3/12, U3/13 all got vias placed.
 
 - Live board = script output saved on Frameline_Compute_V2.kicad_pcb (NOT reference zip)
 - Reference zip: `...\Frameline_Compute_V2-backups\Frameline_Compute_V2-2026-09-21_100203.zip`
+- **Snapshot board (fanout + critical state):** `E:\Claude Projects\CC Project Folder\ref_temp\Frameline_Compute_V2.kicad_pcb`
+  - Restore: `cp "E:/Claude Projects/CC Project Folder/ref_temp/Frameline_Compute_V2.kicad_pcb" "E:/Claude Projects/Frame Line Device/Frameline Generator PCB Version 2/Frameline_Compute_V2.kicad_pcb"`
+  - Update snapshot: copy live board → ref_temp AND regenerate hs_debug_baseline.json (raw integer coords, NOT ToMM)
+  - Last updated: 2026-11-04 (382 tracks/vias)
 
 **route_critical.py**: Iterating — commit `f73309c` (2026-10-18). **ITERATING — not done.** No conflicts, 0 shorts, 0 copper_edge_clearance, zero overlapping traces. Board inspection PASS.
 - Key fixes so far: board edge keepouts (BOARD_EDGE_CLEARANCE=0.50mm), MAZE_MARGIN=16mm, neckdown stub clearance check, anchor_accessible(), require_offset for isolated pads.
@@ -381,6 +385,16 @@ vr = tomm(track.GetDrill()) / 2 + 0.15
 
 **Applies to:** All routing scripts. Any new code that reads via or track dimensions from
 `board.GetTracks()` must follow both rules above.
+
+---
+
+### PROHIBITED 9: Running a routing script more than once per user instruction
+
+When the user says "run X", execute X exactly once. Never run the script a second time to retrieve more output — the second execution re-routes the already-modified board, creating duplicate tracks and corrupting the board state.
+
+**What happened:** Script was run once, output was truncated, so it was run again with `| tail -60` to see the end. The second run re-executed all routing on the already-routed board.
+
+**The correct fix:** Use `tee` to capture full output on the first run, or read the log file at `Reports/fix_log_phase10.txt` which the script writes after every run. Never re-run to see more output.
 
 ---
 
