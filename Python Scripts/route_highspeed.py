@@ -2547,71 +2547,32 @@ def emit_diffpair(poly, vpa, vna, vpb, vnb, width_mm, cc, layer_id, net_p, net_n
 # ── Routing order ─────────────────────────────────────────────────────────────
 
 def routing_order():
-    scored = []
+    # Collect per-pair centroids to find the board centroid
+    pair_centroids = []
     for name, (net_p, net_n, layer, _skew) in cfg.HS_PAIRS.items():
         if name not in cfg.HS_ROUTE_WIDTHS:
             continue
-        # HDMI/LT_TX first (most critical), then AUX, then others
-        if name.startswith("HDMI"):
-            prio = 100
-        elif name.startswith("LT_TX"):
-            prio = 90
-        elif name.startswith("LT_AUX"):
-            prio = 80
-        elif name.startswith("DP_TX"):
-            prio = 70
-        else:
-            prio = 50
-        # Secondary sort: among equal-priority pairs, route the one whose
-        # CONNECTOR-SIDE pads have the highest x-coordinate first.
-        # "Connector side" = the endpoint at higher y (SOM2 is at lower y).
-        # Using connector-side x (not SOM2 x) ensures that for MIPI1 pairs,
-        # D1 (x≈147.4) routes before D0 (x≈146.4) before CLK (x≈145.4),
-        # so CLK's long A* centerline does not crowd In2.Cu before D0/D1 escape.
-        #
-        # Exception: crossing pairs (P and N swap lateral sides between endpoints)
-        # use ASCENDING connector-side x so the pair with the largest crossing extent
-        # (highest connector-x) routes LAST and navigates around earlier pairs'
-        # already-placed B.Cu layer-split tracks.
         pads_p = get_pads_on_net(net_p)
         pads_n = get_pads_on_net(net_n)
         all_pads = pads_p + pads_n
         if all_pads:
-            all_y = [p["y"] for p in all_pads]
-            y_mid = (min(all_y) + max(all_y)) / 2.0
-            connector_pads = [p for p in all_pads if p["y"] > y_mid]
-            if not connector_pads:
-                connector_pads = all_pads
-            sort_x = max(p["x"] for p in connector_pads)
-            # Detect crossing topology by comparing P vs N average x at each half
-            src_p_xs = [p["x"] for p in pads_p if p["y"] < y_mid]
-            src_n_xs = [p["x"] for p in pads_n if p["y"] < y_mid]
-            dst_p_xs = [p["x"] for p in pads_p if p["y"] > y_mid]
-            dst_n_xs = [p["x"] for p in pads_n if p["y"] > y_mid]
-            if src_p_xs and src_n_xs and dst_p_xs and dst_n_xs:
-                s_src = 1 if (sum(src_p_xs)/len(src_p_xs)) > (sum(src_n_xs)/len(src_n_xs)) else -1
-                s_dst = 1 if (sum(dst_p_xs)/len(dst_p_xs)) > (sum(dst_n_xs)/len(dst_n_xs)) else -1
-                is_crossing = (s_src * s_dst < 0)
-            else:
-                is_crossing = False
-            if is_crossing and src_p_xs and dst_p_xs:
-                # For crossing pairs, sort by crossing extent (|src_P_x - dst_P_x|)
-                # ascending: smallest-crossing pair routes first so it claims escape
-                # via positions near its source pads without blocking adjacent pairs.
-                # Largest-crossing pair (e.g. HDMI CLK) routes last and navigates
-                # around all prior pairs' already-placed B.Cu layer-split tracks.
-                src_p_x_avg = sum(src_p_xs) / len(src_p_xs)
-                dst_p_x_avg = sum(dst_p_xs) / len(dst_p_xs)
-                crossing_extent = abs(src_p_x_avg - dst_p_x_avg)
-                sort_x_key = -crossing_extent
-            else:
-                # Non-crossing: sort by connector-side x descending (current behavior)
-                sort_x_key = sort_x
+            cx = sum(p["x"] for p in all_pads) / len(all_pads)
+            cy = sum(p["y"] for p in all_pads) / len(all_pads)
         else:
-            sort_x_key = 0.0
-        scored.append((prio, sort_x_key, name))
-    scored.sort(key=lambda x: (-x[0], -x[1]))
-    return [n for _p, _x, n in scored]
+            cx = cy = 0.0
+        pair_centroids.append((name, cx, cy))
+
+    if not pair_centroids:
+        return []
+
+    # Board centroid = average of all pair centroids
+    board_cx = sum(cx for _, cx, _ in pair_centroids) / len(pair_centroids)
+    board_cy = sum(cy for _, _, cy in pair_centroids) / len(pair_centroids)
+
+    # Sort pairs by distance from board centroid, ascending (closest first)
+    scored = sorted(pair_centroids,
+                    key=lambda t: math.hypot(t[1] - board_cx, t[2] - board_cy))
+    return [name for name, _, _ in scored]
 
 
 # ── Option C: Corridor pre-assignment ────────────────────────────────────────
