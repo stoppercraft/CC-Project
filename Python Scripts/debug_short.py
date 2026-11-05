@@ -16,7 +16,7 @@ for t in board.GetTracks():
     if isinstance(t, pcbnew.PCB_VIA):
         cx = pcbnew.ToMM(t.GetX())
         drill = pcbnew.ToMM(t.GetDrillValue())
-        copper_w = pcbnew.ToMM(t.GetWidth(pcbnew.F_Cu))
+        copper_w = pcbnew.ToMM(t.GetDrill()) / 2 + 0.15  # PROHIBITED 8B: never GetWidth(layer_id) on PCB_VIA
         print(f'VIA  {net:<20} pos=({cx:.3f},{cy:.3f}) drill={drill:.3f} copper_w={copper_w:.3f}')
     else:
         sx = pcbnew.ToMM(t.GetStart().x); sy = pcbnew.ToMM(t.GetStart().y)
