@@ -2547,33 +2547,32 @@ def emit_diffpair(poly, vpa, vna, vpb, vnb, width_mm, cc, layer_id, net_p, net_n
 # ── Routing order ─────────────────────────────────────────────────────────────
 
 def routing_order():
-    # Build per-component centroids from all HS pair pads.
-    comp_pad_positions = {}  # ref -> [(x, y), ...]
-    pair_comp_refs = {}      # pair_name -> set of component refs
+    # Collect all individual pad positions per pair.
+    pair_pad_positions = {}  # pair_name -> [(x, y), ...]
+    comp_pad_positions  = {}  # ref -> [(x, y), ...]
     for name, (net_p, net_n, layer, _skew) in cfg.HS_PAIRS.items():
         if name not in cfg.HS_ROUTE_WIDTHS:
             continue
-        refs = set()
+        positions = []
         for pad in get_pads_on_net(net_p) + get_pads_on_net(net_n):
-            ref = pad["ref"]
-            comp_pad_positions.setdefault(ref, []).append((pad["x"], pad["y"]))
-            refs.add(ref)
-        pair_comp_refs[name] = refs
+            xy = (pad["x"], pad["y"])
+            positions.append(xy)
+            comp_pad_positions.setdefault(pad["ref"], []).append(xy)
+        pair_pad_positions[name] = positions
 
-    if not pair_comp_refs:
+    if not pair_pad_positions:
         return []
 
     # Compute centroid for each component that appears on HS nets.
-    comp_centroids = {}
-    for ref, positions in comp_pad_positions.items():
-        comp_centroids[ref] = (
-            sum(x for x, y in positions) / len(positions),
-            sum(y for x, y in positions) / len(positions),
-        )
+    comp_centroids = {
+        ref: (sum(x for x, y in pos) / len(pos),
+              sum(y for x, y in pos) / len(pos))
+        for ref, pos in comp_pad_positions.items()
+    }
 
-    # Find the board centroid (average of all component centroids).
-    all_cx = [cx for cx, cy in comp_centroids.values()]
-    all_cy = [cy for cx, cy in comp_centroids.values()]
+    # Board centroid = average of all component centroids.
+    all_cx = [cx for cx, _ in comp_centroids.values()]
+    all_cy = [cy for _, cy in comp_centroids.values()]
     board_cx = sum(all_cx) / len(all_cx)
     board_cy = sum(all_cy) / len(all_cy)
 
@@ -2585,17 +2584,14 @@ def routing_order():
     log.append(f"  [routing_order] origin component: {origin_ref} "
                f"({origin_cx:.1f}, {origin_cy:.1f})")
 
-    # Sort each component by its distance from the origin.
-    comp_dist = {ref: math.hypot(cx - origin_cx, cy - origin_cy)
-                 for ref, (cx, cy) in comp_centroids.items()}
-
-    # Each pair's sort key = distance of its CLOSEST component to the origin.
-    # Pairs that share the origin component (dist=0) route first; then the
-    # next-closest component's pairs, and so on outward.
+    # Each pair's sort key = distance of its CLOSEST individual pad to the origin.
+    # This sub-orders pairs within the same component (e.g. two SOM2 rows) by
+    # whichever row's pads are physically nearer to the origin.
     def _pair_key(name):
-        return min(comp_dist[r] for r in pair_comp_refs[name])
+        return min(math.hypot(x - origin_cx, y - origin_cy)
+                   for x, y in pair_pad_positions[name])
 
-    return sorted(pair_comp_refs.keys(), key=_pair_key)
+    return sorted(pair_pad_positions.keys(), key=_pair_key)
 
 
 # ── Option C: Corridor pre-assignment ────────────────────────────────────────
