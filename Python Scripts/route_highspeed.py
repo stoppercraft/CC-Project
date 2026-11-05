@@ -2448,6 +2448,58 @@ def _parallel_corner(p_end, p_next, edx_i, edy_i, edx_i1, edy_i1):
     return (p_end[0] + t * edx_i, p_end[1] + t * edy_i)
 
 
+def _compute_diffpair_paths(poly, vpa, vna, vpb, vnb, cc):
+    """Compute P and N offset paths from centerline without emitting tracks.
+    Returns (p_pts, n_pts) using identical geometry to emit_diffpair."""
+    if len(poly) < 2:
+        return [], []
+    half = cc / 2.0
+    px0, py0 = _perp_of(*poly[0], *poly[1])
+    p_sign = 1.0 if (px0 * (vpa[0]-poly[0][0]) + py0 * (vpa[1]-poly[0][1])) >= 0 else -1.0
+    n_segs = len(poly) - 1
+    seg_dirs = []
+    for i in range(n_segs):
+        dxi = poly[i+1][0] - poly[i][0]; dyi = poly[i+1][1] - poly[i][1]
+        dL = math.hypot(dxi, dyi) or 1.0
+        seg_dirs.append((dxi / dL, dyi / dL))
+    _edx0, _edy0 = seg_dirs[0]
+    p_start = (poly[0][0] + p_sign * px0 * half, poly[0][1] + p_sign * py0 * half)
+    n_start = (poly[0][0] - p_sign * px0 * half, poly[0][1] - p_sign * py0 * half)
+    p_pts = _fwd_stub_pts(vpa[0], vpa[1], p_start[0], p_start[1], _edx0, _edy0)
+    n_pts = _fwd_stub_pts(vna[0], vna[1], n_start[0], n_start[1], _edx0, _edy0)
+    for i in range(n_segs):
+        pxi, pyi = _perp_of(*poly[i], *poly[i+1])
+        if i < n_segs - 1:
+            pxi1, pyi1 = _perp_of(*poly[i+1], *poly[i+2])
+            p_seg_end    = (poly[i+1][0] + p_sign * pxi  * half, poly[i+1][1] + p_sign * pyi  * half)
+            n_seg_end    = (poly[i+1][0] - p_sign * pxi  * half, poly[i+1][1] - p_sign * pyi  * half)
+            p_next_start = (poly[i+1][0] + p_sign * pxi1 * half, poly[i+1][1] + p_sign * pyi1 * half)
+            n_next_start = (poly[i+1][0] - p_sign * pxi1 * half, poly[i+1][1] - p_sign * pyi1 * half)
+            edxi_c, edyi_c   = seg_dirs[i]
+            edxi1_c, edyi1_c = seg_dirs[i+1]
+            cp = _parallel_corner(p_seg_end, p_next_start, edxi_c, edyi_c, edxi1_c, edyi1_c)
+            cn = _parallel_corner(n_seg_end, n_next_start, edxi_c, edyi_c, edxi1_c, edyi1_c)
+            if cp is not None and cn is not None:
+                p_pts.append(cp); n_pts.append(cn)
+            else:
+                p_pts.append(p_seg_end); n_pts.append(n_seg_end)
+                bp = _stub_pts(p_seg_end[0], p_seg_end[1], p_next_start[0], p_next_start[1], edxi1_c, edyi1_c)
+                bn = _stub_pts(n_seg_end[0], n_seg_end[1], n_next_start[0], n_next_start[1], edxi1_c, edyi1_c)
+                for pt in bp[1:]: p_pts.append(pt)
+                for pt in bn[1:]: n_pts.append(pt)
+        else:
+            p_seg_end = (poly[i+1][0] + p_sign * pxi * half, poly[i+1][1] + p_sign * pyi * half)
+            n_seg_end = (poly[i+1][0] - p_sign * pxi * half, poly[i+1][1] - p_sign * pyi * half)
+            p_pts.append(p_seg_end); n_pts.append(n_seg_end)
+    pxl, pyl = _perp_of(*poly[-2], *poly[-1])
+    p_end = (poly[-1][0] + p_sign * pxl * half, poly[-1][1] + p_sign * pyl * half)
+    n_end = (poly[-1][0] - p_sign * pxl * half, poly[-1][1] - p_sign * pyl * half)
+    _edxL, _edyL = seg_dirs[-1]
+    p_pts.extend(_stub_pts(p_end[0], p_end[1], vpb[0], vpb[1], _edxL, _edyL)[1:])
+    n_pts.extend(_stub_pts(n_end[0], n_end[1], vnb[0], vnb[1], _edxL, _edyL)[1:])
+    return merge_collinear(p_pts), merge_collinear(n_pts)
+
+
 def emit_diffpair(poly, vpa, vna, vpb, vnb, width_mm, cc, layer_id, net_p, net_n):
     """Emit P and N tracks offset ±cc/2 from the centerline polyline.
 
@@ -3050,15 +3102,6 @@ def route_pair(pair_name):
                           abs(_st_p[0] - vp0[0]) < 0.005 and abs(_st_p[1] - vp0[1]) < 0.005)
             _n_is_stub = (_st_n is not None and
                           abs(_st_n[0] - vn0[0]) < 0.005 and abs(_st_n[1] - vn0[1]) < 0.005)
-            # When both endpoints are stub-tips that are wider-spaced than cc,
-            # skip independent stub-tip routing — it produces winding N paths.
-            # Fall through to VIA-CLEAR-SPLIT + wide-sep coupled routing instead.
-            _st_actual_sep = math.hypot(vp0[0]-vn0[0], vp0[1]-vn0[1])
-            if _p_is_stub and _n_is_stub and _st_actual_sep > cc * 1.5:
-                _p_is_stub = False
-                _n_is_stub = False
-                log.append(f"    NOTE: stub-tip skipped (both stubs, sep={_st_actual_sep:.3f}mm"
-                            f" > 1.5×cc={cc * 1.5:.3f}mm) — using wide-sep coupled routing")
             if _p_is_stub or _n_is_stub:
                 _sext_obs_p = build_obstacles(layer_id, {net_p},
                                               net_excl_tracks={net_p, net_n},
@@ -3878,6 +3921,63 @@ def route_pair(pair_name):
                         log.append(f"    NOTE: spine-waypoint via "
                                    f"({_sx:.3f},{_sy:.3f}){_sp_lbl}")
 
+        # Wide-sep individual P/N check: before A* (which finds winding paths),
+        # if the actual via sep >> cc, the combined corridor check rejects paths
+        # where obstacles fit in the gap between P and N.  Verify using per-trace
+        # path_clear so gap-threading obstacles don't block the corridor.
+        if chosen is None:
+            _ws_src_sep = math.hypot(vp0[0]-vn0[0], vp0[1]-vn0[1])
+            _ws_dst_sep = math.hypot(vp1[0]-vn1[0], vp1[1]-vn1[1])
+            _ws_sep = max(_ws_src_sep, _ws_dst_sep)
+            if _ws_sep > cc + 0.010:
+                _ws_obs_sib = build_obstacles(layer_id, set(),
+                                              net_excl_tracks={net_p, net_n},
+                                              include_sibling_reserves=True,
+                                              sibling_extra=_ws_sep / 2.0)
+                _ws_obs_no_sib = obs_no_sib or build_obstacles(layer_id, set(),
+                                                                net_excl_tracks={net_p, net_n},
+                                                                include_sibling_reserves=False)
+                obs_no_sib = _ws_obs_no_sib
+                if _trunk_info is not None:
+                    _ws_style, _ws_tx = _trunk_info
+                    if _ws_style == 'HV' and _ws_tx is not None:
+                        _ws_cp = merge_collinear(
+                            [(cx0, cy0), (_ws_tx, cy0), (_ws_tx, cy1), (cx1, cy1)])
+                    else:
+                        _ws_cp = merge_collinear(
+                            [(cx0, cy0), (cx0, cy1), (cx1, cy1)])
+                    _ws_pp, _ws_np = _compute_diffpair_paths(
+                        _ws_cp, vp0, vn0, vp1, vn1, _ws_sep)
+                    if _ws_pp and _ws_np:
+                        for _ws_o, _ws_lbl in [(_ws_obs_sib, ""),
+                                                (_ws_obs_no_sib, " (sib relaxed)")]:
+                            if (path_clear(_ws_pp, width_mm, _ws_o) and
+                                    path_clear(_ws_np, width_mm, _ws_o)):
+                                chosen = _ws_cp
+                                _effective_cc = _ws_sep
+                                log.append(f"    NOTE: wide-sep coupled corridor "
+                                           f"{_ws_style} sep={_ws_sep:.3f}mm{_ws_lbl}")
+                                break
+                if chosen is None:
+                    for _ws_o, _ws_lbl in [(_ws_obs_sib, ""),
+                                            (_ws_obs_no_sib, " (sib relaxed)")]:
+                        def _ws_indiv_check(c, _o=_ws_o):
+                            _pp, _np = _compute_diffpair_paths(
+                                merge_collinear(c), vp0, vn0, vp1, vn1, _ws_sep)
+                            return bool(_pp and _np and
+                                        path_clear(_pp, width_mm, _o) and
+                                        path_clear(_np, width_mm, _o))
+                        _ws_bc = _best_clear_path(
+                            octilinear_paths(cx0, cy0, cx1, cy1) +
+                            _vdh_paths(cx0, cy0, cx1, cy1),
+                            _ws_indiv_check)
+                        if _ws_bc is not None:
+                            chosen = merge_collinear(_ws_bc)
+                            _effective_cc = _ws_sep
+                            log.append(f"    NOTE: wide-sep coupled octilinear "
+                                       f"sep={_ws_sep:.3f}mm{_ws_lbl}")
+                            break
+
         if chosen is None:
             obs_no_sib = obs_no_sib or build_obstacles(layer_id, set(),
                                                         net_excl_tracks={net_p, net_n},
@@ -3994,68 +4094,6 @@ def route_pair(pair_name):
                                         break
                                 if chosen is not None:
                                     break
-                    if chosen is None:
-                        # Wide-separation coupled routing: source vias are further apart
-                        # than cc.  Use the actual via separation as the corridor width so
-                        # path_clear accurately checks the combined P+N footprint, then
-                        # pass the actual separation to emit_diffpair so P/N track centers
-                        # land on their via positions without detour stubs.
-                        _ws_src_sep = math.hypot(vp0[0]-vn0[0], vp0[1]-vn0[1])
-                        _ws_dst_sep = math.hypot(vp1[0]-vn1[0], vp1[1]-vn1[1])
-                        _ws_sep = max(_ws_src_sep, _ws_dst_sep)
-                        if _ws_sep > cc + 0.010:
-                            _w_ws = width_mm + _ws_sep
-                            _ws_obs_sib = build_obstacles(layer_id, set(),
-                                                          net_excl_tracks={net_p, net_n},
-                                                          include_sibling_reserves=True,
-                                                          sibling_extra=_ws_sep / 2.0)
-                            _ws_obs_no_sib = build_obstacles(layer_id, set(),
-                                                              net_excl_tracks={net_p, net_n},
-                                                              include_sibling_reserves=False)
-                            # Corridor trunk with actual separation
-                            if _trunk_info is not None:
-                                _ws_style, _ws_tx = _trunk_info
-                                if _ws_style == 'HV' and _ws_tx is not None:
-                                    _ws_cp = merge_collinear(
-                                        [(cx0, cy0), (_ws_tx, cy0), (_ws_tx, cy1), (cx1, cy1)])
-                                else:
-                                    _ws_cp = merge_collinear(
-                                        [(cx0, cy0), (cx0, cy1), (cx1, cy1)])
-                                for _ws_o, _ws_lbl in [(_ws_obs_sib, ""),
-                                                        (_ws_obs_no_sib, " (sib relaxed)")]:
-                                    if path_clear(_ws_cp, _w_ws, _ws_o):
-                                        chosen = _ws_cp
-                                        _effective_cc = _ws_sep
-                                        log.append(f"    NOTE: wide-sep coupled corridor "
-                                                   f"{_ws_style} sep={_ws_sep:.3f}mm{_ws_lbl}")
-                                        break
-                            # Octilinear paths with actual separation
-                            if chosen is None:
-                                for _ws_o, _ws_lbl in [(_ws_obs_sib, ""),
-                                                        (_ws_obs_no_sib, " (sib relaxed)")]:
-                                    _ws_bc = _best_clear_path(
-                                        octilinear_paths(cx0, cy0, cx1, cy1) +
-                                        _vdh_paths(cx0, cy0, cx1, cy1),
-                                        lambda c, _o=_ws_o: path_clear(c, _w_ws, _o))
-                                    if _ws_bc is not None:
-                                        chosen = merge_collinear(_ws_bc)
-                                        _effective_cc = _ws_sep
-                                        log.append(f"    NOTE: wide-sep coupled octilinear"
-                                                   f" sep={_ws_sep:.3f}mm{_ws_lbl}")
-                                        break
-                            # A* with actual separation
-                            if chosen is None:
-                                for _ws_o, _ws_lbl in [(_ws_obs_sib, "sibling included"),
-                                                        (_ws_obs_no_sib, "sibling relaxed")]:
-                                    _ws_a = _astar_centerline(cx0, cy0, cx1, cy1,
-                                                              _w_ws, _ws_o)
-                                    if _ws_a is not None:
-                                        chosen = _ws_a
-                                        _effective_cc = _ws_sep
-                                        log.append(f"    NOTE: wide-sep coupled A* "
-                                                   f"({_ws_lbl}, sep={_ws_sep:.3f}mm)")
-                                        break
-
                     if chosen is None:
                         # Independent P/N fallback: the shared corridor (width_mm+cc)
                         # is blocked, but P and N may each have a clear individual path
