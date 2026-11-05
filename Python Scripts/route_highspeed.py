@@ -3348,7 +3348,7 @@ def route_pair(pair_name):
                         _pp_sl = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                    _wf_sl, _obs_try_p,
                                                    snap_toward_dest=True)
-                    if _pp_sl is None and _obs_try_p is _obs_sl_board:
+                    if _pp_sl is None and _obs_try_p is _obs_sl_p_board:
                         _cand = _astar_centerline(vp0[0], vp0[1], vp1[0], vp1[1],
                                                   _wf_sl, _obs_try_p,
                                                   snap_toward_dest=True)
