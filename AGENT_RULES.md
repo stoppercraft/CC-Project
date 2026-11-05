@@ -152,7 +152,7 @@ Before proposing any fix, ask: "Would this work on a completely different PCB wi
 ## Board Reference
 - Live board: `E:\Claude Projects\Frame Line Device\Frameline Generator PCB Version 2\Frameline_Compute_V2.kicad_pcb`
 - Known-good reference: root-level `Frameline_Compute_V2.kicad_pcb` from zip `Frameline_Compute_V2-2026-09-21_100203.zip` (115 vias, F.Cu↔B.Cu 0.4mm drill)
-- **Snapshot board (fanout + critical state, 382 tracks/vias, updated 2026-11-04):** `E:\Claude Projects\CC Project Folder\ref_temp\Frameline_Compute_V2.kicad_pcb`
+- **Snapshot board (fanout + critical state, 400 tracks/vias, updated 2026-11-04):** `E:\Claude Projects\CC Project Folder\ref_temp\Frameline_Compute_V2.kicad_pcb`
   - "Revert to snapshot" = `cp "E:/Claude Projects/CC Project Folder/ref_temp/Frameline_Compute_V2.kicad_pcb" "E:/Claude Projects/Frame Line Device/Frameline Generator PCB Version 2/Frameline_Compute_V2.kicad_pcb"`
   - Never re-run fanout+critical to restore — always use this file copy.
 - DRC output: `C:/Temp/drc_fanout.json`
