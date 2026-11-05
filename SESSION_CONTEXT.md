@@ -62,54 +62,48 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-# Updated 2026-10-28 (session 46 — end).
+# Updated 2026-11-04 (session 54 — end).
 
 **route_fanout_vias.py:** COMPLETE. commit `015b30f`
 **route_critical.py:** COMPLETE. commits `bf77af2`, `836e1a5`
-**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. latest commit `3c9fe8c`
+**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. latest commit `ce50a2e` (session 54)
 
-Session 46 focus: USB2 seg 2 (D_USB1 → J_USB_IN1) independent P/N routing.
+### Current HS state: 13 conflicts, 5 pairs with unrouted segments
 
-### USB2 seg 2 — Current State (UNRESOLVED)
+Per-net obstacle exclusion applied this session (commits 2609b5a, f657e70, ce50a2e). Conflict count unchanged at 13 — MIPI/DP_RX1 blockages are caused by corridor ordering, not obstacle exclusion.
 
-USB2 seg 2 (D_USB1 → J_USB_IN1) still routes the 15mm A* detour for both P and N.
-
-The VIA-CLEAR-SPLIT block now fires (`_vc_force_indep` triggers when direct-pad detour >2×
-straight), and P finds a VDV candidate at d=0.300. But N fails all HDV candidates and the
-fallback keeps the original long "chosen" path for BOTH P and N. Nothing was solved.
-
-**What was added to the code this session (commit 3c9fe8c) — NOT YET SOLVING ANYTHING:**
-- `_vc_force_indep` flag: fires VIA-CLEAR-SPLIT for direct-pad detour >2× straight
-- VDV/HDV candidate loops for P and N in VIA-CLEAR-SPLIT
-- `_p_segs` diagonal filter: excludes 45° P segments from AABB obstacle list
-- N A* post-validation against `_p_exact_segs`
-- `_seg_placed` stores (rect, net_name) tuples to exclude same-net previous-segment tracks
-- Guards skipping miter-predict and spine fallback for `_both_on_route_layer`
-
-**Root problem still open:** N's HDV candidates (d=0.5–2.0) all fail `_path_clear_approx`
-against `_vc_obs_n_dp`. The blocking obstacle has not been identified.
-
-N geometry: vn0=(156.1,137.55), vn1=(158.847,135.206), adx=2.747, ady=2.344 → HDV.
-Board F.Cu obstacles in area: J_USB_IN1 pads A8-A12 at y=135.206 x=156.347–158.347,
-C_CM_USB_A1 GND pad at (159.395,137.238), USBC_IN_CC1 track at x=159.847.
-
-**Next step:** Identify which specific obstacle rejects N's d=0.5 HDV candidate.
-Write a standalone diagnostic script (not modifying the routing code) that calls
-`build_obstacles_board_only` for the board state and checks the d=0.5 path against
-each obstacle individually.
+**Snapshot board:** `ref_temp/Frameline_Compute_V2.kicad_pcb` — 400 tracks/vias, FRESH (2026-11-04, correct component board). `hs_debug_baseline.json` is FRESH — FULL_SETUP=False fast iteration will work immediately.
 
 ### What to do at next session start
 
-1. Read this file + project_phase10_routing.md + project_hs_routing_requirements.md
-2. Read route_highspeed.py (VIA-CLEAR-SPLIT section ~line 3500–3700)
-3. Read `_path_clear_approx` function definition
-4. Identify blocking obstacle for USB2 N HDV candidates — then fix
-5. Do NOT run scripts without explicit instruction
+**Priority 1 — Fix MIPI1_D3/D1/D0 (all paths blocked)**
+
+Root cause: corridor reordering puts VH pairs (D2, CLK) first. CLK takes a 27-seg winding A* path that physically blocks D3/D1/D0's corridor on In2.Cu.
+
+Fix location: `_corridor_trunk` reordering block at ~line 2691 of route_highspeed.py:
+```python
+# CURRENT (VH first — crossing_pairs first):
+reordered = ([p for p in pairs_in_order if p in crossing_pairs] +
+             [p for p in pairs_in_order if p not in crossing_pairs])
+# FIX (HV first — non-crossing first):
+reordered = ([p for p in pairs_in_order if p not in crossing_pairs] +
+             [p for p in pairs_in_order if p in crossing_pairs])
+```
+Test with `debug_highspeed.py` FULL_SETUP=False targeting MIPI1_D3.
+
+**Priority 2 — Fix MIPI1_D2_N routing on F.Cu instead of In2.Cu**
+
+When VCS routes D2 P and N independently, N falls back to F.Cu (54mm zigzag). Root cause not yet identified — suspected bug in VCS independent-routing fallback.
+
+**Priority 3 — Investigate USB2 segs 0-1 and DP_RX1**
+
+USB2 segs 0-1: SOM2→J_USB_OUT1 and J_USB_OUT1→D_USB1 blocked on F.Cu.
+DP_RX1: U3 (155.250,121.618) → J_USB_OUT1 (137.100,130.600) blocked on In2.Cu.
 
 ### Debug workflow for route_highspeed.py
 
-- `debug_highspeed.py` with `FULL_SETUP = True` → clear all → fanout → critical → **lock all tracks/vias** → highspeed --pairs TARGET_PAIRS
-- `FULL_SETUP = False` → clear unlocked only → highspeed --pairs TARGET_PAIRS (fast iteration)
+- `debug_highspeed.py` FULL_SETUP=False → load snapshot → remove non-snapshot tracks → highspeed --pairs TARGET_PAIRS (fast iteration, baseline is fresh)
+- `debug_highspeed.py` FULL_SETUP=True → clear all → fanout → critical → snapshot fingerprints → highspeed --pairs
 - Never run DRC or Route and Verify after debug_highspeed.py — board is partial
 
 #### Unresolved fanout bug (deferred) — `last_blk` overwrite in `_face_fanout`
@@ -117,16 +111,13 @@ In the depth-scan while loop, `last_blk = blk` overwrites on every failing depth
 - Shallow depths: via-vs-via against pad48 → actionable (should increment pad48 lat_off)
 - Deep depths (~2.25mm): via-vs-pad against C_LT1V8_BULK1 → non-actionable fixed obstacle
 Final `last_blk` = C_LT1V8_BULK1 → algorithm increments pad47's own lat_off 50× → keepout.
-Correct fix: track first-actionable (blk_j not None) AND first-fixed (blk_j=None) blockers
-separately; prefer actionable if one exists. First-blocker fix (5cede7d) was reverted because
-it caused regressions when the FIRST depth's blocker was itself a fixed pad on other faces.
 User manually placed stubs for U3/47+48. Defer fix until directed.
 
 #### Remaining J_DSI1 issues — ACCEPTED LIMITATIONS (no algorithmic fix)
 - J_DSI1/15 (TOUCH_RST) and J_DSI1/17 (TOUCH_SCL): still escape NORTH (via at y≈152.113).
   No general algorithmic fix without project-specific overrides (prohibited).
 
-Script execution order: route_fanout_vias.py ✅ → route_critical.py ✅ → route_highspeed.py (NEXT)
+Script execution order: route_fanout_vias.py ✅ → route_critical.py ✅ → route_highspeed.py (IN PROGRESS)
 
 ---
 
