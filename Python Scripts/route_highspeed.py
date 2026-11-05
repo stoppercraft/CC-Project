@@ -3754,8 +3754,9 @@ def route_pair(pair_name):
                 log.append(f"    NOTE: corridor {_style} trunk {_label}")
 
         if chosen is None:
-            _bc = _best_clear_path(octilinear_paths(cx0, cy0, cx1, cy1),
-                                    lambda c: path_clear(c, w_full, obs_layer))
+            _bc = _best_clear_path(
+                octilinear_paths(cx0, cy0, cx1, cy1) + _vdh_paths(cx0, cy0, cx1, cy1),
+                lambda c: path_clear(c, w_full, obs_layer))
             if _bc is not None:
                 chosen = merge_collinear(_bc)
 
@@ -3777,8 +3778,9 @@ def route_pair(pair_name):
                     log.append(f"    NOTE: corridor {_style} trunk {_label} "
                                f"(sibling extra relaxed)")
             if chosen is None:
-                _bc = _best_clear_path(octilinear_paths(cx0, cy0, cx1, cy1),
-                                        lambda c: path_clear(c, w_full, _obs_mid))
+                _bc = _best_clear_path(
+                    octilinear_paths(cx0, cy0, cx1, cy1) + _vdh_paths(cx0, cy0, cx1, cy1),
+                    lambda c: path_clear(c, w_full, _obs_mid))
                 if _bc is not None:
                     chosen = merge_collinear(_bc)
                     log.append("    NOTE: octilinear path found (sibling extra relaxed)")
@@ -3800,8 +3802,9 @@ def route_pair(pair_name):
                     log.append(f"    NOTE: corridor {_style} trunk {_label} "
                                f"(sibling reserves relaxed)")
             if chosen is None:
-                _bc = _best_clear_path(octilinear_paths(cx0, cy0, cx1, cy1),
-                                        lambda c: path_clear(c, w_full, obs_no_sib))
+                _bc = _best_clear_path(
+                    octilinear_paths(cx0, cy0, cx1, cy1) + _vdh_paths(cx0, cy0, cx1, cy1),
+                    lambda c: path_clear(c, w_full, obs_no_sib))
                 if _bc is not None:
                     chosen = merge_collinear(_bc)
                     log.append("    NOTE: octilinear path found (sibling reserves relaxed)")
