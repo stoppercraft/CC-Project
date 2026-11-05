@@ -1,0 +1,399 @@
+route_highspeed.py — APPLY
+======================================================================
+Via: pad=0.6mm  drill=0.3mm  GND_NET='GND'
+  [routing_order] origin component: C_TX2P1 (148.2, 124.7)
+Pairs to route (18): DP_TX2, LT_TX2, DP_TX1, LT_TX1, DP_RX2, DP_RX1, DP_AUX, LT_AUX, HDMI0_TX2, HDMI0_TX1, HDMI0_TX0, HDMI0_CLK, USB2, MIPI1_D3, MIPI1_D0, MIPI1_D1, MIPI1_CLK, MIPI1_D2
+(pairs not in HS_ROUTE_WIDTHS are deferred to FreeRouting by config)
+  [corridor] group assigned (non-crossing): DP_RX2→HV x=132.875, DP_RX1→HV x=136.725
+  [corridor] group assigned (non-crossing): HDMI0_TX2→HV x=150.175, HDMI0_TX1→HV x=151.375, HDMI0_TX0→HV x=153.275, HDMI0_CLK→HV x=154.450
+  [corridor] crossing group assigned: MIPI1_CLK→VH, MIPI1_D0→HV x=145.942, MIPI1_D1→HV x=147.242, MIPI1_D2→VH, MIPI1_D3→HV x=149.292
+  [corridor] reordered group in routing order: ['MIPI1_D3', 'MIPI1_D0', 'MIPI1_D1', 'MIPI1_CLK', 'MIPI1_D2']
+
+[DP_TX2]  DP_TX2_P/DP_TX2_N  layer=In2.Cu  w=0.15mm  gap=0.1mm  skew_limit=0.127mm
+    NOTE: 3 matched endpoints — routing consecutive segments
+  seg 0: C_TX2P1/C_TX2N1 → D_TX2/D_TX2  [no crossing]
+    stub-snap C_TX2P1 net=DP_TX2_P: (132.500,130.600)
+    stub-snap C_TX2N1 net=DP_TX2_N: (133.250,130.600)
+    stub-snap D_TX2 net=DP_TX2_P: (132.500,130.600)
+    stub-snap D_TX2 net=DP_TX2_N: (133.250,130.600)
+    RETRY src: P/N vias on same lateral side — forcing crossing
+    reuse cached via C_TX2N1 net=DP_TX2_N: (133.25, 130.6)
+    reuse cached via C_TX2P1 net=DP_TX2_P: (132.5, 130.6)
+    RETRY dst: P/N vias on same lateral side — forcing crossing
+    reuse cached via D_TX2 net=DP_TX2_N: (133.25, 130.6)
+    reuse cached via D_TX2 net=DP_TX2_P: (132.5, 130.6)
+    NOTE: via-clearance overlap — no clean 2-seg path; routing P/N independently
+    VIA-CLEAR-SPLIT: P (132.500,130.600)→(132.500,130.600) on In2.Cu, N (133.250,130.600)→(133.250,130.600) on In2.Cu
+  seg 1: D_TX2/D_TX2 → J_USB_OUT1/J_USB_OUT1  [no crossing]
+    reuse cached via D_TX2 net=DP_TX2_P: (132.5, 130.6)
+    reuse cached via D_TX2 net=DP_TX2_N: (133.25, 130.6)
+    stub-snap J_USB_OUT1 net=DP_TX2_P: (132.500,130.600)
+    stub-snap J_USB_OUT1 net=DP_TX2_N: (133.250,130.600)
+    RETRY src: P/N vias on same lateral side — forcing crossing
+    reuse cached via D_TX2 net=DP_TX2_N: (133.25, 130.6)
+    reuse cached via D_TX2 net=DP_TX2_P: (132.5, 130.6)
+    RETRY dst: P/N vias on same lateral side — forcing crossing
+    reuse cached via J_USB_OUT1 net=DP_TX2_N: (133.25, 130.6)
+    reuse cached via J_USB_OUT1 net=DP_TX2_P: (132.5, 130.6)
+    NOTE: via-clearance overlap — no clean 2-seg path; routing P/N independently
+    VIA-CLEAR-SPLIT: P (132.500,130.600)→(132.500,130.600) on In2.Cu, N (133.250,130.600)→(133.250,130.600) on In2.Cu
+
+[LT_TX2]  LT_TX2_P/LT_TX2_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: U3/U3 → C_TX2P1/C_TX2N1  [no crossing]
+    stub-tip U3 net=LT_TX2_P: (148.157,124.215)
+    stub-tip U3 net=LT_TX2_N: (149.148,124.215)
+    stub-tip C_TX2P1 net=LT_TX2_P: (149.100,120.595)
+    stub-tip C_TX2N1 net=LT_TX2_N: (149.500,120.595)
+    TRACK LT_TX2_P: (148.157,124.215)→(149.100,123.272)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=1.33mm
+    TRACK LT_TX2_P: (149.100,123.272)→(149.100,120.595)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=2.68mm
+    TRACK LT_TX2_N: (149.148,124.215)→(149.500,123.863)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.50mm
+    TRACK LT_TX2_N: (149.500,123.863)→(149.500,120.595)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=3.27mm
+    NOTE: stub-tip direct routing  Lp=4.011mm  Ln=3.766mm  Δ=0.245mm
+  LT_TX2 TOTAL: P=4.011mm  N=3.766mm  Δ=0.245mm  (skew limit 0.127mm)  [REVIEW — add trombone meander]
+
+[DP_TX1]  DP_TX1_P/DP_TX1_N  layer=In2.Cu  w=0.15mm  gap=0.1mm  skew_limit=0.127mm
+    NOTE: 3 matched endpoints — routing consecutive segments
+  seg 0: C_TX1P1/C_TX1N1 → J_USB_OUT1/J_USB_OUT1  [CROSSING]
+    NOTE: src perp pitch (0.562mm) too tight for crossing (need 0.800mm) — correcting at dst
+    stub-snap C_TX1P1 net=DP_TX1_P: (137.350,136.300)
+    stub-snap C_TX1N1 net=DP_TX1_N: (136.600,136.300)
+    stub-snap J_USB_OUT1 net=DP_TX1_N: (136.600,136.300)
+    stub-snap J_USB_OUT1 net=DP_TX1_P: (137.350,136.300)
+    RETRY src: P/N vias on same lateral side — forcing crossing
+    reuse cached via C_TX1N1 net=DP_TX1_N: (136.6, 136.299999)
+    reuse cached via C_TX1P1 net=DP_TX1_P: (137.35, 136.299999)
+    RETRY dst: P/N vias on same lateral side — forcing crossing
+    reuse cached via J_USB_OUT1 net=DP_TX1_N: (136.6, 136.299999)
+    reuse cached via J_USB_OUT1 net=DP_TX1_P: (137.35, 136.299999)
+    NOTE: via-clearance overlap — no clean 2-seg path; routing P/N independently
+    VIA-CLEAR-SPLIT: P (137.350,136.300)→(137.350,136.300) on In2.Cu, N (136.600,136.300)→(136.600,136.300) on In2.Cu
+  seg 1: J_USB_OUT1/J_USB_OUT1 → D_TX1/D_TX1  [no crossing]
+    reuse cached via J_USB_OUT1 net=DP_TX1_P: (137.35, 136.299999)
+    reuse cached via J_USB_OUT1 net=DP_TX1_N: (136.6, 136.299999)
+    stub-snap D_TX1 net=DP_TX1_P: (137.350,136.300)
+    stub-snap D_TX1 net=DP_TX1_N: (136.600,136.300)
+    RETRY src: P/N vias on same lateral side — forcing crossing
+    reuse cached via J_USB_OUT1 net=DP_TX1_N: (136.6, 136.299999)
+    reuse cached via J_USB_OUT1 net=DP_TX1_P: (137.35, 136.299999)
+    RETRY dst: P/N vias on same lateral side — forcing crossing
+    reuse cached via D_TX1 net=DP_TX1_N: (136.6, 136.299999)
+    reuse cached via D_TX1 net=DP_TX1_P: (137.35, 136.299999)
+    NOTE: via-clearance overlap — no clean 2-seg path; routing P/N independently
+    VIA-CLEAR-SPLIT: P (137.350,136.300)→(137.350,136.300) on In2.Cu, N (136.600,136.300)→(136.600,136.300) on In2.Cu
+
+[LT_TX1]  LT_TX1_P/LT_TX1_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: U3/U3 → C_TX1P1/C_TX1N1  [no crossing]
+    stub-tip U3 net=LT_TX1_P: (151.050,122.120)
+    stub-tip U3 net=LT_TX1_N: (151.750,122.168)
+    direct-pad C_TX1P1 net=LT_TX1_P: (150.850,124.215)
+    direct-pad C_TX1N1 net=LT_TX1_N: (151.840,124.215)
+    NOTE: mixed segment — routing on F.Cu
+    TRACK LT_TX1_P: (151.050,122.120)→(150.850,122.320)  0.127mm  Escape routing + slow signals (I2C, GPIO, SPI, debug)  L=0.28mm
+    TRACK LT_TX1_P: (150.850,122.320)→(150.850,124.215)  0.127mm  Escape routing + slow signals (I2C, GPIO, SPI, debug)  L=1.89mm
+    TRACK LT_TX1_N: (151.750,122.168)→(151.840,122.258)  0.127mm  Escape routing + slow signals (I2C, GPIO, SPI, debug)  L=0.13mm
+    TRACK LT_TX1_N: (151.840,122.258)→(151.840,124.215)  0.127mm  Escape routing + slow signals (I2C, GPIO, SPI, debug)  L=1.96mm
+    NOTE: stub-tip direct routing  Lp=2.178mm  Ln=2.085mm  Δ=0.094mm
+  LT_TX1 TOTAL: P=2.178mm  N=2.085mm  Δ=0.094mm  (skew limit 0.127mm)  [PASS]
+
+[DP_RX2]  DP_RX2_P/DP_RX2_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: U3/U3 → J_USB_OUT1/J_USB_OUT1  [CROSSING]
+    NOTE: src perp pitch (0.238mm) too tight for crossing (need 0.800mm) — correcting at dst
+    stub-snap U3 net=DP_RX2_P: (152.950,122.445)
+    stub-snap U3 net=DP_RX2_N: (152.200,122.445)
+    stub-snap J_USB_OUT1 net=DP_RX2_N: (133.250,136.300)
+    stub-snap J_USB_OUT1 net=DP_RX2_P: (132.500,136.300)
+    reuse cached via J_USB_OUT1 net=DP_RX2_P: (132.5, 136.299999)
+    reuse cached via J_USB_OUT1 net=DP_RX2_N: (133.25, 136.299999)
+    reuse cached via J_USB_OUT1 net=DP_RX2_N: (133.25, 136.299999)
+    reuse cached via J_USB_OUT1 net=DP_RX2_P: (132.5, 136.299999)
+    WARNING: layer-split routing failed (N=FAIL P-alt=ok); skipping emit
+
+[DP_RX1]  DP_RX1_P/DP_RX1_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: U3/U3 → J_USB_OUT1/J_USB_OUT1  [no crossing]
+    stub-snap U3 net=DP_RX1_P: (155.250,121.618)
+    stub-snap U3 net=DP_RX1_N: (154.500,121.618)
+    stub-snap J_USB_OUT1 net=DP_RX1_P: (137.100,130.600)
+    stub-snap J_USB_OUT1 net=DP_RX1_N: (136.350,130.600)
+    NOTE: via-clearance overlap — no clean 2-seg path; routing P/N independently
+    TRACK DP_RX1_P: (155.250,121.618)→(155.250,130.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=8.98mm
+    TRACK DP_RX1_P: (155.250,130.600)→(137.100,130.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=18.15mm
+    TRACK DP_RX1_N: (154.500,121.618)→(136.350,121.618)  0.127mm  CM5 fanout + slow signals + power switching  L=18.15mm
+    TRACK DP_RX1_N: (136.350,121.618)→(136.350,130.600)  0.127mm  CM5 fanout + slow signals + power switching  L=8.98mm
+    VIA-CLEAR-SPLIT: P (155.250,121.618)→(137.100,130.600) on In2.Cu, N (154.500,121.618)→(136.350,130.600) on CM5 fanout + slow signals + power switching
+
+[DP_AUX]  DP_AUX_P/DP_AUX_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+    NOTE: 4 matched endpoints — routing consecutive segments
+  seg 0: U3/U3 → C_AUX_P1/C_AUX_N1  [no crossing]
+    stub-snap U3 net=DP_AUX_P: (145.850,117.045)
+    stub-snap U3 net=DP_AUX_N: (145.850,115.545)
+    stub-snap C_AUX_P1 net=DP_AUX_P: (145.850,117.045)
+    stub-snap C_AUX_N1 net=DP_AUX_N: (145.850,115.545)
+    RETRY src: P/N vias on same lateral side — forcing crossing
+    reuse cached via U3 net=DP_AUX_N: (145.85, 115.5454)
+    reuse cached via U3 net=DP_AUX_P: (145.85, 117.0454)
+    RETRY dst: P/N vias on same lateral side — forcing crossing
+    reuse cached via C_AUX_N1 net=DP_AUX_N: (145.85, 115.5454)
+    reuse cached via C_AUX_P1 net=DP_AUX_P: (145.85, 117.0454)
+    seg emitted: 0 bend(s)  Lp=0.000mm  Ln=0.000mm  Δ=0.000mm
+  seg 1: C_AUX_P1/C_AUX_N1 → D_AUX1/D_AUX1  [CROSSING]
+    reuse cached via C_AUX_N1 net=DP_AUX_N: (145.85, 115.5454)
+    reuse cached via C_AUX_P1 net=DP_AUX_P: (145.85, 117.0454)
+    stub-snap D_AUX1 net=DP_AUX_P: (134.300,129.675)
+    stub-snap D_AUX1 net=DP_AUX_N: (145.850,115.545)
+    TRACK DP_AUX_P: (145.850,117.045)→(134.300,117.045)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=11.55mm
+    TRACK DP_AUX_P: (134.300,117.045)→(134.300,129.675)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=12.63mm
+    NOTE: independent P/N routing succeeded
+  seg 2: D_AUX1/D_AUX1 → J_USB_OUT1/J_USB_OUT1  [no crossing]
+    reuse cached via D_AUX1 net=DP_AUX_P: (134.3, 129.674999)
+    reuse cached via D_AUX1 net=DP_AUX_N: (145.85, 115.5454)
+    stub-snap J_USB_OUT1 net=DP_AUX_P: (134.050,136.300)
+    stub-snap J_USB_OUT1 net=DP_AUX_N: (135.550,130.600)
+    reuse cached via J_USB_OUT1 net=DP_AUX_P: (134.05, 136.299999)
+    reuse cached via J_USB_OUT1 net=DP_AUX_N: (135.55, 130.6)
+    reuse cached via J_USB_OUT1 net=DP_AUX_N: (135.55, 130.6)
+    reuse cached via J_USB_OUT1 net=DP_AUX_P: (134.05, 136.299999)
+    WARNING: layer-split routing failed (N=ok P-alt=FAIL); skipping emit
+
+[LT_AUX]  LT_AUX_P/LT_AUX_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: U3/U3 → C_AUX_P1/C_AUX_N1  [no crossing]
+    stub-tip U3 net=LT_AUX_P: (142.946,116.913)
+    stub-tip U3 net=LT_AUX_N: (142.946,116.015)
+    stub-tip C_AUX_P1 net=LT_AUX_P: (148.200,116.495)
+    stub-tip C_AUX_N1 net=LT_AUX_N: (148.200,116.095)
+    TRACK LT_AUX_P: (142.946,116.913)→(148.200,116.913)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=5.25mm
+    TRACK LT_AUX_P: (148.200,116.913)→(148.200,116.495)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.42mm
+    TRACK LT_AUX_N: (142.946,116.015)→(148.200,116.015)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=5.25mm
+    TRACK LT_AUX_N: (148.200,116.015)→(148.200,116.095)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.08mm
+    NOTE: stub-tip direct routing  Lp=5.672mm  Ln=5.334mm  Δ=0.338mm
+  LT_AUX TOTAL: P=5.672mm  N=5.334mm  Δ=0.338mm  (skew limit 0.127mm)  [REVIEW — add trombone meander]
+
+[HDMI0_TX2]  HDMI0_TX2_P/HDMI0_TX2_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → U3/U3  [no crossing]
+    stub-snap SOM2 net=HDMI0_TX2_P: (150.000,104.295)
+    stub-snap SOM2 net=HDMI0_TX2_N: (150.750,104.295)
+    stub-snap U3 net=HDMI0_TX2_P: (149.800,111.573)
+    stub-snap U3 net=HDMI0_TX2_N: (150.550,111.573)
+    NOTE: corridor HV trunk x=150.175mm
+    NOTE: via-clearance overlap — no clean 2-seg path; routing P/N independently
+    NOTE: via-clear-split N D-V-D jog x=150.450
+    TRACK HDMI0_TX2_P: (150.000,104.295)→(149.800,104.495)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.28mm
+    TRACK HDMI0_TX2_P: (149.800,104.495)→(149.800,111.573)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=7.08mm
+    TRACK HDMI0_TX2_N: (150.750,104.295)→(150.450,104.595)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.42mm
+    TRACK HDMI0_TX2_N: (150.450,104.595)→(150.450,111.473)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=6.88mm
+    TRACK HDMI0_TX2_N: (150.450,111.473)→(150.550,111.573)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.14mm
+    VIA-CLEAR-SPLIT: P (150.000,104.295)→(149.800,111.573) on In2.Cu, N (150.750,104.295)→(150.550,111.573) on In2.Cu
+
+[HDMI0_TX1]  HDMI0_TX1_P/HDMI0_TX1_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → U3/U3  [no crossing]
+    stub-snap SOM2 net=HDMI0_TX1_P: (151.200,104.895)
+    stub-snap SOM2 net=HDMI0_TX1_N: (151.950,104.895)
+    stub-snap U3 net=HDMI0_TX1_P: (151.000,110.448)
+    stub-snap U3 net=HDMI0_TX1_N: (151.750,110.448)
+    NOTE: corridor HV trunk x=151.375mm
+    NOTE: via-clearance overlap — no clean 2-seg path; routing P/N independently
+    TRACK HDMI0_TX1_P: (151.200,104.895)→(151.000,105.095)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.28mm
+    TRACK HDMI0_TX1_P: (151.000,105.095)→(151.000,110.448)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=5.35mm
+    TRACK HDMI0_TX1_N: (151.950,104.895)→(151.750,105.095)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.28mm
+    TRACK HDMI0_TX1_N: (151.750,105.095)→(151.750,110.448)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=5.35mm
+    VIA-CLEAR-SPLIT: P (151.200,104.895)→(151.000,110.448) on In2.Cu, N (151.950,104.895)→(151.750,110.448) on In2.Cu
+
+[HDMI0_TX0]  HDMI0_TX0_P/HDMI0_TX0_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → U3/U3  [no crossing]
+    stub-snap SOM2 net=HDMI0_TX0_P: (152.350,105.545)
+    stub-snap SOM2 net=HDMI0_TX0_N: (153.100,105.545)
+    stub-snap U3 net=HDMI0_TX0_P: (152.900,110.507)
+    stub-snap U3 net=HDMI0_TX0_N: (153.650,110.507)
+    NOTE: corridor HV trunk x=153.275mm
+    NOTE: via-clearance overlap — no clean 2-seg path; routing P/N independently
+    TRACK HDMI0_TX0_P: (152.350,105.545)→(152.350,109.957)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=4.41mm
+    TRACK HDMI0_TX0_P: (152.350,109.957)→(152.900,110.507)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.78mm
+    TRACK HDMI0_TX0_N: (153.100,105.545)→(153.650,106.095)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.78mm
+    TRACK HDMI0_TX0_N: (153.650,106.095)→(153.650,110.507)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=4.41mm
+    VIA-CLEAR-SPLIT: P (152.350,105.545)→(152.900,110.507) on In2.Cu, N (153.100,105.545)→(153.650,110.507) on In2.Cu
+
+[HDMI0_CLK]  HDMI0_CLK_P/HDMI0_CLK_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → U3/U3  [no crossing]
+    stub-snap SOM2 net=HDMI0_CLK_P: (153.700,103.817)
+    stub-snap SOM2 net=HDMI0_CLK_N: (154.450,103.817)
+    stub-snap U3 net=HDMI0_CLK_P: (154.050,111.648)
+    stub-snap U3 net=HDMI0_CLK_N: (154.850,111.648)
+    NOTE: corridor HV trunk x=154.450mm
+    NOTE: via-clearance overlap — no clean 2-seg path; routing P/N independently
+    NOTE: via-clear-split P D-V-D jog x=154.200
+    TRACK HDMI0_CLK_P: (153.700,103.817)→(154.200,104.317)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.71mm
+    TRACK HDMI0_CLK_P: (154.200,104.317)→(154.200,111.498)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=7.18mm
+    TRACK HDMI0_CLK_P: (154.200,111.498)→(154.050,111.648)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.21mm
+    TRACK HDMI0_CLK_N: (154.450,103.817)→(154.450,111.248)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=7.43mm
+    TRACK HDMI0_CLK_N: (154.450,111.248)→(154.850,111.648)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.57mm
+    VIA-CLEAR-SPLIT: P (153.700,103.817)→(154.050,111.648) on In2.Cu, N (154.450,103.817)→(154.850,111.648) on In2.Cu
+
+[USB2]  USB_P/USB_N  layer=F.Cu  w=0.2mm  gap=0.2mm  skew_limit=0.5mm
+    NOTE: 4 matched endpoints — routing consecutive segments
+  seg 0: SOM2/SOM2 → J_USB_OUT1/J_USB_OUT1  [no crossing]
+    NOTE: direct-pad segment — routing on F.Cu
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+  seg 1: J_USB_OUT1/J_USB_OUT1 → D_USB1/D_USB1  [no crossing]
+    NOTE: direct-pad segment — routing on F.Cu
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+  seg 2: D_USB1/D_USB1 → J_USB_IN1/J_USB_IN1  [no crossing]
+    NOTE: direct-pad segment — routing on F.Cu
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+
+[MIPI1_D3]  MIPI1_D3_P/MIPI1_D3_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → J_DSI1/J_DSI1  [no crossing]
+    stub-snap SOM2 net=MIPI1_D3_P: (155.800,104.295)
+    stub-snap SOM2 net=MIPI1_D3_N: (155.050,104.295)
+    stub-snap J_DSI1 net=MIPI1_D3_P: (149.667,152.113)
+    stub-snap J_DSI1 net=MIPI1_D3_N: (148.917,152.113)
+    NOTE: A* centerline found (26 seg(s), sibling reserves included)
+    NOTE: via-clearance overlap — no clean 2-seg path; routing P/N independently
+    TRACK MIPI1_D3_P: (155.800,104.295)→(155.905,104.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.15mm
+    TRACK MIPI1_D3_P: (155.905,104.400)→(156.000,104.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.09mm
+    TRACK MIPI1_D3_P: (156.000,104.400)→(156.000,111.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=7.20mm
+    TRACK MIPI1_D3_P: (156.000,111.600)→(156.600,112.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (156.600,112.200)→(156.600,117.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=4.80mm
+    TRACK MIPI1_D3_P: (156.600,117.000)→(156.000,117.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (156.000,117.600)→(156.000,130.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=12.60mm
+    TRACK MIPI1_D3_P: (156.000,130.200)→(156.600,130.800)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (156.600,130.800)→(156.600,136.800)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=6.00mm
+    TRACK MIPI1_D3_P: (156.600,136.800)→(156.000,137.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (156.000,137.400)→(156.000,138.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_P: (156.000,138.000)→(155.400,138.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (155.400,138.600)→(155.400,139.800)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=1.20mm
+    TRACK MIPI1_D3_P: (155.400,139.800)→(154.800,140.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (154.800,140.400)→(154.800,141.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_P: (154.800,141.000)→(154.200,141.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (154.200,141.600)→(154.200,142.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_P: (154.200,142.200)→(153.600,142.800)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (153.600,142.800)→(153.600,143.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_P: (153.600,143.400)→(153.000,144.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (153.000,144.000)→(153.000,144.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_P: (153.000,144.600)→(152.400,145.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (152.400,145.200)→(152.400,146.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=1.20mm
+    TRACK MIPI1_D3_P: (152.400,146.400)→(151.800,147.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (151.800,147.000)→(151.800,147.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_P: (151.800,147.600)→(151.200,148.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (151.200,148.200)→(151.200,148.800)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_P: (151.200,148.800)→(150.600,149.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (150.600,149.400)→(150.600,150.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_P: (150.600,150.000)→(150.000,150.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_P: (150.000,150.600)→(150.000,151.800)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=1.20mm
+    TRACK MIPI1_D3_P: (150.000,151.800)→(149.667,152.133)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.47mm
+    TRACK MIPI1_D3_P: (149.667,152.133)→(149.667,152.113)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.02mm
+    TRACK MIPI1_D3_N: (155.050,104.295)→(154.945,104.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.15mm
+    TRACK MIPI1_D3_N: (154.945,104.400)→(154.800,104.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.14mm
+    TRACK MIPI1_D3_N: (154.800,104.400)→(154.800,110.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=6.00mm
+    TRACK MIPI1_D3_N: (154.800,110.400)→(155.400,111.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_N: (155.400,111.000)→(155.400,112.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=1.20mm
+    TRACK MIPI1_D3_N: (155.400,112.200)→(154.800,112.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_N: (154.800,112.200)→(154.800,112.800)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_N: (154.800,112.800)→(146.400,121.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=11.88mm
+    TRACK MIPI1_D3_N: (146.400,121.200)→(135.600,121.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=10.80mm
+    TRACK MIPI1_D3_N: (135.600,121.200)→(135.600,129.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=7.80mm
+    TRACK MIPI1_D3_N: (135.600,129.000)→(135.000,129.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_N: (135.000,129.600)→(135.000,131.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=1.80mm
+    TRACK MIPI1_D3_N: (135.000,131.400)→(135.600,132.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_N: (135.600,132.000)→(132.000,135.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=5.09mm
+    TRACK MIPI1_D3_N: (132.000,135.600)→(132.000,136.800)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=1.20mm
+    TRACK MIPI1_D3_N: (132.000,136.800)→(143.400,148.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=16.12mm
+    TRACK MIPI1_D3_N: (143.400,148.200)→(143.400,148.800)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_N: (143.400,148.800)→(144.000,149.400)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_N: (144.000,149.400)→(144.000,150.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.60mm
+    TRACK MIPI1_D3_N: (144.000,150.000)→(144.600,150.600)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_N: (144.600,150.600)→(144.000,151.200)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.85mm
+    TRACK MIPI1_D3_N: (144.000,151.200)→(144.000,153.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=1.80mm
+    TRACK MIPI1_D3_N: (144.000,153.000)→(148.200,153.000)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=4.20mm
+    TRACK MIPI1_D3_N: (148.200,153.000)→(148.917,152.283)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=1.01mm
+    TRACK MIPI1_D3_N: (148.917,152.283)→(148.917,152.113)  0.127mm  HS diff pairs — buried stripline (HDMI0, DP Alt Mode, MIPI1)  L=0.17mm
+    VIA-CLEAR-SPLIT: P (155.800,104.295)→(149.667,152.113) on In2.Cu, N (155.050,104.295)→(148.917,152.113) on In2.Cu
+
+[MIPI1_D0]  MIPI1_D0_P/MIPI1_D0_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → J_DSI1/J_DSI1  [no crossing]
+    stub-snap SOM2 net=MIPI1_D0_P: (151.950,98.665)
+    stub-snap SOM2 net=MIPI1_D0_N: (151.200,98.665)
+    stub-snap J_DSI1 net=MIPI1_D0_P: (146.317,151.388)
+    stub-snap J_DSI1 net=MIPI1_D0_N: (145.567,151.388)
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+
+[MIPI1_D1]  MIPI1_D1_P/MIPI1_D1_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → J_DSI1/J_DSI1  [no crossing]
+    stub-snap SOM2 net=MIPI1_D1_P: (153.100,98.015)
+    stub-snap SOM2 net=MIPI1_D1_N: (152.350,98.015)
+    stub-snap J_DSI1 net=MIPI1_D1_P: (147.617,150.813)
+    stub-snap J_DSI1 net=MIPI1_D1_N: (146.867,150.813)
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+
+[MIPI1_CLK]  MIPI1_C_P/MIPI1_C_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → J_DSI1/J_DSI1  [no crossing]
+    stub-snap SOM2 net=MIPI1_C_P: (154.450,99.143)
+    stub-snap SOM2 net=MIPI1_C_N: (153.700,99.143)
+    stub-snap J_DSI1 net=MIPI1_C_P: (145.317,152.113)
+    stub-snap J_DSI1 net=MIPI1_C_N: (144.567,152.113)
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+
+[MIPI1_D2]  MIPI1_D2_P/MIPI1_D2_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → J_DSI1/J_DSI1  [no crossing]
+    stub-snap SOM2 net=MIPI1_D2_P: (155.800,98.665)
+    stub-snap SOM2 net=MIPI1_D2_N: (155.050,98.665)
+    stub-snap J_DSI1 net=MIPI1_D2_P: (148.917,151.339)
+    stub-snap J_DSI1 net=MIPI1_D2_N: (148.167,151.339)
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+
+[Option D — rip-up and retry]
+  [rip-up] pass 1: ripping ['MIPI1_CLK', 'MIPI1_D0', 'MIPI1_D1', 'MIPI1_D2', 'USB2']
+  [rip-up] USB2: removed 0 board tracks
+  [rip-up] MIPI1_D0: removed 0 board tracks
+  [rip-up] MIPI1_CLK: removed 0 board tracks
+  [rip-up] MIPI1_D2: removed 0 board tracks
+  [rip-up] MIPI1_D1: removed 0 board tracks
+
+[USB2]  USB_P/USB_N  layer=F.Cu  w=0.2mm  gap=0.2mm  skew_limit=0.5mm
+    NOTE: 4 matched endpoints — routing consecutive segments
+  seg 0: SOM2/SOM2 → J_USB_OUT1/J_USB_OUT1  [no crossing]
+    NOTE: direct-pad segment — routing on F.Cu
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+  seg 1: J_USB_OUT1/J_USB_OUT1 → D_USB1/D_USB1  [no crossing]
+    NOTE: direct-pad segment — routing on F.Cu
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+  seg 2: D_USB1/D_USB1 → J_USB_IN1/J_USB_IN1  [no crossing]
+    NOTE: direct-pad segment — routing on F.Cu
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+
+[MIPI1_D0]  MIPI1_D0_P/MIPI1_D0_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → J_DSI1/J_DSI1  [no crossing]
+    stub-snap SOM2 net=MIPI1_D0_P: (151.950,98.665)
+    stub-snap SOM2 net=MIPI1_D0_N: (151.200,98.665)
+    stub-snap J_DSI1 net=MIPI1_D0_P: (146.317,151.388)
+    stub-snap J_DSI1 net=MIPI1_D0_N: (145.567,151.388)
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+
+[MIPI1_D1]  MIPI1_D1_P/MIPI1_D1_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → J_DSI1/J_DSI1  [no crossing]
+    stub-snap SOM2 net=MIPI1_D1_P: (153.100,98.015)
+    stub-snap SOM2 net=MIPI1_D1_N: (152.350,98.015)
+    stub-snap J_DSI1 net=MIPI1_D1_P: (147.617,150.813)
+    stub-snap J_DSI1 net=MIPI1_D1_N: (146.867,150.813)
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+
+[MIPI1_CLK]  MIPI1_C_P/MIPI1_C_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → J_DSI1/J_DSI1  [no crossing]
+    stub-snap SOM2 net=MIPI1_C_P: (154.450,99.143)
+    stub-snap SOM2 net=MIPI1_C_N: (153.700,99.143)
+    stub-snap J_DSI1 net=MIPI1_C_P: (145.317,152.113)
+    stub-snap J_DSI1 net=MIPI1_C_N: (144.567,152.113)
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+
+[MIPI1_D2]  MIPI1_D2_P/MIPI1_D2_N  layer=In2.Cu  w=0.127mm  gap=0.1mm  skew_limit=0.127mm
+  seg 0: SOM2/SOM2 → J_DSI1/J_DSI1  [no crossing]
+    stub-snap SOM2 net=MIPI1_D2_P: (155.800,98.665)
+    stub-snap SOM2 net=MIPI1_D2_N: (155.050,98.665)
+    stub-snap J_DSI1 net=MIPI1_D2_P: (148.917,151.339)
+    stub-snap J_DSI1 net=MIPI1_D2_N: (148.167,151.339)
+    NOTE: all paths blocked — skipping segment (Option D rip-up will retry)
+  [rip-up] pass 2: no crossings or new skipped pairs — done
+  [rip-up] 5 pair(s) have unrouted segment(s): ['MIPI1_CLK', 'MIPI1_D0', 'MIPI1_D1', 'MIPI1_D2', 'USB2']
+
+Board saved.
+
+16 CONFLICT(s) — review before applying.
+Next: run lock_highspeed_nets.py, then verify_hs_sandwich.py.

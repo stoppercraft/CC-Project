@@ -62,40 +62,44 @@ Key ICs: TPS54561 (U1, 5V/5A buck), STUSB4500QTR (U2, USB-C PD 3.0 sink), LT6711
 
 ## ⚡ IMMEDIATE NEXT ACTION
 
-# Updated 2026-11-05 (session 55 — end).
+# Updated 2026-11-05 (session 56 — end).
 
 **route_fanout_vias.py:** COMPLETE. commit `015b30f`
 **route_critical.py:** COMPLETE. commits `bf77af2`, `836e1a5`
-**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. latest commit `46860aa` (session 55)
+**route_highspeed.py:** ALGORITHM WORK IN PROGRESS. latest commit `8e0754a` (session 56)
 
-### Current HS state: 17 conflicts, 5 pairs with unrouted segments
+### Current HS state: 16 conflicts, 5 pairs with unrouted segments
 
 5 unrouted: MIPI1_CLK, MIPI1_D0, MIPI1_D1, MIPI1_D2, USB2.
-Run log: `Reports/hs_run_20261105b.txt`
+Run log: `Reports/hs_run_20261107.txt`
 
-**Snapshot board:** `ref_temp/Frameline_Compute_V2.kicad_pcb` — 400 tracks/vias, FRESH (2026-11-04, correct component board). `hs_debug_baseline.json` is STALE — was generated before session 55 routing-order changes. Run FULL_SETUP=True to regenerate before fast-iteration.
+**Snapshot board:** `ref_temp/Frameline_Compute_V2.kicad_pcb` — 400 tracks/vias, FRESH (2026-11-04, correct component board). `hs_debug_baseline.json` is STALE — regenerate with FULL_SETUP=True before fast-iteration.
 
-### What was fixed this session (session 55, 2026-11-05)
+### What was fixed this session (session 56, 2026-11-05)
 
-- **Fix 7** (commit in session 55): MULTI-SEG leg 1 N now uses `_obs_ms_n_base` (without P's AABB) + `path_clear_vs_exact_segs` for exact geometry check. Eliminated DP_TX1 N's 32mm detour; DP_TX1 now routes cleanly on In2.Cu.
-- **Fix 6** (commit `b097ee7`): MIPI1 corridor reorder — HV (non-crossing) pairs before VH (crossing). MIPI1_D3 now routes.
-- **Fix 5**: Independent routing exact geometry already applied; committed.
-- **New `routing_order()`** (commit `46860aa`): sorts all pairs by distance of their closest individual pad to the origin component (component closest to board centroid). Currently detects C_TX2P1 (148.2, 124.7) as origin. Routing order: DP_TX2, LT_TX2, DP_TX1, LT_TX1, DP_RX2, DP_RX1, DP_AUX, LT_AUX, HDMI0_TX2, HDMI0_TX1, HDMI0_TX0, HDMI0_CLK, USB2, MIPI1_D3, MIPI1_D0, MIPI1_D1, MIPI1_CLK, MIPI1_D2.
-- DP_RX1: now routes (was always blocked before).
-- DP_AUX: now routes all 3 segments.
+- **Reverted stub-tip skip block** (commit `8e0754a`): Removed a block added mid-session 56 that suppressed MULTI-SEG IN-SERIES routing for wide-sep stub-tip pairs (sep > 1.5×cc). The block was intended to redirect MIPI1_D3 through wide-sep coupled routing, but MIPI1_D3 uses stub-snap endpoints (not stub-tip), so it was never affected. LT_TX1 uses stub-tip with sep=0.702mm and was broken by the skip. Without LT_TX1 tracks, DP_AUX seg 1 took a winding path blocking seg 2.
+- **Added `_compute_diffpair_paths` helper** and **wide-sep block before A***: these remain in the code. The wide-sep block fires for MIPI1_D3 (sep=0.75mm) before A*, tries coupled corridor and octilinear paths, but cannot find a valid path due to physical obstacles (HDMI0_CEC blocks P going south, DP_RX1_P blocks N going south). Falls through to A* which finds the same 26-seg winding path as before.
+
+### Why MIPI1_D3 cannot route cleanly (documented analysis)
+
+MIPI1_D3 P and N CANNOT route together as a simple coupled pair. The physical constraints:
+- **P at x=155.800 going south**: blocked by HDMI0_CEC via at (155.650, 112.795) r=0.400mm. P needs x >= 156.100 to clear.
+- **N at x=155.050 going south**: blocked by DP_RX1_P vertical track at x=155.250 (y=121.618 to 130.600). N needs x >= 155.476 to clear DP_RX1_P vertical, but DP_RX1_P also runs horizontal at y=130.600 from x=137.1 to 155.25 — N cannot cross y=130.600 anywhere from x=137.1 to x=155.25.
+- **N can't go straight south at all**: must cross DP_RX1_P barrier. Optimal N path: south to y≈121, east to x≈155.55 (east of DP_RX1_P vertical+clearance), south to y≈131 (past DP_RX1_P horizontal), west to x=148.917, south to destination. ~55mm vs current 79mm winding. But A* doesn't find this because grid alignment (0.6mm steps from x=155.050) puts nearest valid east node at x=156.250 (155.050+2*0.6), which is too far east to serve as a simple east-jog.
+- **Current result**: P routes via staircase east (around HDMI0_CEC), N routes via massive winding path (goes west to x=132 to bypass DP_RX1_P barrier). The N winding path occupies x=132–155, y=112–137 on In2.Cu, blocking MIPI1_D0/D1/D2/CLK corridor on retry.
 
 ### What to do at next session start
 
-**Priority 1 — Investigate MIPI1_D0/D1/D2/CLK still blocked in rip-up retry**
+**Priority 1 — MIPI1_D0/D1/D2/CLK: shorten MIPI1_D3_N's path**
 
-MIPI1_D3 routes first (closest to origin by pad distance, HV non-crossing). But D3's N path may wind through In2.Cu corridor space that D0/D1/CLK need on retry. Suggested investigation approach:
-- Run `debug_highspeed.py` FULL_SETUP=True targeting `MIPI1_D3` only — inspect the D3 N path geometry.
-- Check if D3_N takes a winding route that consumes the corridor x=144–150, y=100–152.
-- If so, consider whether a tighter `_best_clear_path` check or corridor sub-ordering within MIPI1 can produce a shorter D3 path.
+Root cause confirmed: D3_N winding path blocks D0/D1/CLK/D2.
+Optimal N path exists (~55mm): south to y≈121, east-jog to x≈155.55, south past DP_RX1_P vertical to y≈131, west to x=148.917, south to y=152.113.
+Issue: standard A* 0.6mm grid can't find this east-jog path (grid points misaligned with the jog location). The VCS independent N routing uses A* which finds the winding westward path instead.
+Approach: in the VCS P/N independent routing section (around line 4202+), for N routing specifically, add east-jog candidate paths to the `octilinear_paths` search. Or adjust the A* grid to use a finer step (gp_fine) for the VCS independent case. Or add a 5-segment east-jog template to the IP/VCS path search for wide-sep pairs where N is east-blocked.
 
 **Priority 2 — USB2 all 3 segments blocked on F.Cu**
 
-USB2 fails even in rip-up retry. SOM2→J_USB_OUT1 (seg 0), J_USB_OUT1→D_USB1 (seg 1), D_USB1→J_USB_IN1 (seg 2) all blocked. Root cause not yet investigated.
+USB2 fails even in rip-up retry. Root cause not yet investigated.
 
 **Priority 3 — DP_RX2 layer-split N fail**
 
