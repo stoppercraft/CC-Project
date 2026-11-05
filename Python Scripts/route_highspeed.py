@@ -1253,6 +1253,55 @@ def octilinear_paths(x1, y1, x2, y2):
     return paths
 
 
+def _vdh_paths(x1, y1, x2, y2):
+    """Return 3-segment VDH/HDV candidate paths between two points.
+    VDH: vertical stub → 45° diagonal → horizontal run.
+    HDV: horizontal stub → 45° diagonal → vertical run.
+    Complements octilinear_paths when a stub before the diagonal is needed
+    to route around an obstacle that blocks the pure 2-segment candidates.
+    All segments are 0°, 45°, or 90° only.
+    """
+    adx, ady = abs(x2 - x1), abs(y2 - y1)
+    if adx < 1e-4 or ady < 1e-4 or abs(adx - ady) < 1e-4:
+        return []
+    sx = 1.0 if x2 > x1 else -1.0
+    sy = 1.0 if y2 > y1 else -1.0
+    paths = []
+    if adx > ady + 1e-4:
+        # VDH: vertical stub vs (0 < vs < ady), then diagonal (ady-vs), then horizontal
+        for frac in (0.25, 0.5, 0.75):
+            vs = ady * frac
+            if vs < 1e-4 or ady - vs < 1e-4:
+                continue
+            xm = x1 + (ady - vs) * sx
+            paths.append([(x1, y1), (x1, y1 + vs * sy), (xm, y2), (x2, y2)])
+        # HDV: horizontal stub hs (0 < hs < adx-ady), then diagonal (ady), then horizontal
+        max_hs = adx - ady
+        for frac in (0.25, 0.5, 0.75):
+            hs = max_hs * frac
+            if hs < 1e-4:
+                continue
+            xm = x1 + (hs + ady) * sx
+            paths.append([(x1, y1), (x1 + hs * sx, y1), (xm, y2), (x2, y2)])
+    else:
+        # HDV: horizontal stub hs (0 < hs < adx), then diagonal (adx-hs), then vertical
+        for frac in (0.25, 0.5, 0.75):
+            hs = adx * frac
+            if hs < 1e-4 or adx - hs < 1e-4:
+                continue
+            ym = y1 + (adx - hs) * sy
+            paths.append([(x1, y1), (x1 + hs * sx, y1), (x2, ym), (x2, y2)])
+        # VDH: vertical stub vs (0 < vs < ady-adx), then diagonal (adx), then vertical
+        max_vs = ady - adx
+        for frac in (0.25, 0.5, 0.75):
+            vs = max_vs * frac
+            if vs < 1e-4:
+                continue
+            ym = y1 + vs * sy
+            paths.append([(x1, y1), (x1, ym), (x2, ym + adx * sy), (x2, y2)])
+    return paths
+
+
 def _path_len(pts):
     """Total Euclidean length of a polyline."""
     return sum(math.hypot(pts[i+1][0]-pts[i][0], pts[i+1][1]-pts[i][1])
@@ -3214,7 +3263,8 @@ def route_pair(pair_name):
                     # same-net — adding it as an obstacle blocks leg2 at its own start.
                     _ms_p_l1 = None; _ms_p_l2 = None
                     _bc = _best_clear_path(
-                        octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
+                        octilinear_paths(vp0[0], vp0[1], vp1[0], vp1[1]) +
+                        _vdh_paths(vp0[0], vp0[1], vp1[0], vp1[1]),
                         lambda c: path_clear(c, _wf_ms, _obs_ms_p))
                     if _bc is not None:
                         _ms_p_l1 = merge_collinear(_bc)
@@ -3223,22 +3273,30 @@ def route_pair(pair_name):
                                                       _wf_ms, _obs_ms_p,
                                                       snap_toward_dest=True)
                     if _ms_p_l1 is not None:
-                        # Leg1 P arrival direction at vp1 — skip leg2 candidates that
-                        # start going in the opposite direction (would retrace leg1).
                         _l1p_dx = _ms_p_l1[-1][0] - _ms_p_l1[-2][0]
                         _l1p_dy = _ms_p_l1[-1][1] - _ms_p_l1[-2][1]
                         _l1p_n  = math.hypot(_l1p_dx, _l1p_dy)
                         if _l1p_n > 1e-9:
                             _l1p_dx /= _l1p_n; _l1p_dy /= _l1p_n
-                        def _ms_p_l2_pred(c, _dx=_l1p_dx, _dy=_l1p_dy, _n=_l1p_n):
-                            if len(c) >= 2 and _n > 1e-9:
-                                _cn = math.hypot(c[1][0]-c[0][0], c[1][1]-c[0][1])
-                                if _cn > 1e-9 and ((c[1][0]-c[0][0])/_cn*_dx +
-                                                   (c[1][1]-c[0][1])/_cn*_dy) < -0.9:
-                                    return False
-                            return path_clear(c, _wf_ms, _obs_ms_p)
+                        # Only filter backward starts if p2 is in the forward half-space.
+                        # If p2 is behind vp1 relative to leg1 arrival, the destination
+                        # genuinely requires going backward — filtering would block all
+                        # valid candidates and force a 33mm+ A* detour.
+                        _p2_dest_dot = (_p2x - vp1[0]) * _l1p_dx + (_p2y - vp1[1]) * _l1p_dy
+                        if _p2_dest_dot > 0:
+                            def _ms_p_l2_pred(c, _dx=_l1p_dx, _dy=_l1p_dy, _n=_l1p_n):
+                                if len(c) >= 2 and _n > 1e-9:
+                                    _cn = math.hypot(c[1][0]-c[0][0], c[1][1]-c[0][1])
+                                    if _cn > 1e-9 and ((c[1][0]-c[0][0])/_cn*_dx +
+                                                       (c[1][1]-c[0][1])/_cn*_dy) < -0.9:
+                                        return False
+                                return path_clear(c, _wf_ms, _obs_ms_p)
+                        else:
+                            def _ms_p_l2_pred(c):
+                                return path_clear(c, _wf_ms, _obs_ms_p)
                         _bc = _best_clear_path(
-                            octilinear_paths(vp1[0], vp1[1], _p2x, _p2y), _ms_p_l2_pred)
+                            octilinear_paths(vp1[0], vp1[1], _p2x, _p2y) +
+                            _vdh_paths(vp1[0], vp1[1], _p2x, _p2y), _ms_p_l2_pred)
                         if _bc is not None:
                             _ms_p_l2 = merge_collinear(_bc)
                         if _ms_p_l2 is None:
@@ -3264,7 +3322,8 @@ def route_pair(pair_name):
                                        for a, b in zip(_ms_p, _ms_p[1:])]
                         _ms_n_l1 = None; _ms_n_l2 = None
                         _bc = _best_clear_path(
-                            octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
+                            octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]) +
+                            _vdh_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
                             lambda c: (path_clear(c, _wf_ms, _obs_ms_n) and
                                        path_clear_vs_exact_segs(c, _wf_ms, _ms_p_exact)))
                         if _bc is not None:
@@ -3279,16 +3338,23 @@ def route_pair(pair_name):
                             _l1n_n  = math.hypot(_l1n_dx, _l1n_dy)
                             if _l1n_n > 1e-9:
                                 _l1n_dx /= _l1n_n; _l1n_dy /= _l1n_n
-                            def _ms_n_l2_pred(c, _dx=_l1n_dx, _dy=_l1n_dy, _n=_l1n_n):
-                                if len(c) >= 2 and _n > 1e-9:
-                                    _cn = math.hypot(c[1][0]-c[0][0], c[1][1]-c[0][1])
-                                    if _cn > 1e-9 and ((c[1][0]-c[0][0])/_cn*_dx +
-                                                       (c[1][1]-c[0][1])/_cn*_dy) < -0.9:
-                                        return False
-                                return (path_clear(c, _wf_ms, _obs_ms_n) and
-                                        path_clear_vs_exact_segs(c, _wf_ms, _ms_p_exact))
+                            _n2_dest_dot = (_n2x - vn1[0]) * _l1n_dx + (_n2y - vn1[1]) * _l1n_dy
+                            if _n2_dest_dot > 0:
+                                def _ms_n_l2_pred(c, _dx=_l1n_dx, _dy=_l1n_dy, _n=_l1n_n):
+                                    if len(c) >= 2 and _n > 1e-9:
+                                        _cn = math.hypot(c[1][0]-c[0][0], c[1][1]-c[0][1])
+                                        if _cn > 1e-9 and ((c[1][0]-c[0][0])/_cn*_dx +
+                                                           (c[1][1]-c[0][1])/_cn*_dy) < -0.9:
+                                            return False
+                                    return (path_clear(c, _wf_ms, _obs_ms_n) and
+                                            path_clear_vs_exact_segs(c, _wf_ms, _ms_p_exact))
+                            else:
+                                def _ms_n_l2_pred(c):
+                                    return (path_clear(c, _wf_ms, _obs_ms_n) and
+                                            path_clear_vs_exact_segs(c, _wf_ms, _ms_p_exact))
                             _bc = _best_clear_path(
-                                octilinear_paths(vn1[0], vn1[1], _n2x, _n2y), _ms_n_l2_pred)
+                                octilinear_paths(vn1[0], vn1[1], _n2x, _n2y) +
+                                _vdh_paths(vn1[0], vn1[1], _n2x, _n2y), _ms_n_l2_pred)
                             if _bc is not None:
                                 _ms_n_l2 = merge_collinear(_bc)
                             if _ms_n_l2 is None:
