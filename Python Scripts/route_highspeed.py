@@ -2736,10 +2736,12 @@ def _assign_corridor_trunks(order):
             if group_positions:
                 indices = [i for i, _ in group_positions]
                 pairs_in_order = [p for _, p in group_positions]
-                # Re-order: crossing pairs first, non-crossing pairs second,
-                # each sub-list preserving relative order from routing_order()
-                reordered = ([p for p in pairs_in_order if p in crossing_pairs] +
-                             [p for p in pairs_in_order if p not in crossing_pairs])
+                # Re-order: non-crossing (HV) pairs first, crossing (VH) pairs second.
+                # HV pairs have direct paths; routing them first prevents VH pairs
+                # (which take winding A* paths) from consuming the corridor and
+                # blocking HV pairs entirely.
+                reordered = ([p for p in pairs_in_order if p not in crossing_pairs] +
+                             [p for p in pairs_in_order if p in crossing_pairs])
                 for slot, new_pair in zip(indices, reordered):
                     order[slot] = new_pair
                 log.append(f"  [corridor] reordered group in routing order: {reordered}")
@@ -3325,14 +3327,17 @@ def route_pair(pair_name):
                         _bc = _best_clear_path(
                             octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]) +
                             _vdh_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
-                            lambda c: (path_clear(c, _wf_ms, _obs_ms_n) and
+                            lambda c: (path_clear(c, _wf_ms, _obs_ms_n_base) and
                                        path_clear_vs_exact_segs(c, _wf_ms, _ms_p_exact)))
                         if _bc is not None:
                             _ms_n_l1 = merge_collinear(_bc)
                         if _ms_n_l1 is None:
                             _ms_n_l1 = _astar_centerline(vn0[0], vn0[1], vn1[0], vn1[1],
-                                                          _wf_ms, _obs_ms_n,
+                                                          _wf_ms, _obs_ms_n_base,
                                                           snap_toward_dest=True)
+                            if (_ms_n_l1 is not None and
+                                    not path_clear_vs_exact_segs(_ms_n_l1, _wf_ms, _ms_p_exact)):
+                                _ms_n_l1 = None
                         if _ms_n_l1 is not None:
                             _l1n_dx = _ms_n_l1[-1][0] - _ms_n_l1[-2][0]
                             _l1n_dy = _ms_n_l1[-1][1] - _ms_n_l1[-2][1]
@@ -4039,17 +4044,14 @@ def route_pair(pair_name):
                                     _path_clear_of_run_obs(_ip_r, width_mm/2.0,
                                                            net_p, layer_id)):
                                 _ip_pp = _ip_r
-                        if _ip_pp is not None:
-                            _ip_phw = width_mm / 2.0 + CLEARANCE_MM
-                            _ip_p_obs = [(min(a[0],b[0])-_ip_phw, min(a[1],b[1])-_ip_phw,
-                                          max(a[0],b[0])+_ip_phw, max(a[1],b[1])+_ip_phw)
-                                         for a, b in zip(_ip_pp, _ip_pp[1:])]
-                            _ip_obs_n = _ip_obs_n + _ip_p_obs
-                            _ip_obs_n_bo = _ip_obs_n_bo + _ip_p_obs
+                        _ip_p_exact = ([(a[0],a[1],b[0],b[1])
+                                        for a,b in zip(_ip_pp, _ip_pp[1:])]
+                                       if _ip_pp is not None else [])
                         _ip_nr = None
                         _bc = _best_clear_path(
                             octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
-                            lambda c: path_clear(c, width_mm, _ip_obs_n))
+                            lambda c: (path_clear(c, width_mm, _ip_obs_n) and
+                                       path_clear_vs_exact_segs(c, width_mm, _ip_p_exact)))
                         if _bc is not None:
                             _ip_nr = merge_collinear(_bc)
                         if _ip_nr is None:
@@ -4060,7 +4062,8 @@ def route_pair(pair_name):
                             _bc = _best_clear_path(
                                 octilinear_paths(vn0[0], vn0[1], vn1[0], vn1[1]),
                                 lambda c: (path_clear(c, width_mm, _ip_obs_n_bo) and
-                                           _path_clear_of_run_obs(c, width_mm/2.0, net_n, layer_id)))
+                                           _path_clear_of_run_obs(c, width_mm/2.0, net_n, layer_id) and
+                                           path_clear_vs_exact_segs(c, width_mm, _ip_p_exact)))
                             if _bc is not None:
                                 _ip_nr = merge_collinear(_bc)
                         if _ip_nr is None:
