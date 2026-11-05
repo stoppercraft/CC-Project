@@ -714,7 +714,8 @@ _seg_reserved = {}   # look-ahead corridor reservations for the next segment
 
 
 def build_obstacles(layer_id, net_excl_pads, **kw):
-    _sp = [r for r, n in _seg_placed.get(layer_id, []) if n not in net_excl_pads]
+    _net_excl_sp = net_excl_pads | kw.get('net_excl_tracks', set())
+    _sp = [r for r, n in _seg_placed.get(layer_id, []) if n not in _net_excl_sp]
     return (_build_obstacles_impl(layer_id, net_excl_pads, **kw)
             + _sp
             + _seg_reserved.get(layer_id, []))
